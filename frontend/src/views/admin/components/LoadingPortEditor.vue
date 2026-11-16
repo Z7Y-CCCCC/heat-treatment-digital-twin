@@ -9,14 +9,14 @@ import { normalizeLoadingPorts, normalizeLoadingPortOverrides, validateLoadingPo
 import { normalizeLoadingPortSignals } from '../../../../../shared/loadingPortSignals.mjs'
 import { normalizeCartTransfer } from '../../../../../shared/cartTransferConfig.mjs'
 
-const props = defineProps({ model: { type: Object, required: true }, device: { type: Object, default: null }, confirm: { type: Function, default: async () => false } })
-const emit = defineEmits(['saved'])
+const props = defineProps({ model: { type: Object, required: true }, device: { type: Object, default: null }, confirm: { type: Function, default: async () => false }, dockingPreview: Boolean, dockingAvailable: Boolean, workspaceBusy: Boolean, previewSwitching: Boolean })
+const emit = defineEmits(['saved', 'toggle-docking', 'request-drawing'])
 const viewport = ref(null), loaded = ref(null), draft = ref(null), savedSignature = ref(''), activeKind = ref('inlet')
 const loading = ref(false), saving = ref(false), error = ref(''), message = ref(''), conflict = ref(false)
 const signalDraft = ref(normalizeLoadingPortSignals(null)), savedSignals = ref(''), signalPoints = ref([])
 const cartDraft = ref(normalizeCartTransfer(null)), savedCart = ref('')
 const previewLoading = ref(false), previewReady = ref(false), previewError = ref(''), nodes = ref([]), nodeQuery = ref(''), selectedNode = ref(''), suggestion = ref(null)
-const regionMode = ref(true), regionSelecting = ref(false)
+const regionMode = ref(false), regionSelecting = ref(false)
 const context = ref(null), pendingContext = ref(null)
 let generation = 0, disposed = false, mounted = false, requestAbort, saveAbort, previewAbort, preview
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -25,9 +25,11 @@ const metadataOf = model => typeof model?.metadata === 'string' ? JSON.parse(mod
 const requestedContext = () => ({ model: props.model, device: props.device, key: `${props.model?.id || ''}:${props.device?.id || ''}` })
 const instanceMode = computed(() => !!context.value?.device)
 const editable = computed(() => canAdminPage(instanceMode.value ? 'devices' : 'models', 'edit'))
+const signalsChanged = computed(() => instanceMode.value && JSON.stringify(signalDraft.value) !== savedSignals.value)
+const cartChanged = computed(() => instanceMode.value && JSON.stringify(cartDraft.value) !== savedCart.value)
 const dirty = computed(() => regionSelecting.value || !!draft.value && (JSON.stringify(draft.value) !== savedSignature.value || instanceMode.value && (JSON.stringify(signalDraft.value) !== savedSignals.value || JSON.stringify(cartDraft.value) !== savedCart.value)))
 const cartMode = computed({ get: () => cartDraft.value.kind === 'single' ? 'single' : cartDraft.value.presentation,
-  set: value => { if (canChange()) cartDraft.value = value === 'single' ? normalizeCartTransfer(null) : { version: 1, kind: 'rotating', presentation: value, turntableNodeName: '' } } })
+  set: value => { if (canChange() && ['single', 'model'].includes(value)) cartDraft.value = value === 'single' ? normalizeCartTransfer(null) : { version: 1, kind: 'rotating', presentation: value, turntableNodeName: '' } } })
 const busy = computed(() => loading.value || saving.value)
 const title = computed(() => context.value?.device?.name || context.value?.model?.name || context.value?.model?.id || '模型')
 const kindLabel = computed(() => activeKind.value === 'inlet' ? '进料口' : '出料口')
@@ -38,13 +40,17 @@ const basePorts = computed(() => {
   catch { return emptyConfig() }
 })
 const basePort = computed(() => basePorts.value[activeKind.value])
-const picking = computed(() => !!draft.value && previewReady.value && !previewLoading.value && !busy.value && editable.value && !conflict.value && !pendingContext.value && (!instanceMode.value || !!basePort.value))
+const canDraw = computed(() => !!draft.value && previewReady.value && !previewLoading.value && !busy.value && !props.workspaceBusy && editable.value && !conflict.value && !pendingContext.value && (!instanceMode.value || !!basePort.value))
+const picking = computed(() => canDraw.value && !props.dockingPreview)
 const validation = computed(() => !draft.value ? { valid: false, errors: [] } : (instanceMode.value ? validateLoadingPortOverrides(draft.value) : validateLoadingPorts(draft.value)))
 const saveProblem = computed(() => {
   if (validation.value.errors[0]?.message) return validation.value.errors[0].message
   if (!instanceMode.value) return ''
-  try { normalizeCartTransfer(cartDraft.value) } catch (cause) { return cause.message }
-  if (cartDraft.value.kind === 'rotating' && !basePorts.value.inlet && !basePorts.value.outlet) return '请先设置小车料口位置'
+  if (cartChanged.value) {
+    try { normalizeCartTransfer(cartDraft.value) } catch (cause) { return cause.message }
+    if (cartDraft.value.kind === 'rotating' && !basePorts.value.inlet && !basePorts.value.outlet) return '请先设置小车料口位置'
+  }
+  if (!signalsChanged.value) return ''
   try { normalizeLoadingPortSignals(signalDraft.value) } catch (cause) { return cause.message }
   for (const kind of ['inlet', 'outlet']) {
     const id = signalDraft.value[kind + 'PointId']
@@ -62,6 +68,8 @@ const effectivePorts = computed(() => {
   } catch { return emptyConfig() }
 })
 const effectivePort = computed(() => effectivePorts.value[activeKind.value])
+const hasDirectionOverride = computed(() => instanceMode.value && !!basePort.value && !!row.value && !effectivePort.value?.region && Number.isFinite(row.value.yawDegrees) && row.value.yawDegrees !== 0)
+const canRestoreDirection = computed(() => hasDirectionOverride.value && canChange() && !props.previewSwitching)
 const regionSize = computed(() => effectivePort.value?.region ? loadingPortRegionSize(effectivePort.value.region) : null)
 const otherKind = computed(() => activeKind.value === 'inlet' ? 'outlet' : 'inlet')
 const otherKindLabel = computed(() => otherKind.value === 'inlet' ? '进料口' : '出料口')
@@ -73,13 +81,22 @@ const nodeOptions = computed(() => {
   return nodes.value.filter(node => !query || `${node.name} ${node.path}`.toLocaleLowerCase().includes(query)).slice(0, 500)
 })
 const format = value => Number.isFinite(value) ? Number(value.toFixed(5)).toLocaleString('zh-CN', { maximumFractionDigits: 5 }) : '—'
-const canChange = () => !disposed && !!draft.value && !busy.value && editable.value && !conflict.value && !pendingContext.value
+const canChange = () => !disposed && !!draft.value && !busy.value && !props.workspaceBusy && !props.dockingPreview && editable.value && !conflict.value && !pendingContext.value
 
+function restoreModelDirection() {
+  if (!canRestoreDirection.value) return false
+  setDrawing(false, false)
+  row.value.yawDegrees = 0
+  suggestion.value = null; error.value = ''
+  message.value = `已将本设备旧单点${kindLabel.value}方向改为沿用模型的草稿；位置偏移、另一料口与信号均保留。点击“保存配置”后生效。`
+  return true
+}
 function setEnabled(enabled) {
   if (!canChange()) return
   preview?.cancelRegion?.();regionSelecting.value=false
   if (instanceMode.value) {
     if (enabled && !basePort.value) return
+    if (enabled && effectivePort.value?.region) return
     draft.value[activeKind.value] = enabled ? { offset: [0, 0, 0], yawDegrees: 0 } : null
   } else {
     // Enabling a port is not evidence of a selected location. Never invent an origin point.
@@ -87,7 +104,7 @@ function setEnabled(enabled) {
     draft.value[activeKind.value] = null
   }
   suggestion.value = null; error.value = ''
-  message.value = enabled ? '已启用手动偏移草稿；也可以直接点击右侧模型选点，保存后生效。' : instanceMode.value ? '已恢复沿用模型默认，保存后生效；仍可直接点击右侧重新微调。' : '已清除选点。此口可跳过，也可以直接点击右侧重新设置；保存后生效。'
+  message.value = enabled ? '已启用旧单点偏移草稿；也可点击“框选料口区域”测量实际料口，保存后生效。' : instanceMode.value ? '已改为使用模型料口，保存后生效；也可为此设备单独框选区域。' : '已清除选区。此口可跳过，也可点击“框选料口区域”重新设置；保存后生效。'
 }
 function setAngle(value) {
   if (!row.value || row.value.region || instanceMode.value || !canChange()) return
@@ -99,6 +116,11 @@ function setAngle(value) {
 function setDirection(direction) { if (row.value && !row.value.region && !instanceMode.value && canChange()) row.value.direction = [...direction] }
 function usePoint(point) {
   if (!canChange() || !point) return false
+  // A completed rectangle is the real opening, not a temporary hint. Legacy
+  // point helpers must never erase it after a region callback has finished.
+  if (row.value?.region || basePort.value?.region) {
+    error.value = '此口已有真实料口区域，单点不会覆盖选区；修改位置请重新框选区域。'; return false
+  }
   if (!Array.isArray(point.position) || point.position.length !== 3 || !point.position.every(value => typeof value === 'number' && Number.isFinite(value))) {
     error.value = '选点位置无效，请在模型的真实表面重新点击。'; return false
   }
@@ -112,7 +134,7 @@ function usePoint(point) {
       const supplied = point.direction
       const surfaceDirection = Array.isArray(supplied) && supplied.length === 3 && supplied.every(Number.isFinite) && supplied[1] === 0 && (supplied[0] !== 0 || supplied[2] !== 0) ? supplied : [1, 0, 0]
       const candidate = normalizeLoadingPorts({ ...emptyConfig(), [activeKind.value]: { position: [...point.position], direction: row.value?.direction || surfaceDirection, nodeName: point.nodeName ?? row.value?.nodeName ?? '' } })[activeKind.value]
-      if (row.value) { row.value.position = candidate.position; row.value.nodeName = candidate.nodeName; delete row.value.region }
+      if (row.value) { row.value.position = candidate.position; row.value.nodeName = candidate.nodeName }
       else draft.value[activeKind.value] = candidate
       message.value = `${kindLabel.value}单点位置已写入草稿。Y 是轨道／料盘齐平的送料基准高度；可继续点击修改，保存后生效。`
     }
@@ -129,11 +151,23 @@ function useRegion(input) {
       const yawDegrees=Math.atan2(z*dx-x*dz,x*dx+z*dz)*180/Math.PI
       draft.value[activeKind.value]=normalizeLoadingPortOverrides({...emptyConfig(),[activeKind.value]:{offset:candidate.position.map((v,i)=>v-basePort.value.position[i]),yawDegrees,region:candidate.region}})[activeKind.value]
     } else draft.value[activeKind.value]=candidate
-    regionSelecting.value=false;suggestion.value=null;error.value='';message.value=`${kindLabel.value}区域已写入${instanceMode.value?'此设备':'型号默认'}草稿；送料基准为模型 Y 较低的下沿中点，保存后生效。`
+    setDrawing(false, false);suggestion.value=null;error.value='';message.value=`${kindLabel.value}区域已写入${instanceMode.value?'此设备':'模型'}草稿；已回到浏览，保存后即为实际料口，送料基准为模型 Y 较低的下沿中点。`
     return true
   } catch(cause){error.value=`区域未应用：${cause.message}`;return false}
 }
-function setDrawing(value=true) {if(!picking.value)return;regionMode.value=!!value;preview?.setRegionMode?.(regionMode.value);preview?.setPicking?.(picking.value&&regionMode.value);regionSelecting.value=false;message.value=value?'在同一真实竖直面上拖出矩形，或依次点两个对角；右键平移，滚轮缩放。':'已取消绘制，可拖动浏览模型；已完成的区域草稿仍保留。'}
+function setDrawing(value = true, announce = true) {
+  if (value && !picking.value) return false
+  regionMode.value = !!value
+  preview?.setRegionMode?.(regionMode.value)
+  preview?.setPicking?.(picking.value && regionMode.value)
+  regionSelecting.value = false
+  if (announce) message.value = value ? '在同一真实竖直面上拖出矩形，或依次点两个对角；右键平移，滚轮缩放。完成、再点按钮或按 Esc 后回到浏览。' : '已退出框选；左键旋转、右键平移、滚轮缩放。已完成的区域草稿仍保留。'
+  return true
+}
+function requestDrawing() {
+  if (props.dockingPreview) { emit('request-drawing'); return }
+  setDrawing(!regionMode.value)
+}
 function useOtherPosition() {
   if (!canUseOtherPosition.value) return false
   const source = otherPort.value
@@ -149,7 +183,7 @@ function useNode(bottom = false) {
   message.value = bottom ? '已取节点底部（包围盒最低点）。它不一定是送料轨道高度，请调整 Y 后保存。' : '已取节点中心作为定位起点，不代表送料高度。请将 Y 调整到实际轨道／料盘基准后保存。'
 }
 function readSuggestion() {
-  if (!canChange() || instanceMode.value) return
+  if (!canChange() || instanceMode.value || row.value?.region) return
   try {
     const candidate = preview?.infer(null, loaded.value?.model || context.value?.model, activeKind.value)
     if (!candidate) { suggestion.value = null; message.value = '该模型结构无法可靠识别此口。请点击真实表面或选择节点，再手动设置送料高度与方向。'; return }
@@ -159,15 +193,13 @@ function readSuggestion() {
   } catch (cause) { error.value = `读取结构建议失败：${cause.message || cause}` }
 }
 function applySuggestion() {
-  if (!suggestion.value || !canChange() || instanceMode.value) return
+  if (!suggestion.value || !canChange() || instanceMode.value || row.value?.region) return
   draft.value[activeKind.value] = clone(suggestion.value); suggestion.value = null
   message.value = '结构建议已应用到草稿，尚未保存。请检查送料高度与外向箭头。'
 }
 function togglePicking() {
-  // Compatibility helper: picking is always enabled when legal, not a separate UI mode.
-  if (!picking.value) return
-  suggestion.value = null; error.value = ''
-  message.value = `直接点击右侧${kindLabel.value}下沿，与轨道／料盘齐平的单个基准点；重新点击即可修改，拖动与缩放不会设点。`
+  // Existing callers must also explicitly enter the drawing mode.
+  if (setDrawing(true)) { suggestion.value = null; error.value = '' }
 }
 
 async function preparePreview() {
@@ -182,16 +214,17 @@ async function preparePreview() {
   try {
     let runtime
     runtime = new LoadingPortPreview(viewport.value, { onSurface: point => {
-      if (disposed || generation !== version || preview !== runtime || controller.signal.aborted || !picking.value) return
+      if (disposed || generation !== version || preview !== runtime || controller.signal.aborted || !picking.value || !regionMode.value) return
       usePoint(point)
-    },onRegion: region=>{if(!disposed&&generation===version&&preview===runtime&&!controller.signal.aborted&&picking.value)useRegion(region)},
-    onRegionError: text=>{if(!disposed&&generation===version&&preview===runtime&&!controller.signal.aborted)error.value=text},
-    onRegionState: value=>{if(!disposed&&generation===version&&preview===runtime)regionSelecting.value=value} })
+    },onRegion: region=>{if(!disposed&&generation===version&&preview===runtime&&!controller.signal.aborted&&picking.value&&regionMode.value)useRegion(region)},
+    onRegionError: text=>{if(!disposed&&generation===version&&preview===runtime&&!controller.signal.aborted&&regionMode.value&&!props.dockingPreview)error.value=text},
+    onRegionState: value=>{if(!disposed&&generation===version&&preview===runtime&&(!value||picking.value&&regionMode.value))regionSelecting.value=value},
+    onDrawingExit: ()=>{if(!disposed&&generation===version&&preview===runtime)setDrawing(false, false)} })
     preview = runtime
     const entries = await runtime.load(loaded.value.model, { signal: controller.signal })
     if (disposed || generation !== version || preview !== runtime || controller.signal.aborted) return
     nodes.value = entries || []; previewReady.value = true; runtime.setPorts(effectivePorts.value, suggestion.value, activeKind.value)
-    runtime.setCartTransfer?.(instanceMode.value ? cartDraft.value : null, effectivePorts.value)
+    runtime.setActive?.(!props.dockingPreview)
     runtime.setRegionMode?.(regionMode.value)
     runtime.setPicking?.(picking.value&&regionMode.value)
   } catch (cause) {
@@ -216,6 +249,7 @@ async function loadContext(target = requestedContext()) {
   requestAbort?.abort(); previewAbort?.abort(); requestAbort = new AbortController()
   const controller = requestAbort
   context.value = target; pendingContext.value = null; loaded.value = null; draft.value = null; savedSignature.value = ''
+  regionMode.value = false; regionSelecting.value = false
   nodes.value = []; suggestion.value = null; selectedNode.value = ''; previewReady.value = false; preview?.dispose(); preview = null
   loading.value = true; error.value = ''; message.value = ''; conflict.value = false
   try {
@@ -234,7 +268,7 @@ async function loadContext(target = requestedContext()) {
 
 async function save() {
   if(regionSelecting.value){error.value='请先完成两个角点的区域，或取消绘制，再保存。';return false}
-  if (busy.value || !editable.value || !loaded.value || !draft.value || !validation.value.valid || saveProblem.value || conflict.value || pendingContext.value) return false
+  if (busy.value || props.workspaceBusy || props.dockingPreview || !editable.value || !loaded.value || !draft.value || !validation.value.valid || saveProblem.value || conflict.value || pendingContext.value) return false
   if (!dirty.value) return true
   const version = generation, target = context.value, submitted = clone(validation.value.normalized)
   saveAbort?.abort(); saveAbort = new AbortController()
@@ -242,8 +276,9 @@ async function save() {
   saving.value = true; error.value = ''; message.value = ''
   try {
     const body = { revision: loaded.value.revision, [target.device ? 'overrides' : 'ports']: submitted,
-      ...(target.device ? { signals: normalizeLoadingPortSignals(clone(signalDraft.value)) } : {}),
-      ...(target.device && loaded.value.cartSupported ? { cartTransfer: normalizeCartTransfer(clone(cartDraft.value)) } : {}) }
+      // Geometry-only saves must not re-write unchanged PLC bindings or cart settings.
+      ...(target.device && signalsChanged.value ? { signals: normalizeLoadingPortSignals(clone(signalDraft.value)) } : {}),
+      ...(target.device && loaded.value.cartSupported && cartChanged.value ? { cartTransfer: normalizeCartTransfer(clone(cartDraft.value)) } : {}) }
     const result = target.device ? await adminApi.saveDeviceLoadingPorts(target.device.id, body, { signal: controller.signal }) : await adminApi.saveModelLoadingPorts(target.model.id, body, { signal: controller.signal })
     if (disposed || generation !== version || controller.signal.aborted) return false
     const value = checkResponse(result, target)
@@ -275,7 +310,7 @@ function discardPending() {
   if (savedSignals.value) signalDraft.value = JSON.parse(savedSignals.value)
   if (savedCart.value) cartDraft.value = JSON.parse(savedCart.value)
   suggestion.value = null
-  preview?.cancelRegion?.();regionSelecting.value=false
+  setDrawing(false, false)
   // Discarding a draft does not refresh its stale revision. Keep the conflict
   // recovery visible until an explicit reload succeeds.
   if (!conflict.value) error.value = ''
@@ -309,14 +344,14 @@ watch(() => `${props.model?.id || ''}:${props.device?.id || ''}`, () => {
   if (dirty.value || saving.value) { pendingContext.value = target; return }
   void loadContext(target)
 }, { immediate: true })
-watch(activeKind, () => { preview?.cancelRegion?.();regionSelecting.value=false;suggestion.value = null; message.value = ''; selectedNode.value = '' })
+watch(activeKind, () => { setDrawing(false, false);suggestion.value = null; message.value = ''; selectedNode.value = '' })
+watch(() => props.dockingPreview, value => { setDrawing(false, false); preview?.setActive?.(!value) })
 watch(selectedNode, id => preview?.selectNode(id))
 watch(picking, value => preview?.setPicking(value&&regionMode.value))
 watch([effectivePorts, suggestion, activeKind], () => preview?.setPorts(effectivePorts.value, suggestion.value, activeKind.value), { deep: true })
-watch([cartDraft, effectivePorts], () => preview?.setCartTransfer?.(instanceMode.value ? cartDraft.value : null, effectivePorts.value), { deep: true })
 onMounted(async () => { mounted = true; await nextTick(); if (loaded.value) void preparePreview() })
 onUnmounted(() => { disposed = true; generation++; requestAbort?.abort(); saveAbort?.abort(); previewAbort?.abort(); preview?.dispose(); preview = null })
-defineExpose({ canLeave, savePending: () => dirty.value ? save() : !busy.value, discardPending, busy, dirty })
+defineExpose({ canLeave, savePending: () => dirty.value ? save() : !busy.value, discardPending, setDrawing, busy, dirty })
 </script>
 
 <template>
@@ -331,48 +366,53 @@ defineExpose({ canLeave, savePending: () => dirty.value ? save() : !busy.value, 
     <div v-else-if="!draft" class="initial-state"><span>配置暂不可用，请重试读取。</span></div>
     <div v-else class="editor-body">
       <div class="config-panel">
-        <fieldset v-if="instanceMode" class="port-fields signal-fields" :disabled="busy || !editable || conflict || !!pendingContext">
-          <label v-if="loaded.cartSupported">小车机构<select v-model="cartMode" aria-label="小车机构"><option value="single">单向小车</option><option value="simple">旋转小车 · 简模</option><option value="model">旋转小车 · 模型转台</option></select></label>
+        <fieldset v-if="instanceMode" class="port-fields signal-fields" :disabled="busy || workspaceBusy || dockingPreview || !editable || conflict || !!pendingContext">
+          <label v-if="loaded.cartSupported">小车机构<select v-model="cartMode" aria-label="小车机构"><option value="single">单向小车</option><option value="model">旋转小车 · 模型转台</option></select></label>
+          <p v-if="loaded.cartSupported" class="notice" role="status">实时大屏与对齐预览均使用设备绑定的模型；如需低模小车，请在模型库中选择对应模型。</p>
           <label v-if="loaded.cartSupported && cartMode === 'model'">上转台节点<input v-model="cartDraft.turntableNodeName" list="turntable-node-options" aria-label="上转台节点" maxlength="512"><datalist id="turntable-node-options"><option v-for="node in nodes.filter(node => node.name)" :key="node.id" :value="node.name">{{ node.path }}</option></datalist></label>
           <label>进料／取料信号<select v-model="signalDraft.inletPointId" aria-label="进料取料信号"><option :value="null">不绑定</option><option v-for="point in signalPoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.id }}</option><option v-if="signalDraft.inletPointId && !signalPoints.some(point => String(point.id) === signalDraft.inletPointId)" :value="signalDraft.inletPointId">原点位不可用</option></select></label>
           <label>出料／送料信号<select v-model="signalDraft.outletPointId" aria-label="出料送料信号"><option :value="null">不绑定</option><option v-for="point in signalPoints" :key="point.id" :value="String(point.id)">{{ point.label || point.name }} · {{ point.id }}</option><option v-if="signalDraft.outletPointId && !signalPoints.some(point => String(point.id) === signalDraft.outletPointId)" :value="signalDraft.outletPointId">原点位不可用</option></select></label>
         </fieldset>
         <nav class="port-tabs" aria-label="选择进出料口">
-          <button v-for="kind in ['inlet','outlet']" :key="kind" type="button" :disabled="busy" :class="{ active: activeKind === kind, outlet: kind === 'outlet' }" :aria-pressed="activeKind === kind" @click="activeKind = kind"><strong>{{ kind === 'inlet' ? '进料口' : '出料口' }}</strong><small>{{ instanceMode ? basePorts[kind] ? draft[kind] ? '设备已微调' : '沿用模型默认' : '未设置 · 可跳过' : draft[kind] ? '已设置' : '未设置 · 可跳过' }}</small></button>
+          <button v-for="kind in ['inlet','outlet']" :key="kind" type="button" :disabled="busy || workspaceBusy || dockingPreview" :class="{ active: activeKind === kind, outlet: kind === 'outlet' }" :aria-pressed="activeKind === kind" @click="activeKind = kind"><strong>{{ kind === 'inlet' ? '进料口' : '出料口' }}</strong><small>{{ effectivePorts[kind]?.region ? '区域已设置' : effectivePorts[kind] ? '已有单点' : '未设置 · 可跳过' }}</small></button>
         </nav>
-        <div class="point-guide"><strong>框出真实的 {{ kindLabel }} 区域</strong><p>在同一个竖直料口面拖出矩形，或依次点两个对角。边框随模型显示，<strong>模型较低 Y 的下沿中点</strong>用作送料基准，不能用门板中心高度。</p><p>右键平移、滚轮缩放；要旋转查看时点“浏览模型”。只有保存才改变配置。</p></div>
-        <p v-if="instanceMode && !basePort" class="base-missing" role="status">模型还没有设置此口，当前可跳过。如需设备微调，请到“模型管理 → 进出料口（可选）”先设置模型默认基准点。</p>
-        <div v-else class="point-summary" :class="{configured:!!effectivePort}" role="status"><span>{{ kindLabel }}</span><strong>{{ effectivePort ? effectivePort.region ? instanceMode && !row ? '沿用型号区域' : '区域已设置' : '已有单点 · 可重画区域' : '未设置，可跳过' }}</strong><small v-if="regionSize">区域宽 {{ format(regionSize.width) }} · 高 {{ format(regionSize.height) }}（模型单位）<br />下沿 Y {{ format(effectivePort.position[1]) }}</small><small v-else>{{ effectivePort ? '旧单点继续兼容，不会自动改成区域。' : '没有画区域时保持未配置，不会自动创建。' }}</small></div>
-        <div class="point-actions"><button type="button" :disabled="!picking" :aria-pressed="regionMode" @click="setDrawing(true)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h5M4 4v5M20 4h-5M20 4v5M4 20h5M4 20v-5M20 20h-5M20 20v-5M8 8h8v8H8z"/></svg>画料口区域</button><button type="button" :disabled="!picking" :aria-pressed="!regionMode" @click="setDrawing(false)">浏览模型</button><button type="button" :disabled="busy || !editable || conflict || !!pendingContext || !row" @click="setEnabled(false)">{{ instanceMode ? '恢复模型默认' : '清除选区' }}</button></div>
+        <div class="point-guide"><strong>框出真实的 {{ kindLabel }} 区域</strong><p>点击“框选料口区域”后，在同一个竖直料口面拖出矩形，或依次点两个对角。边框随模型显示，<strong>模型较低 Y 的下沿中点</strong>用作送料基准，不能用门板中心高度。</p><p>默认左键空白处旋转、右键平移、滚轮缩放，不修改料口。框选完成、再点框选按钮或按 Esc 后恢复浏览；只有保存才改变配置。</p></div>
+        <p v-if="instanceMode && !basePort" class="base-missing" role="status">模型还没有设置此口，当前可跳过。如需设置设备区域，请先在“模型管理 → 进出料口（可选）”设置模型料口。</p>
+        <div v-else class="point-summary" :class="{configured:!!effectivePort}" role="status"><span>{{ kindLabel }}</span><strong>{{ effectivePort ? effectivePort.region ? '区域已设置' : '已有单点 · 可重画区域' : '未设置，可跳过' }}</strong><small v-if="regionSize">区域宽 {{ format(regionSize.width) }} · 高 {{ format(regionSize.height) }}（模型单位）<br />下沿 Y {{ format(effectivePort.position[1]) }}</small><small v-else>{{ effectivePort ? '旧单点继续兼容，不会自动改成区域。' : '没有画区域时保持未配置，不会自动创建。' }}</small></div>
+        <div class="point-actions"><button type="button" :disabled="!canDraw || previewSwitching" :aria-pressed="regionMode" @click="requestDrawing"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h5M4 4v5M20 4h-5M20 4v5M4 20h5M4 20v-5M20 20h-5M20 20v-5M8 8h8v8H8z"/></svg>框选料口区域</button><button v-if="instanceMode ? !!row?.region : !!row" type="button" :disabled="busy || workspaceBusy || previewSwitching || dockingPreview || !editable || conflict || !!pendingContext" @click="setEnabled(false)">{{ instanceMode ? '使用模型料口' : '清除选区' }}</button></div>
         <button v-if="otherPort" type="button" class="same-position" :disabled="!canUseOtherPosition" :title="instanceMode && !basePort ? '请先设置当前口的模型默认点，再微调此设备。' : `只将${kindLabel}位置设为与${otherKindLabel}相同，不自动保存。`" @click="useOtherPosition">与{{ otherKindLabel }}同位置</button>
-        <p class="optional-note">区域保存在当前型号或当前设备的配置中。设备区域仍是基于型号默认口的相对微调；默认口以后更改时，区域按原有偏移／方向继承。实体高度或左右错位请用下方小车对接检查调整实体，不能挪选区假装对齐。</p>
-        <div class="save-actions"><button type="button" class="primary" :disabled="busy || !dirty || !editable || !!saveProblem || conflict" @click="save">{{ saving ? '正在保存…' : '保存配置' }}</button><button v-if="dirty" type="button" class="discard" :disabled="busy" @click="canLeave">放弃未保存修改</button></div>
+        <button v-if="dockingAvailable" type="button" class="docking-preview-toggle" :disabled="busy || workspaceBusy || previewSwitching || conflict || !!pendingContext" :aria-pressed="dockingPreview" :title="dockingPreview ? '返回料口模型预览' : '在右侧画布预览小车与设备的对齐情况'" @click="emit('toggle-docking')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7v12H3zM14 8h7v8h-7M10 12h4M12 10l2 2-2 2"/></svg>检查小车对接与实体位置</button>
+        <p class="optional-note">框选区域保存后就是实际料口；小车对接与自动排布读取同一位置和外向方向。{{ dockingAvailable ? '实体高度或左右错位请点击小车对接按钮，在右侧预览中调整实体；不能挪选区假装对齐。' : '实体高度或左右错位应调整实体，不能挪选区假装对齐。' }}</p>
+        <p v-if="dockingPreview" class="hint docking-mode-note">右侧正在显示小车与设备对齐预览。再点对接按钮返回模型；点“框选料口区域”则返回并开始框选。未保存的实体调整会先询问。</p>
+        <div class="save-actions"><button type="button" class="primary" :disabled="busy || workspaceBusy || dockingPreview || !dirty || !editable || !!saveProblem || conflict" @click="save">{{ saving ? '正在保存…' : '保存配置' }}</button><button v-if="dirty" type="button" class="discard" :disabled="busy || workspaceBusy" @click="canLeave">放弃未保存修改</button></div>
         <p v-if="saveProblem" class="error" role="alert">{{ saveProblem }}</p><p v-if="!editable" class="hint readonly-note">当前账号为只读，可以查看但不能更改配置。</p>
         <details class="advanced-panel">
           <summary>高级微调 · 坐标、方向与辅助定位</summary>
-          <p class="hint advanced-guide">旧单点可精确修正坐标／方向；已画区域的型号坐标和外法线由真实表面确定，不能手工挪动，需重新画区域。设备相对微调仅针对料口测量误差；实体错位请使用下方对接检查。</p>
-          <fieldset :disabled="busy || !editable || conflict || !!pendingContext" class="port-fields">
+          <p class="hint advanced-guide">旧单点可精确修正坐标／方向；已画区域的型号坐标和外法线由真实表面确定，不能手工挪动，需重新画区域。设备相对微调仅针对料口测量误差；实体错位请使用小车对接预览。</p>
+          <fieldset :disabled="busy || workspaceBusy || dockingPreview || !editable || conflict || !!pendingContext" class="port-fields">
             <template v-if="instanceMode">
-              <div class="default-summary"><strong>模型默认 {{ kindLabel }}</strong><template v-if="basePort"><span>X {{ format(basePort.position[0]) }} · Y {{ format(basePort.position[1]) }} · Z {{ format(basePort.position[2]) }}</span><small>外向方向 [{{ basePort.direction.map(format).join(', ') }}]</small></template><p v-else>模型尚未配置此口。实例微调不会自行创建新口，可以跳过。</p></div>
-              <label v-if="basePort" class="enable-row"><span>手动输入设备偏移</span><input type="checkbox" :checked="!!row" :disabled="!basePort || busy || !editable" @change="setEnabled($event.target.checked)"></label>
-              <template v-if="row"><div class="vector-fields"><label>X 偏移<input v-model.number="row.offset[0]" type="number" step="any" aria-label="进出料口 X 偏移"></label><label>Y 送料高度偏移<input v-model.number="row.offset[1]" type="number" step="any" aria-label="进出料口送料高度偏移"></label><label>Z 偏移<input v-model.number="row.offset[2]" type="number" step="any" aria-label="进出料口 Z 偏移"></label></div><label>水平方向微调（度）<input v-model.number="row.yawDegrees" type="number" step="any" aria-label="进出料口水平方向微调角度"></label><p class="hint">偏移相对模型默认口，正 Y 向上。重选点只改变偏移，不改变已有方向微调。</p></template>
-              <div v-if="effectivePort" class="effective-summary"><strong>此设备实际使用的单点</strong><span>X {{ format(effectivePort.position[0]) }} · Y {{ format(effectivePort.position[1]) }} · Z {{ format(effectivePort.position[2]) }}</span></div>
+              <div class="default-summary"><strong>模型 {{ kindLabel }}</strong><template v-if="basePort"><span>X {{ format(basePort.position[0]) }} · Y {{ format(basePort.position[1]) }} · Z {{ format(basePort.position[2]) }}</span><small>外向方向 [{{ basePort.direction.map(format).join(', ') }}]</small></template><p v-else>模型尚未配置此口，设备区域不会自行创建新口，可以跳过。</p></div>
+              <p v-if="effectivePort?.region" class="hint">此口的位置与外向方向取自真实选区；修改位置请重新框选区域。</p>
+              <label v-if="basePort && !effectivePort?.region" class="enable-row"><span>旧单点设备偏移</span><input type="checkbox" :checked="!!row" :disabled="!basePort || busy || !editable" @change="setEnabled($event.target.checked)"></label>
+              <template v-if="row && !effectivePort?.region"><div class="vector-fields"><label>X 偏移<input v-model.number="row.offset[0]" type="number" step="any" aria-label="进出料口 X 偏移"></label><label>Y 送料高度偏移<input v-model.number="row.offset[1]" type="number" step="any" aria-label="进出料口送料高度偏移"></label><label>Z 偏移<input v-model.number="row.offset[2]" type="number" step="any" aria-label="进出料口 Z 偏移"></label></div><label>水平方向微调（度）<input v-model.number="row.yawDegrees" type="number" step="any" aria-label="进出料口水平方向微调角度"></label><p class="hint">仅兼容未框选区域的旧单点，偏移相对模型料口，正 Y 向上。</p><button v-if="hasDirectionOverride" type="button" :disabled="!canRestoreDirection" @click="restoreModelDirection">旧单点方向沿用模型（保留位置偏移）</button></template>
+              <div v-if="effectivePort" class="effective-summary"><strong>此设备实际使用的料口</strong><span>X {{ format(effectivePort.position[0]) }} · Y {{ format(effectivePort.position[1]) }} · Z {{ format(effectivePort.position[2]) }}</span><small>外向方向 [{{ effectivePort.direction.map(format).join(', ') }}]</small></div>
             </template>
             <template v-else>
               <p v-if="!row" class="hint">还没有选点。可直接点右侧模型，或明确应用下方辅助结果；不会自动创建 [0,0,0] 点。</p>
               <template v-if="row"><div class="vector-fields"><label>X 位置<input v-model.number="row.position[0]" type="number" step="any" :disabled="!!row.region" aria-label="进出料口 X 位置"></label><label>Y 送料高度<input v-model.number="row.position[1]" type="number" step="any" :disabled="!!row.region" aria-label="进出料口 Y 送料高度"></label><label>Z 位置<input v-model.number="row.position[2]" type="number" step="any" :disabled="!!row.region" aria-label="进出料口 Z 位置"></label></div><label>水平外向角度（度）<input :value="Number(angle.toFixed(4))" type="number" step="any" :disabled="!!row.region" aria-label="进出料口水平外向角度" @input="setAngle($event.target.value)"></label><div class="direction-buttons" aria-label="快捷设置水平外向方向"><button type="button" :disabled="!!row.region" @click="setDirection([1,0,0])">+X</button><button type="button" :disabled="!!row.region" @click="setDirection([-1,0,0])">−X</button><button type="button" :disabled="!!row.region" @click="setDirection([0,0,1])">+Z</button><button type="button" :disabled="!!row.region" @click="setDirection([0,0,-1])">−Z</button></div><p class="hint">0° = +X，90° = −Z。方向用于交接对齐；重新选点保留已有方向。Y 是轨道／料盘基准高度，不是门板中心。</p><label>关联节点名称（可留空）<input v-model="row.nodeName" type="text" maxlength="512" :disabled="!!row.region" aria-label="进出料口关联节点名称"></label></template>
               <details class="node-assistant"><summary>辅助定位 · 选真实模型节点</summary><label>搜索模型节点<input v-model="nodeQuery" type="search" placeholder="例如：炉口、轨道、门" aria-label="搜索进出料口模型节点"></label><label>选择节点<select v-model="selectedNode" aria-label="选择进出料口辅助节点"><option value="">请选择（选择不会改变配置）</option><option v-for="node in nodeOptions" :key="node.id" :value="node.id">{{ node.path }} ({{ node.meshCount }} 网格)</option></select></label><small v-if="nodes.length > 500" class="hint">最多展示 500 个结果，请搜索缩小范围。</small><div class="assistant-actions"><button type="button" :disabled="!selectedNode || !preview || previewLoading" @click="useNode(false)">取节点中心</button><button type="button" :disabled="!selectedNode || !preview || previewLoading" @click="useNode(true)">取节点底部</button></div><p class="hint">包围盒仅辅助定位，不是要设置区域。节点中心或最低点不一定是轨道／料盘高度，请核对 Y。</p></details>
-              <div class="inference-actions"><button type="button" :disabled="!preview || previewLoading" @click="readSuggestion">从模型已有结构读取</button><button v-if="suggestion" type="button" class="primary" @click="applySuggestion">应用建议到草稿</button></div><p v-if="suggestion" class="hint">建议 X {{ format(suggestion.position[0]) }} · Y {{ format(suggestion.position[1]) }} · Z {{ format(suggestion.position[2]) }}，尚未写入配置。</p>
+              <div class="inference-actions"><button type="button" :disabled="!preview || previewLoading || !!row?.region" @click="readSuggestion">从模型已有结构读取</button><button v-if="suggestion" type="button" class="primary" :disabled="!!row?.region" @click="applySuggestion">应用建议到草稿</button></div><p v-if="suggestion" class="hint">建议 X {{ format(suggestion.position[0]) }} · Y {{ format(suggestion.position[1]) }} · Z {{ format(suggestion.position[2]) }}，尚未写入配置。</p>
             </template>
           </fieldset>
         </details>
       </div>
-      <section class="preview-panel" aria-label="独立进出料口预览">
+      <section v-show="!dockingPreview" class="preview-panel" data-preview-mode="model" aria-label="独立进出料口预览">
         <div class="preview-toolbar"><span><i class="inlet-dot"></i>进料口 <i class="outlet-dot"></i>出料口</span><div><span class="current-port">当前：{{ kindLabel }}</span><button type="button" :disabled="!preview || previewLoading" @click="preview?.resetCamera()">完整视图</button></div></div>
-        <p v-if="picking" class="pick-tip">{{ regionSelecting ? '区域尚未完成：点第二个对角，或按 Esc 取消' : regionMode ? `拖拽框出${kindLabel}区域 · 也可点两个对角` : '浏览模型：拖动旋转、右键平移；点“画料口区域”开始框选' }}</p>
+        <p class="pick-tip">{{ regionSelecting ? '区域尚未完成：点第二个对角，或按 Esc 取消' : regionMode ? `拖拽框出${kindLabel}区域 · 也可点两个对角 · Esc 退出` : '左键空白处旋转 · 右键平移 · 滚轮缩放；点击“框选料口区域”才会框选' }}</p>
         <div class="preview-stage"><div ref="viewport" class="viewport"></div><div v-if="previewLoading" class="preview-overlay" role="status">正在载入原始模型…</div><div v-else-if="previewError" class="preview-overlay"><p>{{ previewError }}</p><button type="button" @click="preparePreview">重试三维预览</button><small>可展开“高级微调”查看或修正已有数据。</small></div></div>
-        <p class="preview-caption">边框是 root-local 真实面区域，圆点是下沿送料基准。顶面、错面和过小选区会拒绝；模型文件、比例、动作和 PLC 均不改变。{{ instanceMode ? '只编辑此设备，不覆盖型号默认或其他设备。' : '旧单点不自动迁移，重新画区域后显式保存。' }}</p>
+        <p class="preview-caption">边框是 root-local 真实面区域，圆点是下沿送料基准。顶面、错面和过小选区会拒绝；模型文件、比例、动作和 PLC 均不改变。{{ instanceMode ? '只编辑此设备的料口区域和信号，不改其他设备。' : '未单独框选设备区域的设备使用此模型料口；旧单点不自动迁移。' }}</p>
       </section>
+      <section v-if="dockingAvailable" v-show="dockingPreview" class="docking-preview-panel" aria-label="小车与设备对齐情况预览"><slot name="preview" /></section>
     </div>
   </section>
 </template>
@@ -402,6 +442,7 @@ button:disabled{opacity:.5;cursor:not-allowed}button:focus-visible,input:focus-v
 .point-actions{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}.optional-note{margin:15px 0;color:#526177;font-size:calc(13px * var(--admin-font-scale,1));line-height:1.75}
 .point-actions button{display:inline-flex;align-items:center;gap:7px}.point-actions button[aria-pressed=true]{background:#e7f3fa;border-color:#8ab8ce;color:#17657e}.point-actions svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.5}
 .same-position{width:100%;background:#edf3ff;border-color:#bdcff0;color:#2459a6}
+.docking-preview-toggle{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:14px;background:#f4f8fc;color:#304c68;font-weight:600}.docking-preview-toggle svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.5}.docking-preview-toggle[aria-pressed=true]{background:#e7f3fa;border-color:#8ab8ce;color:#17657e}.docking-mode-note{margin-top:12px}
 .save-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:18px 0}.save-actions>.primary{flex:1;min-height:42px;font-weight:500}.discard{color:#526177}.readonly-note{margin-top:14px}
 .advanced-panel{border-top:1px solid #dfe6ef;padding-top:17px;margin-top:18px}.advanced-panel>summary{cursor:pointer;font-weight:600;font-size:calc(14px * var(--admin-font-scale,1));color:#2459a6;line-height:1.7}.advanced-guide{margin:14px 0!important}
 .port-fields{border:0;padding:0;margin:0;display:grid;gap:14px;min-width:0}.port-fields label{display:flex;flex-direction:column;gap:8px;color:#40546f;min-width:0;font-size:calc(14px * var(--admin-font-scale,1))}
@@ -413,6 +454,7 @@ button:disabled{opacity:.5;cursor:not-allowed}button:focus-visible,input:focus-v
 .default-summary,.effective-summary{display:grid;gap:8px;padding:14px;background:#f5f8fc;border:1px solid #dfe6ef;border-radius:8px;line-height:1.7;font-size:calc(14px * var(--admin-font-scale,1))}.default-summary p{margin:0;color:#526177}.default-summary small{color:#596579;font-size:calc(13px * var(--admin-font-scale,1))}.effective-summary{background:#edf7f1;border-color:#c8e1d2;color:#23694b}
 .node-assistant{border-top:1px solid #dfe6ef;padding-top:14px}.node-assistant summary{cursor:pointer;font-weight:600;color:#40546f;margin-bottom:14px;font-size:calc(14px * var(--admin-font-scale,1))}.node-assistant label,.node-assistant .assistant-actions{margin-bottom:12px}.inference-actions button{font-size:calc(14px * var(--admin-font-scale,1))}.config-panel>.error{margin:14px 0 0}
 .preview-panel{display:flex;flex-direction:column;min-width:0;min-height:0;padding:18px;background:#f8faff}.preview-toolbar{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;font-size:calc(14px * var(--admin-font-scale,1))}.preview-toolbar>span{display:flex;align-items:center;gap:6px;white-space:nowrap}.preview-toolbar button{padding:8px 10px}.current-port{font-size:calc(13px * var(--admin-font-scale,1));color:#526177}
+.docking-preview-panel{min-width:0;min-height:0;background:#f8faff}
 .inlet-dot,.outlet-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#168aa7}.outlet-dot{background:#e78b22;margin-left:8px}
 .preview-stage{position:relative;flex:1;min-height:470px;border:1px solid #dfe6ef;border-radius:10px;overflow:hidden;background:#f1f5f9}.viewport{position:absolute;inset:0}.preview-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;gap:12px;text-align:center;background:#f2f6fa;color:#40546f;line-height:1.75}.preview-overlay p{margin:0;overflow-wrap:anywhere}.preview-overlay small{color:#526177;font-size:calc(13px * var(--admin-font-scale,1))}
 .pick-tip{margin:0 0 12px;padding:10px;border:1px solid #c6dce8;border-radius:6px;background:#edf8ff;color:#12627a;text-align:center;pointer-events:none;font-size:calc(14px * var(--admin-font-scale,1))}.preview-caption{margin:12px 2px 0;color:#526177;line-height:1.75;font-size:calc(13px * var(--admin-font-scale,1))}

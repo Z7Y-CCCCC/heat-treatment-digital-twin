@@ -25,7 +25,7 @@ const configured = () => ({ version: 1, inlet: { position: [0, 1.25, 2], directi
 
 function modelWorkflow({ metadata, canLeave = async () => true, editor = true } = {}) {
   const state = {
-    modelNameSaving: { value: false }, modelUploading: { value: false },
+    modelAssetLocked: { value: false }, modelNameSaving: { value: false }, modelUploading: { value: false },
     activePreviewModel: { value: { id: 'ordinary-model', metadata } },
     activePreviewIsEnvironment: { value: false },
     modelLoadingPortRef: { value: editor ? { canLeave } : null },
@@ -106,6 +106,12 @@ test('skipping an untouched empty port configuration reuses the normal leave gua
   await declined.selectModelLibraryStep('library')
   assert.equal(declined.state.modelLibraryStep.value, 'ports', 'a dirty draft still requires explicit save/discard approval')
   assert.deepEqual(declined.calls, [])
+
+  const locked = modelWorkflow({ canLeave: async () => { throw new Error('locked asset must not start a leave/discard confirmation') } })
+  locked.state.modelAssetLocked.value = true
+  await locked.selectModelLibraryStep('library')
+  assert.equal(locked.state.modelLibraryStep.value, 'ports', 'asset import/export lock blocks navigation')
+  assert.deepEqual(locked.calls, [])
 
   const ordinary = modelWorkflow({ editor: false })
   ordinary.state.modelLibraryStep.value = 'ports'

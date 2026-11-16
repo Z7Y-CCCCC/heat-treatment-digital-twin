@@ -13,7 +13,8 @@ const root = path.resolve(__dirname, '..');
 const artifactRoot = requireTestPath(path.join(root, 'output', 'playwright', 'service-connections'));
 fs.mkdirSync(artifactRoot, { recursive: true });
 const directory = fs.mkdtempSync(path.join(artifactRoot, new Date().toISOString().replace(/[-:.]/g, '') + '-'));
-const checks = [], errors = [], assets = new Map();
+const checks = [], errors = [], anchorEvidence = [], assets = new Map();
+const serviceNames = { unity: 'Unity', devices: '设备采集', data: '数据服务', session: '登录状态' };
 const componentBase = path.join(root, 'frontend', 'src', 'views', 'admin', 'components');
 for (const name of ['ConnectionPlugIcon', 'ServiceConnectionIcon', 'AdminConnectionStatus']) {
   const descriptor = parse(fs.readFileSync(path.join(componentBase, name + '.vue'), 'utf8')).descriptor;
@@ -50,6 +51,11 @@ const action = id => dialog().locator('[data-connection-action="' + id + '"]');
 const plugState = target => target.locator('svg[data-plug-state]').getAttribute('data-plug-state');
 const patch = (kind, value) => page.evaluate(([k, v]) => fixture.patch(k, v), [kind, value]);
 const screenshot = name => page.screenshot({ path: path.join(directory, name) });
+async function expectOwner(kind) {
+  assert.equal(await dialog().getAttribute('data-connection-panel-kind'), kind, 'open menu keeps its explicit service owner');
+  assert.equal(await dialog().locator('header strong').innerText(), serviceNames[kind]);
+  for (const other of Object.keys(serviceNames)) assert.equal(await badge(other).getAttribute('aria-expanded'), String(other === kind));
+}
 async function close() {
   await page.keyboard.press('Escape');
   await dialog().waitFor({ state: 'hidden' });
@@ -60,6 +66,22 @@ async function bounds() {
   assert.ok(box.x >= 0 && box.x + box.width <= viewport.width + 1, 'panel is horizontally bounded');
   assert.ok(box.y >= 0 && box.y + box.height <= viewport.height + 1, 'panel is vertically bounded');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'no page horizontal overflow');
+}
+async function expectAnchor(kind) {
+  await page.waitForFunction(owner => {
+    const pill = document.querySelector('[data-connection-kind="' + owner + '"]');
+    const panel = document.querySelector('.admin-service-connection-panel[role="dialog"]');
+    if (!pill || !panel) return false;
+    const trigger = pill.getBoundingClientRect(), box = panel.getBoundingClientRect();
+    const expectedLeft = Math.max(12, Math.min(trigger.left + trigger.width / 2 - box.width / 2, innerWidth - box.width - 12));
+    return Math.abs(box.left - expectedLeft) <= 1.5 && Math.abs(box.top - trigger.bottom - 10) <= 1.5;
+  }, kind);
+  const trigger = await badge(kind).boundingBox(), panel = await dialog().boundingBox(), viewport = page.viewportSize();
+  const centeredLeft = trigger.x + trigger.width / 2 - panel.width / 2;
+  const expectedLeft = Math.max(12, Math.min(centeredLeft, viewport.width - panel.width - 12));
+  assert.ok(Math.abs(panel.x - expectedLeft) <= 1.5, `${kind} is centered under its own pill, except the exact 12px screen-edge clamp`);
+  assert.ok(Math.abs(panel.y - trigger.y - trigger.height - 10) <= 1.5, `${kind} top is its own pill bottom + 10px, not the entire group bottom`);
+  anchorEvidence.push({ kind, viewport, trigger, panel, expectedLeft, clamped: Math.abs(centeredLeft - expectedLeft) > 1.5 });
 }
 (async () => {
   server = http.createServer((request, response) => {
@@ -76,13 +98,20 @@ async function bounds() {
   await badge('unity').waitFor();
   assert.equal(await page.locator('[data-connection-kind]').count(), 4);
   for (const kind of ['unity', 'devices', 'data', 'session']) {
-    assert.equal((await badge(kind).innerText()).trim(), '', 'pill is icon-only');
+    assert.equal((await badge(kind).innerText()).trim(), serviceNames[kind], 'every service name is fully visible');
+    assert.equal(await badge(kind).locator('svg[data-plug-state]').count(), 1, 'one status plug accompanies the name');
     assert.ok((await badge(kind).getAttribute('aria-label')).length > 4);
     assert.equal(await plugState(badge(kind)), 'connected');
     assert.equal((await badge(kind).boundingBox()).height, 32);
   }
   await screenshot('01-four-connected-pills.png');
-  pass('four icon-only 32px pills reuse the plug silhouette, capsule styling and service-specific accessible labels');
+  pass('four named 32px pills preserve the plug silhouette, capsule styling and service-specific accessible labels');
+
+  for (const kind of Object.keys(serviceNames)) {
+    await badge(kind).click(); await dialog().waitFor(); await expectOwner(kind); await expectAnchor(kind); await bounds();
+    await screenshot('15-anchor-' + kind + '-wide.png'); await close();
+  }
+  pass('all four wide panels anchor directly under their individual pill centers, with only the required screen-edge clamp');
 
   await badge('devices').hover(); await dialog().waitFor();
   const tipBox = await dialog().boundingBox(), badgeBox = await badge('devices').boundingBox();
@@ -94,7 +123,7 @@ async function bounds() {
     assert.equal((await row.innerText()).trim(), id === 'a' ? '隔离设备 A' : '隔离设备 B');
     assert.equal(await plugState(row), 'connected');
   }
-  await bounds(); await screenshot('02-device-details.png'); await close();
+  await bounds(); await expectAnchor('devices'); await screenshot('02-device-details.png'); await close();
   pass('hover crosses the below-trigger gap, device rows show only names and individual plugs in a non-modal dialog');
 
   await patch('unity', { connected: false, label: '场景同步中', detail: '实时通道在线，场景尚未就绪', tone: 'is-partial' });
@@ -144,11 +173,71 @@ async function bounds() {
   await close();
   pass('dangerous restart stays inside the panel and emits intent only; the isolated parent confirms and rejection executes nothing');
 
+  // Regression for Ethan's report: a hover-opened menu could be stolen by an
+  // adjacent trigger immediately after a click/busy focus update. Exercise all
+  // shared action IDs and keep both the menu and emitted intent on their owner.
+  const actionMatrix = { unity: ['check', 'reconnect', 'restart'], devices: ['check', 'center', 'restart'],
+    data: ['check', 'reconnect', 'center'], session: ['check', 'unlock'] };
+  let menuScenarios = 0;
+  for (const [kind, ids] of Object.entries(actionMatrix)) for (const id of ids) {
+    await page.evaluate(() => fixture.clear());
+    await page.locator('.fixture-note').click();
+    await badge(kind).hover(); await dialog().waitFor(); await expectOwner(kind);
+    if (id === 'restart') page.once('dialog', event => event.dismiss());
+    await action(id).click();
+    assert.deepEqual(await page.evaluate(() => fixture.emitted), [{ kind, action: id }]);
+    await expectOwner(kind);
+    const otherKinds = Object.keys(serviceNames).filter(other => other !== kind);
+    for (const other of otherKinds) {
+      await badge(other).hover(); await expectOwner(kind);
+      await badge(other).focus(); await expectOwner(kind);
+    }
+    if (kind === 'unity' && id === 'check') await screenshot('13-unity-menu-kept-after-adjacent-hover.png');
+    if (kind === 'data' && id === 'reconnect') await screenshot('14-data-menu-kept-during-reconnect.png');
+    if (id !== 'restart') {
+      await action(id).dispatchEvent('click');
+      assert.equal(await page.evaluate(() => fixture.emitted.length), 1, 'pending action is never emitted again or under another service');
+    } else {
+      assert.deepEqual(await page.evaluate(() => fixture.accepted), [], 'cancelled restart never runs');
+      assert.match(await dialog().getByRole('alert').innerText(), /已取消/);
+    }
+    await page.evaluate(async owner => {
+      fixture.props.busy = {};
+      fixture.props.feedback[owner] = { type: 'success', message: owner + '：原操作已确认' };
+      await fixture.update({ services: fixture.props.services.map(service => ({ ...service, lastSuccessAt: Date.now() })) });
+    }, kind);
+    await expectOwner(kind);
+    assert.match(await dialog().getByRole('status').innerText(), new RegExp(kind + '：原操作已确认'));
+    // Real click and ArrowDown remain deliberate ways to move to another menu;
+    // late old-owner state must not snap that new selection back.
+    const clickedKind = otherKinds[0], keyboardKind = otherKinds[1];
+    await badge(clickedKind).click(); await expectOwner(clickedKind);
+    await page.evaluate(async owner => { fixture.props.feedback[owner] = { type: 'error', message: '迟到的旧操作结果' }; await fixture.update({ busy: {} }); }, kind);
+    await expectOwner(clickedKind);
+    await badge(keyboardKind).focus(); await page.keyboard.press('ArrowDown'); await expectOwner(keyboardKind);
+    await close(); menuScenarios++;
+  }
+  await screenshot('13-menu-owner-regression-complete.png');
+  pass('11 hover-open action scenarios keep owner through neighboring hover/focus, busy and cancelled modal; explicit click/ArrowDown switch and late results do not steal it');
+
   await page.evaluate(() => fixture.clear());
   await patch('devices', { restricted: false, mode: 'integrated_plc', label: '部分设备离线', detail: '当前工厂 32 台设备读数有效，16 台设备离线', tone: 'is-partial', connected: false,
     total: 48, online: 32, rows: Array.from({ length: 48 }, (_, index) => ({ id: 'long-' + index, name: '滚动验收设备 ' + (index + 1), connected: index % 3 !== 0, tone: index % 3 !== 0 ? 'is-online' : 'is-offline' })) });
   for (const viewport of [{ width: 360, height: 640 }, { width: 360, height: 320 }]) {
-    await page.setViewportSize(viewport); await badge('devices').click(); await dialog().waitFor(); await bounds();
+    await page.setViewportSize(viewport);
+    const rowTops = [];
+    for (const [kind, name] of Object.entries(serviceNames)) {
+      assert.equal((await badge(kind).innerText()).trim(), name);
+      assert.equal(await badge(kind).locator('.connection-service-name').evaluate(element => element.scrollWidth <= element.clientWidth), true,
+        'narrow pill shows its entire service name without clipping or ellipsis');
+      const pillBox = await badge(kind).boundingBox();
+      assert.ok(pillBox.x >= 0 && pillBox.x + pillBox.width <= viewport.width, 'every named pill stays inside the viewport');
+      rowTops.push(Math.round(pillBox.y));
+      await badge(kind).click(); await dialog().waitFor(); await expectOwner(kind); await expectAnchor(kind); await bounds();
+      await screenshot('16-anchor-' + kind + '-' + viewport.height + '.png'); await close();
+    }
+    assert.ok(new Set(rowTops).size > 1, 'the narrow fixture must actually wrap pills onto multiple rows');
+    await badge('devices').click(); await dialog().waitFor(); await bounds(); await expectAnchor('devices');
     assert.equal(await dialog().locator('[data-device-id]').count(), 48);
     const scroll = await dialog().evaluate(element => [element, ...element.querySelectorAll('*')].some(item => item.scrollHeight > item.clientHeight + 5 && ['auto', 'scroll'].includes(getComputedStyle(item).overflowY)));
     assert.equal(scroll, true);
@@ -162,10 +251,10 @@ async function bounds() {
   assert.equal(await badge('data').getAttribute('aria-expanded'), 'false');
   pass('48-device lists scroll at 360px narrow and 320px short viewports without overflow; outside click closes the panel');
   assert.deepEqual(errors, []);
-  fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({ success: true, scope: 'isolated component and emission contract only; no runtime restart or deployment claimed', checks, errors, screenshotDirectory: directory }, null, 2));
+  fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({ success: true, scope: 'isolated component, geometry and emission contract only; no runtime restart or deployment claimed', menuScenarios, anchorEvidence, checks, errors, screenshotDirectory: directory }, null, 2));
   console.log('REPORT ' + directory);
 })().catch(async error => {
   await page?.screenshot({ path: path.join(directory, 'failure.png') }).catch(() => {});
-  fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({ success: false, checks, errors, failure: error.stack, screenshotDirectory: directory }, null, 2));
+  fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({ success: false, checks, errors, anchorEvidence, failure: error.stack, screenshotDirectory: directory }, null, 2));
   console.error(error.stack); process.exitCode = 1;
 }).finally(async () => { await browser?.close(); await new Promise(resolve => server ? server.close(resolve) : resolve()); });

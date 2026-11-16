@@ -2,16 +2,20 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { canAdminPage } from '../../../runtime/adminSession.js'
 import { LINE_PLACEMENT_TEMPLATES, canMoveLineStructure } from '../../../../../shared/linePlacementTemplate.mjs'
+import { isLineRailLengthAutomatic } from '../../../../../shared/lineRailLength.mjs'
 
 const props = defineProps({
   lines: { type: Array, default: () => [] }, workshops: { type: Array, default: () => [] },
   selectedId: { type: String, default: '' }, layout: { type: Object, required: true },
   draft: { type: Object, required: true }, busy: Boolean, creating: Boolean,
-  layoutDirty: Boolean, layoutSaving: Boolean,
+  layoutDirty: Boolean, layoutSaving: Boolean, guided: Boolean,
   savedSnapshot: { type: String, default: '' },
   deviceCount: { type: Number, default: 0 }, totalDevices: { type: Number, default: 0 }
 })
-const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'change-rail-spacing', 'choose-placement-template', 'save-layout', 'focus-item'])
+const emit = defineEmits(['select', 'delete', 'create', 'edit', 'add-item', 'remove-item', 'change-item', 'change-rail-spacing', 'choose-placement-template', 'save-layout', 'focus-item', 'docking-preview'])
+const guidedKind = ref('')
+const selectedGuidedKind = computed(() => guidedKind.value || props.layout.placementTemplate?.kind || 'single-negative')
+const guidedMode = computed(() => selectedGuidedKind.value === 'dual' ? 'dual' : 'single')
 const popup = ref(''), popupElement = ref(null), popupStyle = ref({}), modal = ref(''), modalElement = ref(null)
 const lineTrigger = ref(null), laneTrigger = ref(null), railTrigger = ref(null), createTrigger = ref(null)
 const lineQuery = ref(''), editDraft = ref({})
@@ -82,11 +86,11 @@ async function restoreItemField(id, field, event, type = popup.value) {
   const item = (type === 'rail' ? props.layout.rails : props.layout.lanes).find(item => item.id === id)
   if (item) event.target.value = item[field]
 }
-async function changeItem(id, field, event) {
+async function changeItem(id, field, event, preview = false) {
   if (field !== 'name' && event.target.value === '') return
   if (field === 'offsetZ' && !canMoveLineStructure(props.layout, popup.value, id)) { await restoreItemField(id, field, event); return }
-  if (!props.busy && canEdit.value) emit('change-item', { type: popup.value, id, field, value: event.target.value })
-  await restoreItemField(id, field, event)
+  if (!props.busy && canEdit.value) emit('change-item', { type: popup.value, id, field, value: event.target.value, ...(field === 'length' ? { preview } : {}) })
+  if (!preview) await restoreItemField(id, field, event)
 }
 async function changeSpacing(id, field, event) {
   const item = props.layout.rails.find(item => item.id === id)
@@ -139,7 +143,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', positionPopup); window.removeEventListener('scroll', positionPopup, true)
   resizeObserver?.disconnect()
 })
-defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?.({ preventScroll: true }) } })
+defineExpose({ openCreation: () => openModal('create'), editLine: line => openModal('edit', line), closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?.({ preventScroll: true }) } })
 </script>
 
 <template>
@@ -154,7 +158,14 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
     </div>
     <div v-if="selected" class="line-placement-templates" role="group" aria-label="产线布局模板">
       <div class="placement-heading"><strong>布局模板</strong><span>导轨固定 · 设备线围绕导轨摆放</span></div>
-      <div class="placement-options">
+      <div v-if="guided" class="placement-options guided-placement-options" role="group" aria-label="自动排布方式">
+        <button type="button" class="placement-option" :class="{ active: guidedMode === 'single' }" :aria-pressed="guidedMode === 'single'" :disabled="!canEdit || busy" @click="guidedKind = 'single-negative'">单侧</button>
+        <button type="button" class="placement-option" :class="{ active: guidedMode === 'dual' }" :aria-pressed="guidedMode === 'dual'" :disabled="!canEdit || busy" @click="guidedKind = 'dual'">双侧</button>
+        <select v-if="guidedMode === 'single'" :value="selectedGuidedKind" aria-label="单侧设备位置" :disabled="!canEdit || busy" @change="guidedKind = $event.target.value"><option value="single-negative">导轨上侧</option><option value="single-positive">导轨下侧</option></select>
+        <button type="button" class="btn btn-sm" title="根据已校准料口自动纠正朝向和靠轨距离，保留设备左右位置；先预览再应用" :disabled="!canEdit || busy || creating" @click="emit('choose-placement-template', selectedGuidedKind)">预览自动排布</button>
+        <button type="button" class="btn btn-sm" :disabled="busy || creating" @click="emit('docking-preview')">对接预览</button>
+      </div>
+      <div v-else class="placement-options">
         <button v-for="option in LINE_PLACEMENT_TEMPLATES" :key="option.id" type="button" class="placement-option" :class="{ active: layout.placementTemplate?.kind === option.id }" :aria-pressed="layout.placementTemplate?.kind === option.id" :disabled="!canEdit || busy || creating" @click="emit('choose-placement-template', option.id)">
           <svg viewBox="0 0 100 44" aria-hidden="true"><path v-if="option.id !== 'single-positive'" class="template-lane" d="M14 9h72"/><path class="template-rail" d="M8 20h84M8 24h84"/><path v-if="option.id !== 'single-negative'" class="template-lane" d="M14 35h72"/></svg>
           <span>{{ option.label }}</span><small>{{ option.id === 'dual' ? '第二条线受约束跟随' : '设备线在导轨一侧' }}</small>
@@ -193,7 +204,7 @@ defineExpose({ closeCreation: () => { modal.value = ''; modalReturnFocus?.focus?
             <span v-if="isNewItem(item.id)" class="new-item-corner"><span>新增</span></span>
             <div class="structure-field structure-name"><span>名称</span><input :value="item.name" :aria-label="`${item.name} 名称`" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'name', $event)" /></div>
             <div class="structure-field"><span>{{ canMoveLineStructure(layout, popup, item.id) ? '偏移Z（场景坐标）' : '固定基准 / 约束跟随' }}</span><input :value="item.offsetZ" :aria-label="`${item.name} 偏移Z`" type="number" step="0.5" class="input" :disabled="!canEdit || busy || !canMoveLineStructure(layout, popup, item.id)" @click.stop @input="changeItem(item.id, 'offsetZ', $event)" @change="restoreItemField(item.id, 'offsetZ', $event)" /></div>
-            <div class="structure-field"><span>长度（场景坐标）</span><input :value="item.length" :aria-label="`${item.name} 长度`" type="number" min="1" step="0.5" class="input" :disabled="!canEdit || busy" @click.stop @input="changeItem(item.id, 'length', $event)" @change="restoreItemField(item.id, 'length', $event)" /></div>
+            <div class="structure-field"><span>{{ popup === 'rail' && isLineRailLengthAutomatic(layout) ? '长度 · 自动跟随设备线' : '长度（场景坐标）' }}</span><input :value="item.length" :aria-label="`${item.name} 长度`" :title="popup === 'rail' && isLineRailLengthAutomatic(layout) ? '由有固定设备的设备线自动确定；双侧取较长排，无需单独填写' : ''" type="number" min="1" step="0.5" class="input" :disabled="!canEdit || busy || popup === 'rail' && isLineRailLengthAutomatic(layout)" @click.stop @input="changeItem(item.id, 'length', $event, true)" @change="changeItem(item.id, 'length', $event)" /></div>
             <div class="structure-row-actions"><button type="button" class="line-icon-button danger" :aria-label="`删除 ${item.name}`" title="删除" :disabled="!canEdit || busy || !!layout.placementTemplate" @click.stop="removeItem(item.id)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></svg></button></div>
           </div>
           <p v-if="!items.length" class="line-empty">暂无{{ itemLabel }}</p>

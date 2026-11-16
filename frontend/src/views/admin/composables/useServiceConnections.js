@@ -7,6 +7,7 @@ import { createServiceConnectionBridge } from '../../../runtime/serviceConnectio
 
 export const RESTART_RECEIPT_KEY = 'digital-twin-service-restart-receipt-v1'
 const names = { unity: 'Unity', devices: '设备采集', data: '数据服务', session: '登录状态' }
+const centerViews = { devices: 'points', data: 'overview' }
 const empty = () => Object.entries(names).map(([key, name]) => ({ key, name, label: '等待检测',
   detail: '尚未取得服务响应', tone: 'is-unknown', connected: false }))
 
@@ -45,12 +46,12 @@ export function createConnectionControl({ state, read, session, allow, native, b
     operation('unity', 'restart', '重启当前大屏（不重启采集）', native && runtimeEdit,
       native ? '需要运行配置编辑权限' : '仅桌面宿主支持', { dangerous: true })
     operation('devices', 'restart', '重启采集进程（不是 Windows 服务）', dataEdit, '需要采集配置编辑权限', { dangerous: true })
-    operation('devices', 'center', '打开采集运行中心', native && dataEdit, native ? '需要采集配置编辑权限' : '请在现场电脑打开运行中心')
+    operation('devices', 'center', '打开设备采集管理（状态 / 点位）', native && dataEdit, native ? '需要采集配置编辑权限' : '请在现场电脑打开运行中心')
     operation('data', 'reconnect', '重连当前大屏数据通道', native ? runtimeEdit : allow('view') && activeChannels() > 0,
       native ? '需要运行配置编辑权限' : '当前页面没有活跃数据通道')
-    operation('data', 'center', '打开运行中心（后台 / Windows 服务）', native && runtimeEdit,
+    operation('data', 'center', '打开数据服务管理（API / 数据库）', native && runtimeEdit,
       native ? '需要运行配置编辑权限' : '请在现场电脑打开运行中心')
-    operation('session', 'unlock', '返回登录 / 解锁', true, '')
+    operation('session', 'unlock', '重新解锁后台', typeof unlock === 'function', '当前页面未接入登录 / 解锁入口')
     return controls
   }
   async function run({ kind, action } = {}) {
@@ -72,16 +73,37 @@ export function createConnectionControl({ state, read, session, allow, native, b
         await session()
         if (!await refresh()) throw new Error('重新检测失败，已保留最近通信时间')
         state.feedback[kind] = { type: 'success', message: '已重新检测（未修改配置）' }
-      } else if (action === 'unlock') { await unlock() }
+      } else if (action === 'unlock') {
+        const opened = await unlock()
+        if (opened !== true) {
+          if (!disposed) state.feedback.session = { type: 'info', message: '未进入重新解锁页面；已保留当前登录与未保存修改' }
+          return false
+        }
+        // Opening the existing lock screen is not a successful re-authentication.
+        // It may have unmounted this controller; never apply late feedback then.
+        if (!disposed) state.feedback.session = { type: 'info', message: '已进入后台解锁页；认证结果以页面提示为准' }
+      }
       else if (action === 'reconnect') {
-        if (native) await bridge.request(kind === 'unity' ? 'unity_reconnect' : 'data_reconnect')
-        else await reconnect()
+        const receipt = native ? await bridge.request(kind === 'unity' ? 'unity_reconnect' : 'data_reconnect')
+          : await reconnect()
+        if (disposed) return false
+        // A dispatch-only or malformed response is not a confirmed new channel.
+        // Native confirms the current parent's Unity session; the web flow must
+        // have actually reconnected at least one already-active channel.
+        if (receipt?.success !== true || (native ? receipt.connected !== true
+          : !Number.isInteger(receipt.channels) || receipt.channels < 1))
+          throw new Error('新实时通道握手未确认，请重新检测；未报告重连成功')
         const snapshot = await refresh()
+        if (disposed) return false
         state.feedback[kind] = snapshot ? { type: 'success', message: '新实时通道握手已确认；设备状态以检测结果为准' }
           : { type: 'error', message: '新通道握手已确认，但服务状态检测失败；未确认服务恢复' }
       } else if (action === 'center') {
-        await bridge.request(kind === 'devices' ? 'collector_center_data' : 'collector_center_runtime')
-        state.feedback[kind] = { type: 'success', message: '运行中心已打开；服务操作仍需在运行中心确认' }
+        const result = await bridge.request(kind === 'devices' ? 'collector_center_data' : 'collector_center_runtime')
+        if (disposed) return false
+        if (result?.success !== true || result.opened !== true || result.view !== centerViews[kind]) throw new Error('运行中心未确认打开所选页面，请重试')
+        state.feedback[kind] = { type: 'info', message: kind === 'devices'
+          ? '已打开设备采集管理：采集状态 / 点位；不代表设备已恢复在线'
+          : '已打开数据服务管理：API / 数据库 / 数据通道；不代表服务已恢复正常' }
       } else if (kind === 'unity') {
         // Persist only a non-secret correlation id before the old WebView exits.
         const result = await bridge.request('unity_restart')
@@ -139,7 +161,7 @@ export function createConnectionControl({ state, read, session, allow, native, b
     dispose() { disposed = true; generation++; bridge?.dispose() } }
 }
 
-export function useServiceConnections({ confirm, prepareRestart }) {
+export function useServiceConnections({ confirm, prepareRestart, unlock }) {
   const state = reactive({ services: empty(), snapshot: null, busy: '', feedback: {} })
   const webview = window.chrome?.webview
   const native = window.location.pathname === '/admin' && Boolean(webview?.postMessage)
@@ -164,7 +186,7 @@ export function useServiceConnections({ confirm, prepareRestart }) {
     allow: kind => adminSession.authenticated && (kind === 'runtime' ? canAdminPage('settings.runtime', 'edit')
       : kind === 'data' ? canAdminApi('/api/engine/restart', 'POST') : canAdminApi('/api/system/connections/status')),
     scope: getFactoryScope, activeChannels: getActiveDashboardChannelCount, reconnect: reconnectActiveDashboardChannels, confirm, prepareRestart,
-    unlock: async () => { await refreshAdminSession(); webview?.postMessage({ type: 'host_action', action: 'show_admin' }) }, storage: window.localStorage })
+    unlock, storage: window.localStorage })
   const scopeChanged = () => { control.invalidate(); void control.refresh() }
   window.addEventListener(FACTORY_SCOPE_CHANGE_EVENT, scopeChanged)
   onUnmounted(() => { window.removeEventListener(FACTORY_SCOPE_CHANGE_EVENT, scopeChanged); control.dispose() })

@@ -36,12 +36,50 @@ test('unknown ports, wrong-facing single cart, unsupported diagonal rail and nea
   f=fixture();f.cartResult.device.instance_config.movement={start:{x:0,y:0,z:0},end:{x:10,y:0,z:1}};await assert.rejects(()=>prepareDockingCalibration(f,noAsset),/斜向/)
   f=fixture();const l=JSON.parse(f.line.layout_json);l.rails.push({id:'far',offsetZ:30,length:60});f.line.layout_json=JSON.stringify(l);f.cartResult.device.instance_config.railId='far';await assert.rejects(()=>prepareDockingCalibration(f,noAsset),/最近导轨/)
 })
-test('rotating simple cart turns its physical shared mouth around platform pivot on the back-side station',async()=>{
-  const f=fixture();f.cartResult.model.metadata.loadingPorts.outlet.direction=[0,0,1];f.cartResult.model.metadata.loadingPorts.outlet.position=[0,.75,1]
+
+test('read-only inspection shows both configured same-facing ports without inventing a turn or changing saved calibration',async()=>{
+  const f=fixture();f.cartResult.model.metadata.loadingPorts.outlet.direction=[0,0,1]
+  const before=structuredClone(f),p=await prepareDockingCalibration(f,{...noAsset,inspectionOnly:true})
+  assert.deepEqual(f,before)
+  assert.deepEqual(p.issues.map(issue=>issue.code),['PORTS_NOT_FACING'])
+  assert.equal(p.orientation.deviceTowardCart,true);assert.equal(p.orientation.cartTowardDevice,false)
+  assert.deepEqual(p.rows[0].portDirection,[0,0,1]);assert.deepEqual(p.rows[1].portDirection,[0,0,1])
+  assert.equal(p.cartTurn,null)
+  const matched={x:p.position.x,y:p.position.y-(p.devicePort[1]-p.cartPort[1])}
+  assert.equal(dockingPreview(p,matched).positionAligned,true)
+  assert.equal(dockingPreview(p,matched).aligned,false,'position-only agreement cannot conceal wrong-facing mouths')
+  assert.throws(()=>dockingSavePayload(p,matched),/只读检查/)
+  f.cartResult.model.metadata.loadingPorts.outlet=null
+  await assert.rejects(()=>prepareDockingCalibration(f,{...noAsset,inspectionOnly:true}),/未配置/,'missing ports still cannot be fabricated')
+})
+
+test('opposite directions are not sufficient when the mouths point away from one another',async()=>{
+  const f=fixture();f.deviceResult.model.metadata.loadingPorts.inlet.direction=[0,0,-1];f.cartResult.model.metadata.loadingPorts.outlet.direction=[0,0,1]
+  await assert.rejects(()=>prepareDockingCalibration(f,noAsset),/各自外侧/)
+  const p=await prepareDockingCalibration(f,{...noAsset,inspectionOnly:true})
+  assert.deepEqual(p.issues.map(issue=>issue.code),['PORTS_POINT_AWAY'])
+  assert.equal(p.orientation.deviceTowardCart,false);assert.equal(p.orientation.cartTowardDevice,false)
+})
+
+test('read-only inspection of yawed single cart uses the saved transformed normal, never a guessed opposite port',async()=>{
+  const f=fixture();f.cartResult.device.rotation_y=Math.PI/2
+  for(const kind of ['inlet','outlet']) f.cartResult.model.metadata.loadingPorts[kind]={position:[-1,1,0],direction:[-1,0,0],nodeName:'mouth'}
+  const before=structuredClone(f)
+  for(const cartKind of ['inlet','outlet']) {
+    const p=await prepareDockingCalibration({...f,cartKind},{...noAsset,inspectionOnly:true})
+    assert.equal(p.cartKind,cartKind);assert.equal(p.issues[0].code,'PORTS_NOT_FACING')
+    close(p.rows[1].portDirection[2],1);assert.equal(p.orientation.cartTowardDevice,false);assert.equal(p.cartTurn,null)
+  }
+  assert.deepEqual(f,before)
+})
+test('legacy simple flag preserves the selected model and cannot invent a rotated mouth',async()=>{
+  const f=fixture(),before=structuredClone(f)
   f.cartResult.device.instance_config.cartTransfer={version:1,kind:'rotating',presentation:'simple',turntableNodeName:''}
-  const root=new T.Group();root.add(new T.Mesh(new T.BoxGeometry(4,1,4)));let disposed=0
-  const p=await prepareDockingCalibration(f,{load:async()=>({scene:root}),dispose:()=>disposed++})
-  close(Math.abs(p.cartTurn.angle),Math.PI);close(p.rows[1].portPosition[2],-1);assert.deepEqual(p.rows[1].portDirection,[0,0,-1]);assert.equal(disposed,1)
+  const p=await prepareDockingCalibration(f,noAsset)
+  assert.equal(p.cartTurn,null);assert.deepEqual(p.rows[1].portDirection,[0,0,-1])
+  assert.deepEqual(f.cartResult.model,before.cartResult.model)
+  f.cartResult.model.metadata.loadingPorts.outlet.direction=[0,0,1]
+  await assert.rejects(()=>prepareDockingCalibration(f,noAsset),/没有相向/)
 })
 test('custom rotating platform uses actual parent/pivot and rejects missing or tilted axes',async()=>{
   const f=fixture();f.cartResult.model.metadata.loadingPorts.outlet.direction=[0,0,1];f.cartResult.device.instance_config.cartTransfer={version:1,kind:'rotating',presentation:'model',turntableNodeName:'platform'}

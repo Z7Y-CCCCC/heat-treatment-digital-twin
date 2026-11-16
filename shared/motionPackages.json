@@ -907,11 +907,11 @@
     },
     "cad_lifting_load_table_111400": {
       "sourcePath": "/assets/models/cad_lifting_load_table_111400.glb",
-      "sourceSha256": "dbe913f90575df3e64dd150c4ec4a7b4fe9dab26a267aa7b7987d33798b6af5a",
+      "sourceSha256": "2a0fab6db631b3642bbfa81cf4be90ec8c127f62d036851b266d5e830b51fffe",
       "rigPath": "/assets/motions/cad_lifting_load_table_111400.glb",
       "rigSha256": "7d9a72cb018ff7f4908bbc78b18df503fbd170cc8f54bd45310e6699185474ac",
       "clipPath": "/assets/motions/cad_lifting_load_table_111400.json",
-      "clipSha256": "35da364586d260664df4cecc72629b5d097505ed085cd354377a2e9c14d34838",
+      "clipSha256": "65d3e2ef24273b69e6cfcd3717c5fc28710626312ca4c9f427d42978229e008f",
       "actions": [
         {
           "id": "lift_up",

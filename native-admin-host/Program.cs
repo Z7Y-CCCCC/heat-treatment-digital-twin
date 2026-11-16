@@ -74,6 +74,7 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (UiOriginStorageMigration.TryRun(args)) return;
         if (HeatTreatment.Shared.DependencyArchive.TryRun(args, out var archiveExitCode))
         {
             Environment.ExitCode = archiveExitCode;

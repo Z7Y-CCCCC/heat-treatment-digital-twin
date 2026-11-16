@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerSaveBlocker, shell, Tray } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, powerSaveBlocker, session, shell, Tray } = require('electron');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -11,9 +11,10 @@ const { MysqlRuntime } = require('./mysqlRuntime.cjs');
 const { retryFilesystem, publishDirectory } = require('./directoryPublish.cjs');
 const { seedTemplateConfiguration } = require('./templateData.cjs');
 const { deploymentFile, resolveDeployment, saveDeployment } = require('./deployment.cjs');
+const { resolveCollectorStartupPolicy } = require('./collectorStartupPolicy.cjs');
 const { runStartupActivation } = require('./activation.cjs');
 const { resolveNativeClientPath, validateNativeClientFiles } = require('./nativeClientPath.cjs');
-const { createServiceControl } = require('./serviceControl.cjs');
+const { createServiceControl, collectorCenterArguments } = require('./serviceControl.cjs');
 const {
     cleanupLogArchives,
     createRotatingLogWriter
@@ -527,53 +528,93 @@ function findAvailablePort(startPort = 3001) {
     });
 }
 
-function waitForHealth(url, timeoutMs = 30000, processToWatch = null) {
+function waitForHealth(url, timeoutMs = 30000, processToWatch = null, hardBudget = false) {
     const deadline = Date.now() + timeoutMs;
     return new Promise((resolve, reject) => {
+        let budgetFinished = false, deadlineTimer = null;
+        const activeRequests = new Set(), retryTimers = new Set();
+        const timeoutError = () => new Error(hardBudget
+            ? `等待本机采集服务就绪超过 5 分钟（${url}）；未自动重启服务，请查看采集服务日志后重试`
+            : (deployment.mode === 'client'
+                ? `无法连接采集服务 ${url}，请检查服务端是否运行、地址与防火墙设置`
+                : '本地服务启动超时'));
+        const finish = (error = null) => {
+            if (hardBudget) {
+                if (budgetFinished) return;
+                budgetFinished = true;
+                clearTimeout(deadlineTimer);
+                for (const timer of retryTimers) clearTimeout(timer);
+                for (const request of activeRequests) request.destroy();
+            }
+            if (error) reject(error); else resolve();
+        };
+        // The extended local-service wait must also end if a response keeps
+        // trickling bytes; the socket inactivity timer is not a total budget.
+        if (hardBudget) deadlineTimer = setTimeout(() => finish(timeoutError()), timeoutMs);
         const check = () => {
+            if (hardBudget && budgetFinished) return;
+            let attemptRetried = false;
+            const retryAttempt = () => {
+                // A destroyed/aborted HTTP response may emit errors on both
+                // request and response. Do not multiply local-service probes.
+                if (hardBudget) {
+                    if (budgetFinished || attemptRetried) return;
+                    attemptRetried = true;
+                }
+                retry();
+            };
             if (processToWatch && (
                 processToWatch.killed
                 || processToWatch.exitCode !== null
                 || processToWatch.signalCode
             )) {
-                reject(new Error('后端进程在健康探测完成前已退出'));
+                finish(new Error('后端进程在健康探测完成前已退出'));
                 return;
             }
             const transport = new URL(url).protocol === 'https:' ? https : http;
             const request = transport.get(url, (response) => {
+                if (hardBudget && budgetFinished) { response.destroy?.(); return; }
                 let body = '';
                 response.setEncoding('utf8');
                 response.on('data', chunk => {
                     body += chunk;
                     if (body.length > 1024 * 1024) request.destroy(new Error('健康响应超过大小限制'));
                 });
-                response.on('error', retry);
+                response.on('error', retryAttempt);
                 response.on('end', () => {
+                    if (hardBudget && budgetFinished) return;
+                    if (hardBudget && Date.now() >= deadline) { finish(timeoutError()); return; }
                     try {
                         const health = JSON.parse(body);
                         // HTTP listening is not database readiness: startup
                         // migrations may still be importing large documents.
                         if (response.statusCode === 200 && health.status === 'ok' && health.db?.connected === true) {
                             if (deployment.mode === 'client' && (health.runtime?.role !== 'collector' || health.runtime?.owner !== 'windows-service' || health.runtime?.serviceName !== 'HeatTreatmentCollector')) {
-                                reject(new Error('连接地址不是独立采集服务，拒绝连接旧大屏内的数据进程')); return;
+                                finish(new Error('连接地址不是独立采集服务，拒绝连接旧大屏内的数据进程')); return;
                             }
-                            resolve(); return;
+                            finish(); return;
                         }
                     } catch { /* Retry incomplete or invalid responses. */ }
-                    retry();
+                    retryAttempt();
                 });
             });
+            if (hardBudget) {
+                activeRequests.add(request);
+                request.once('close', () => activeRequests.delete(request));
+            }
             request.setTimeout(1500, () => request.destroy());
-            request.on('error', retry);
+            request.on('error', retryAttempt);
         };
         const retry = () => {
+            if (hardBudget && budgetFinished) return;
             if (Date.now() >= deadline) {
-                reject(new Error(deployment.mode === 'client'
-                    ? `无法连接采集服务 ${url}，请检查服务端是否运行、地址与防火墙设置`
-                    : '本地服务启动超时'));
+                finish(timeoutError());
                 return;
             }
-            setTimeout(check, 300);
+            if (hardBudget) {
+                const timer = setTimeout(() => { retryTimers.delete(timer); check(); }, 300);
+                retryTimers.add(timer);
+            } else setTimeout(check, 300);
         };
         check();
     });
@@ -586,7 +627,7 @@ function isLoopbackAddress(address) {
 function startDesktopControlServer() {
     if (desktopControlServer) return Promise.resolve(desktopControlOrigin);
     desktopControlToken = crypto.randomBytes(32).toString('hex');
-    const serviceControl = createServiceControl({ restart: restartNativeClient, openCenter: () => showCollectorCenter({ strict: true }) });
+    const serviceControl = createServiceControl({ restart: restartNativeClient, openCenter: options => showCollectorCenter({ strict: true, ...options }) });
     desktopControlServer = http.createServer((request, response) => {
         const pathname = new URL(request.url || '/', 'http://127.0.0.1').pathname;
         if (request.method === 'GET' && pathname === '/health') {
@@ -1503,17 +1544,28 @@ function createTray() {
     updateTrayMenu();
 }
 
-async function showCollectorCenter({ strict = false } = {}) {
+async function showCollectorCenter({ strict = false, view } = {}) {
+    const args = collectorCenterArguments(view);
+    const workspaceUi = !app.isPackaged && process.argv.includes('--workspace-ui');
     let executable;
-    try { executable = require('./collectorLocation.cjs').collectorCenterExecutable({ projectRoot: app.isPackaged ? null : path.resolve(__dirname, '..') }); }
+    try { executable = workspaceUi
+        ? require('./scripts/ensure-workspace-collector-center.cjs').ensureWorkspaceCollectorCenter().executable
+        : require('./collectorLocation.cjs').collectorCenterExecutable({ projectRoot: app.isPackaged ? null : path.resolve(__dirname, '..') }); }
     catch (error) {
         if (strict) throw error;
         await dialog.showMessageBox({ type: 'info', title: '采集运行中心', message: error.message, buttons: ['确定'] }); return;
     }
-    await new Promise((resolve, reject) => {
+    return await new Promise((resolve, reject) => {
         // Independent native process; do not supervise it as a display child.
-        const child = spawn(executable, [], { windowsHide: false, stdio: 'ignore', detached: true });
-        child.once('error', reject); child.once('spawn', () => { child.unref(); resolve(); });
+        const child = spawn(executable, args, { windowsHide: !!view, stdio: view ? ['ignore', 'pipe', 'ignore'] : 'ignore', detached: true,
+            env: { ...process.env, DIGITAL_TWIN_WORKSPACE_CENTER: workspaceUi ? '1' : '' } });
+        if (!view) { child.once('error', reject); child.once('spawn', () => { child.unref(); resolve({ opened: true }); }); return; }
+        let output = '', settled = false;
+        const finish = error => { if (settled) return; settled = true; clearTimeout(timer); child.unref(); error ? reject(error) : resolve({ opened: true, view }); };
+        const timer = setTimeout(() => { try { child.kill(); } catch { } finish(new Error('运行中心选页超时，请同步界面版本后重试')); }, 12000);
+        child.stdout.on('data', chunk => { if (output.length < 4096) output += chunk.toString().slice(0, 4096 - output.length); });
+        child.once('error', finish);
+        child.once('close', code => finish(code === 0 && output.trim() === `COLLECTOR_CENTER_VIEW:${view}` ? null : new Error('运行中心未确认所选视角，请同步界面版本后重试')));
     });
 }
 
@@ -1696,6 +1748,13 @@ async function launchApplication() {
         displayGateway = await require('./displayGateway.cjs').startDisplayGateway({ backendOrigin: deployment.backendOrigin,
             portFile: path.join(app.getPath('userData'),'ui-gateway.json'),
             frontendDir: app.isPackaged ? resourcePath('frontend') : path.resolve(__dirname, '..', 'frontend', 'dist') });
+        if (displayGateway.originMigration) {
+            updateStartupProgress('ui-origin-recovery', 28, '正在自动更换界面端口', '保留并校验本地草稿和界面设置');
+            await require('./uiOriginRecovery.cjs').recoverUiOrigin({ BrowserWindow, browserSession: session.defaultSession,
+                profileRoot: app.getPath('userData'), migration: displayGateway.originMigration,
+                nativeHostExecutable: nativeAdminHostExecutable() });
+            await displayGateway.completeOriginMigration();
+        }
     }
     const origin = deployment.mode === 'client' ? displayGateway.origin : `http://127.0.0.1:${port}`;
     applicationOrigin = origin;
@@ -1706,8 +1765,13 @@ async function launchApplication() {
     await startDesktopControlServer();
     updateStartupProgress('backend', 41, '正在启动数据服务', '连接配置数据库并载入现场配置');
     const initialBackendProcess = deployment.mode === 'client' ? null : await startBackend(port, writable);
-    updateStartupProgress('backend-health', 50, '正在检查数据服务', `等待 ${origin} 响应`);
-    await waitForHealth(`${origin}/api/health`, deployment.mode === 'client' ? 15000 : 60000, initialBackendProcess);
+    const startupHealthPolicy = resolveCollectorStartupPolicy(deployment);
+    updateStartupProgress('backend-health', 50,
+        startupHealthPolicy.installedLocalCollector ? '正在等待本机采集服务就绪' : '正在检查数据服务',
+        startupHealthPolicy.installedLocalCollector
+            ? `等待 ${deployment.backendOrigin} 完成就绪（最多 5 分钟）；仅等待，不自动重启服务`
+            : `等待 ${origin} 响应`);
+    await waitForHealth(`${origin}/api/health`, startupHealthPolicy.timeoutMs, initialBackendProcess, startupHealthPolicy.hardBudget);
     // Licensing precedes Unity, account creation and the original login flow.
     // The local collector owns the fingerprint and license even when the UI is
     // running as a normal user without write access to service data directories.

@@ -56,15 +56,15 @@ async function focusPassword() {
 async function refreshLoginChoices() {
     const request = ++usernameChoicesGeneration
     usernameEdited = false
-    if (adminSession.user?.username) username.value = adminSession.user.username
+    if (!adminSession.displayOnly && adminSession.user?.username) username.value = adminSession.user.username
     try {
         const choices = await listAdminLoginChoices()
         if (request !== usernameChoicesGeneration) return
-        const names = [...new Set([adminSession.user?.username, ...choices.recentUsernames,
+        const names = [...new Set([!adminSession.displayOnly && adminSession.user?.username, ...choices.recentUsernames,
             ...choices.accounts.map(account => account.user?.username)].filter(isValidUsername))].slice(0, 8)
         recentUsernames.value = names
         // A delayed history response must not replace a username being typed.
-        if (!usernameEdited && !busy.value) username.value = adminSession.user?.username
+        if (!usernameEdited && !busy.value) username.value = (!adminSession.displayOnly && adminSession.user?.username)
             || (isValidUsername(choices.lastUsername) ? choices.lastUsername : names[0]) || 'admin'
     } catch { /* History is a convenience, not a prerequisite for password login. */ }
 }

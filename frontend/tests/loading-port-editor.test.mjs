@@ -31,7 +31,7 @@ async function fixture(t, options = {}) {
   const env = installBrowser(t), before = { authenticated: adminSession.authenticated, pagePermissions: adminSession.pagePermissions }
   Object.assign(adminSession, { authenticated: true, pagePermissions: normalizePagePermissions({ models: { view: true, edit: options.modelEdit !== false }, devices: { view: true, edit: options.deviceEdit !== false } }) })
   t.after(() => Object.assign(adminSession, before))
-  const calls = { modelLoads: [], deviceLoads: [], modelSaves: [], deviceSaves: [], previews: [], confirmations: [], events: [] }
+  const calls = { modelLoads: [], deviceLoads: [], modelSaves: [], deviceSaves: [], previews: [], confirmations: [], events: [], drawingRequests: [], dockingRequests: [] }
   const api = {
     getModelLoadingPorts(id, request) { calls.modelLoads.push({ id, request }); return options.loadModel ? options.loadModel(id, request) : Promise.resolve(modelResult(id, options.ports || ports())) },
     getDeviceLoadingPorts(id, request) { calls.deviceLoads.push({ id, request }); return options.loadDevice ? options.loadDevice(id, request) : Promise.resolve(deviceResult(id, options.overrides || empty(), options.ports || ports())) },
@@ -43,18 +43,22 @@ async function fixture(t, options = {}) {
     else { const previous = Object.getOwnPropertyDescriptor(adminApi, key); Object.defineProperty(adminApi, key, { value: fn, configurable: true, writable: true }); t.after(() => previous ? Object.defineProperty(adminApi, key, previous) : delete adminApi[key]) }
   }
   class Preview {
-    constructor(container, handlers) { this.handlers = handlers; calls.previews.push(this); handlers.onRegionState?.(false) }
+    constructor(container, handlers) { this.handlers = handlers; this.active=true;this.picking=false;this.regionMode=false;calls.previews.push(this); handlers.onRegionState?.(false) }
     async load(record, request) { this.model = record; this.request = request; if (options.previewLoad) return options.previewLoad(record, request); return [{ id: 'mouth', name: 'mouth', path: 'mouth', meshCount: 1 }] }
     dispose() { this.disposed = true }
     setPorts(value, candidate, kind) { this.ports = value; this.suggestion = candidate; this.kind = kind }
-    setPicking(value) { this.picking = value; (this.pickHistory ||= []).push(value) }
+    setPicking(value) { this.picking = !!value&&this.active; (this.pickHistory ||= []).push(this.picking);if(!this.picking)this.cancelRegion() }
+    setRegionMode(value) { this.regionMode=!!value&&this.active;(this.regionHistory ||= []).push(this.regionMode);this.cancelRegion() }
+    setActive(value) { this.active=!!value;this.paused=!this.active;(this.activeHistory ||= []).push(this.active);if(!this.active){this.picking=false;this.regionMode=false;this.cancelRegion()} }
+    cancelRegion() { this.cancelled=(this.cancelled||0)+1;this.handlers.onRegionState?.(false) }
+    escape() {if(!this.active||!this.regionMode)return;this.setRegionMode(false);this.setPicking(false);this.handlers.onDrawingExit?.()}
     selectNode(id) { this.selection = id }
     nodePoint(id, bottom) { return id ? { position: [5, bottom ? 1 : 7, 4], nodeName: id } : null }
     infer() { this.inferred = true; return options.suggestion === null ? null : options.suggestion || { position: [9, 1.25, 0], direction: [1, 0, 0], nodeName: 'mouth_frame' } }
   }
   env.replace('__loadingPortPreview', Preview)
   const renderer = createRenderer({ createElement: () => ({}), createText: () => ({}), createComment: () => ({}), setText() {}, setElementText() {}, parentNode: () => null, nextSibling: () => null, patchProp() {}, insert() {}, remove() {} })
-  const root = {}, props = { model: model(), device: null, confirm: async text => { calls.confirmations.push(text); return options.confirm !== false }, onSaved: result => calls.events.push(result), ...options.props }
+  const root = {}, props = { model: model(), device: null, confirm: async text => { calls.confirmations.push(text); return options.confirm !== false }, onSaved: result => calls.events.push(result), onRequestDrawing:()=>calls.drawingRequests.push(true),onToggleDocking:()=>calls.dockingRequests.push(true), ...options.props }
   let vnode
   const render = async (next = {}) => { Object.assign(props, next); vnode = h(Editor, { ...props }); renderer.render(vnode, root); await nextTick(); await settle() }
   env.beforeRestore(() => renderer.render(null, root))
@@ -68,18 +72,88 @@ test('loading an unconfigured model never infers, saves or changes metadata auto
   const f = await fixture(t, { ports: empty(), preview: true })
   assert.deepEqual(f.vm.draft, empty()); assert.equal(f.vm.dirty, false)
   assert.equal(f.calls.modelSaves.length, 0); assert.equal(f.calls.previews[0].inferred, undefined)
-  assert.equal(f.vm.picking, true); assert.equal(f.calls.previews[0].picking, true)
+  assert.equal(f.vm.picking, true); assert.equal(f.vm.regionMode,false);assert.equal(f.calls.previews[0].picking, false);assert.equal(f.calls.previews[0].regionMode,false)
   assert.equal(f.calls.modelLoads[0].request.signal.aborted, false)
   assert.equal(f.calls.previews[0].model.file_path, '/m.glb')
+  const runtime=f.calls.previews[0],before=JSON.stringify(f.props.model)
+  runtime.handlers.onSurface({position:[99,99,99]});runtime.handlers.onRegion(regionPort());runtime.handlers.onRegionState(true);runtime.handlers.onRegionError('unexpected idle error')
+  assert.deepEqual(f.vm.draft,empty());assert.equal(f.vm.dirty,false);assert.equal(f.vm.regionSelecting,false);assert.equal(f.vm.error,'')
+  assert.equal(f.calls.modelSaves.length,0);assert.equal(f.calls.deviceSaves.length,0);assert.equal(JSON.stringify(f.props.model),before)
+})
+
+test('configured legacy points remain untouched by idle surface, region, pending-state or error callbacks', async t => {
+  const f=await fixture(t,{preview:true}),runtime=f.calls.previews[0],before=JSON.stringify({draft:f.vm.draft,model:f.props.model})
+  assert.equal(f.vm.regionMode,false);assert.equal(runtime.picking,false)
+  runtime.handlers.onSurface({position:[99,88,77],direction:[0,0,1]});runtime.handlers.onRegion(regionPort())
+  runtime.handlers.onRegionState(true);runtime.handlers.onRegionError('idle callback must not show an error')
+  assert.equal(JSON.stringify({draft:f.vm.draft,model:f.props.model}),before);assert.equal(f.vm.regionSelecting,false)
+  assert.equal(f.vm.error,'');assert.equal(f.vm.dirty,false);assert.equal(await f.exposed.savePending(),true)
+  assert.equal(f.calls.modelSaves.length,0);assert.equal(f.calls.deviceSaves.length,0);assert.equal(f.calls.events.length,0)
+})
+
+test('repeating the drawing button and Escape cancel only the unfinished gesture and preserve completed drafts', async t => {
+  const f=await fixture(t,{preview:true}),runtime=f.calls.previews[0],before=JSON.parse(JSON.stringify(f.vm.draft))
+  f.vm.requestDrawing();assert.equal(f.vm.regionMode,true);assert.equal(runtime.picking,true);assert.equal(f.vm.dirty,false)
+  runtime.handlers.onRegionState(true);assert.equal(f.vm.regionSelecting,true);assert.equal(f.vm.dirty,true)
+  f.vm.requestDrawing();assert.equal(f.vm.regionMode,false);assert.equal(runtime.picking,false);assert.equal(f.vm.regionSelecting,false)
+  assert.deepEqual(f.vm.draft,before);assert.equal(f.vm.dirty,false)
+  f.vm.requestDrawing();runtime.escape();assert.equal(f.vm.regionMode,false);assert.equal(runtime.picking,false)
+  assert.equal(f.vm.dirty,false);assert.deepEqual(f.vm.draft,before)
+  f.vm.requestDrawing();runtime.handlers.onRegionState(true);runtime.escape()
+  assert.equal(f.vm.regionSelecting,false);assert.equal(f.vm.dirty,false);assert.deepEqual(f.vm.draft,before)
+  f.vm.requestDrawing();runtime.handlers.onRegion(regionPort())
+  const completed=JSON.parse(JSON.stringify(f.vm.draft));assert.equal(f.vm.regionMode,false);assert.equal(f.vm.dirty,true)
+  f.vm.requestDrawing();runtime.handlers.onRegionState(true);runtime.escape()
+  assert.deepEqual(f.vm.draft,completed);assert.equal(f.vm.regionSelecting,false);assert.equal(f.vm.regionMode,false);assert.equal(f.vm.dirty,true)
+  assert.equal(f.calls.modelSaves.length,0);assert.equal(f.calls.deviceSaves.length,0)
+})
+
+test('switching inlet/outlet and explicitly reloading config reset drawing to browsing without moving the other port', async t => {
+  const f=await fixture(t,{preview:true}),runtime=f.calls.previews[0],original=JSON.parse(JSON.stringify(f.vm.draft.inlet))
+  f.vm.requestDrawing();runtime.handlers.onRegionState(true);assert.equal(f.vm.dirty,true)
+  f.vm.activeKind='outlet';await nextTick()
+  assert.equal(f.vm.regionMode,false);assert.equal(runtime.picking,false);assert.equal(f.vm.regionSelecting,false)
+  assert.equal(f.vm.dirty,false);assert.deepEqual(f.vm.draft.inlet,original);assert.equal(f.vm.draft.outlet,null)
+  runtime.handlers.onRegion(regionPort());runtime.handlers.onSurface({position:[99,99,99]})
+  assert.equal(f.vm.draft.outlet,null);assert.equal(f.vm.dirty,false)
+  f.vm.requestDrawing();runtime.handlers.onRegion(regionPort())
+  assert.deepEqual(f.vm.draft.outlet,regionPort());assert.deepEqual(f.vm.draft.inlet,original);assert.equal(f.vm.regionMode,false)
+  assert.equal(await f.vm.reloadConfig(),true);await settle()
+  assert.equal(runtime.disposed,true);assert.equal(f.calls.previews.at(-1).picking,false);assert.equal(f.vm.regionMode,false)
+  assert.equal(f.vm.regionSelecting,false);assert.deepEqual(f.vm.draft,ports());assert.equal(f.calls.modelLoads.length,2)
+  assert.equal(f.calls.modelSaves.length,0);assert.equal(f.calls.deviceSaves.length,0)
+})
+
+test('docking replaces only the right preview, pauses the same model renderer and returns with its draft and camera intact', async t => {
+  const f=await fixture(t,{preview:true,props:{dockingAvailable:true}}),runtime=f.calls.previews[0]
+  f.vm.requestDrawing();runtime.handlers.onRegion(regionPort());runtime.camera={position:[9,8,7],target:[1,2,3]}
+  const before=JSON.stringify({draft:f.vm.draft,model:f.props.model,camera:runtime.camera}),signature=f.vm.savedSignature
+  assert.equal(f.vm.dirty,true);await f.render({dockingPreview:true})
+  assert.equal(f.calls.previews.length,1);assert.equal(runtime.disposed,undefined);assert.equal(runtime.active,false);assert.equal(runtime.paused,true)
+  assert.equal(runtime.picking,false);assert.equal(f.vm.picking,false);assert.equal(f.vm.regionMode,false);assert.equal(f.vm.regionSelecting,false)
+  runtime.handlers.onSurface({position:[99,99,99]});runtime.handlers.onRegion({...regionPort(),nodeName:'hidden'})
+  runtime.handlers.onRegionState(true);runtime.handlers.onRegionError('hidden model error')
+  assert.equal(f.vm.error,'');assert.equal(f.vm.regionSelecting,false)
+  assert.equal(f.vm.setDrawing(true),false);assert.equal(await f.vm.save(),false)
+  f.vm.requestDrawing();assert.deepEqual(f.calls.drawingRequests,[true]);assert.equal(f.vm.regionMode,false)
+  assert.equal(JSON.stringify({draft:f.vm.draft,model:f.props.model,camera:runtime.camera}),before)
+  await f.render({dockingPreview:false})
+  assert.equal(f.calls.previews.length,1);assert.equal(runtime.active,true);assert.equal(runtime.paused,false)
+  assert.equal(runtime.picking,false);assert.equal(f.vm.regionMode,false);assert.equal(f.vm.dirty,true)
+  assert.equal(f.vm.savedSignature,signature);assert.equal(JSON.stringify({draft:f.vm.draft,model:f.props.model,camera:runtime.camera}),before)
+  assert.equal(f.calls.modelLoads.length,1);assert.equal(f.calls.modelSaves.length,0);assert.equal(f.calls.deviceSaves.length,0)
+  f.vm.requestDrawing();assert.equal(f.vm.regionMode,true);assert.equal(runtime.picking,true)
 })
 test('real region callback writes model lower-edge datum, saves explicitly and reloads identical corners', async t => {
-  const f=await fixture(t,{ports:empty(),preview:true}),p=regionPort();f.calls.previews[0].handlers.onRegion(p)
+  const f=await fixture(t,{ports:empty(),preview:true}),p=regionPort();assert.equal(f.vm.setDrawing(true),true);f.calls.previews[0].handlers.onRegion(p)
   assert.deepEqual(f.vm.draft.inlet,p);assert.equal(f.vm.dirty,true);assert.equal(f.calls.modelSaves.length,0)
+  assert.equal(f.vm.regionMode,false);assert.equal(f.calls.previews[0].picking,false);assert.equal(f.calls.previews[0].regionMode,false)
   assert.deepEqual(f.vm.effectivePort.position,[2,1,3]);assert.equal(await f.vm.save(),true)
   assert.deepEqual(f.calls.modelSaves[0].body.ports.inlet,p);assert.deepEqual(f.vm.loaded.ports.inlet,p);assert.equal(f.vm.dirty,false)
 })
 test('partial selection is dirty, cannot be saved and explicit cancellation leaves stored ports untouched', async t => {
   const f=await fixture(t,{preview:true}),runtime=f.calls.previews[0],before=JSON.parse(JSON.stringify(f.vm.draft))
+  assert.equal(f.vm.setDrawing(true),true)
   runtime.handlers.onRegionState(true);assert.equal(f.vm.dirty,true);assert.equal(await f.vm.save(),false);assert.equal(f.calls.modelSaves.length,0)
   f.vm.setDrawing(false);assert.equal(f.vm.regionSelecting,false);assert.equal(f.vm.dirty,false);assert.deepEqual(f.vm.draft,before)
 })
@@ -101,6 +175,7 @@ test('model save submits only revision and canonical ports, preserving metadata 
 test('real surface picking retains exact local XYZ and existing horizontal direction', async t => {
   const f = await fixture(t, { preview: true })
   f.vm.setDirection([0, 0, -1]); await nextTick()
+  assert.equal(f.vm.setDrawing(true),true)
   f.calls.previews[0].handlers.onSurface({ position: [4, 1.111, -9], nodeName: 'true_surface', direction: [1, 0, 0] })
   assert.deepEqual(f.vm.row, { position: [4, 1.111, -9], direction: [0, 0, -1], nodeName: 'true_surface' }); assert.equal(f.vm.picking, true)
   assert.match(f.vm.message, /送料基准高度/)
@@ -109,10 +184,13 @@ test('real surface picking retains exact local XYZ and existing horizontal direc
   assert.equal(f.calls.modelSaves.length, 0, 'surface clicks only change a draft')
 })
 
-test('choosing either optional port immediately picks one point without enabling or fabricating an origin', async t => {
+test('choosing either optional port returns to browsing and explicit drawing can pick without fabricating an origin', async t => {
   const f = await fixture(t, { ports: empty(), preview: true }), runtime = f.calls.previews[0]
   f.vm.setEnabled(true); assert.deepEqual(f.vm.draft, empty()); assert.equal(f.vm.dirty, false)
-  f.vm.activeKind = 'outlet'; await nextTick(); assert.equal(runtime.picking, true)
+  assert.equal(runtime.picking,true,'compatibility enabling helper explicitly arms drawing')
+  f.vm.activeKind = 'outlet'; await nextTick(); assert.equal(runtime.picking, false);assert.equal(f.vm.regionMode,false)
+  runtime.handlers.onSurface({ position: [99,99,99] });assert.deepEqual(f.vm.draft,empty())
+  assert.equal(f.vm.setDrawing(true),true);assert.equal(runtime.picking,true)
   runtime.handlers.onSurface({ position: [7, 1.75, 4], nodeName: 'outlet_edge', direction: [0, 0, -2] })
   assert.equal(f.vm.draft.inlet, null)
   assert.deepEqual(f.vm.draft.outlet, { position: [7, 1.75, 4], direction: [0, 0, -1], nodeName: 'outlet_edge' })
@@ -127,6 +205,7 @@ test('choosing either optional port immediately picks one point without enabling
 
 test('invalid point coordinates cannot create or replace a port, and missing surface direction keeps a compatible default', async t => {
   const f = await fixture(t, { ports: empty(), preview: true }), runtime = f.calls.previews[0]
+  assert.equal(f.vm.setDrawing(true),true)
   for (const position of [[1, 2], [1, '', 3], [1, Infinity, 3], [1, NaN, 3]]) runtime.handlers.onSurface({ position })
   assert.equal(f.vm.row, null); assert.equal(f.vm.dirty, false)
   runtime.handlers.onSurface({ position: [5, 2, 7], direction: [0, 1, 0] })
@@ -222,20 +301,29 @@ test('old preview callbacks cannot set a point after an object switch or after u
   const f = await fixture(t, { ports: empty(), preview: true }), old = f.calls.previews[0]
   await f.render({ model: model('new') }); await settle()
   const latest = f.calls.previews.at(-1); assert.notEqual(latest, old); assert.equal(old.disposed, true)
+  assert.equal(latest.picking,false);assert.equal(f.vm.regionMode,false)
   old.handlers.onSurface({ position: [99, 99, 99] })
+  old.handlers.onRegion(regionPort());old.handlers.onRegionState(true);old.handlers.onRegionError('stale error')
   assert.equal(f.vm.row, null); assert.equal(f.vm.dirty, false)
+  assert.equal(f.vm.regionSelecting,false);assert.equal(f.vm.error,'')
+  assert.equal(f.vm.setDrawing(true),true)
   latest.handlers.onSurface({ position: [8, 1.25, 3] }); assert.deepEqual(f.vm.row.position, [8, 1.25, 3])
   const before = JSON.parse(JSON.stringify(f.vm.draft)); f.unmount(); latest.handlers.onSurface({ position: [9, 9, 9] })
+  latest.handlers.onRegion(regionPort());latest.handlers.onRegionState(true);latest.handlers.onRegionError('unmounted error')
   assert.deepEqual(f.vm.draft, before)
 })
 
-test('a loading preview cannot emit edits and becomes continuously pickable only after the model is ready', async t => {
+test('a loading preview cannot emit edits or arm drawing, and a ready model stays in browsing until explicitly armed', async t => {
   const pending = deferred(), f = await fixture(t, { ports: empty(), previewLoad: () => pending.promise })
   f.vm.viewport = {}; const work = f.vm.preparePreview(); await nextTick()
   const runtime = f.calls.previews[0]; assert.ok(runtime); assert.equal(f.vm.previewLoading, true); assert.equal(f.vm.picking, false)
+  assert.equal(f.vm.setDrawing(true),false);assert.equal(f.vm.regionMode,false)
   runtime.handlers.onSurface({ position: [8, 8, 8] }); assert.equal(f.vm.row, null)
   pending.resolve([{ id: 'mouth', name: 'mouth', path: 'mouth', meshCount: 1 }]); await work; await nextTick()
-  assert.equal(runtime.picking, true)
+  assert.equal(runtime.picking, false);assert.equal(f.vm.regionMode,false)
+  runtime.handlers.onSurface({position:[99,99,99]});runtime.handlers.onRegion(regionPort());runtime.handlers.onRegionState(true);runtime.handlers.onRegionError('idle error')
+  assert.deepEqual(f.vm.draft,empty());assert.equal(f.vm.dirty,false);assert.equal(f.vm.error,'');assert.equal(f.calls.modelSaves.length,0)
+  assert.equal(f.vm.setDrawing(true),true);assert.equal(runtime.picking,true)
   runtime.handlers.onSurface({ position: [4, 1.25, 2] }); assert.deepEqual(f.vm.row.position, [4, 1.25, 2])
 })
 
@@ -267,7 +355,7 @@ test('instance mode applies offsets and yaw to model defaults without saving mod
   assert.equal(f.vm.row, null); assert.deepEqual(f.vm.effectivePort, port())
   f.vm.setEnabled(true); f.vm.row.offset = [1, .25, -2]; f.vm.row.yawDegrees = 90
   assert.deepEqual(f.vm.effectivePort.position, [11, 2.25, 1]); assert.ok(Math.abs(f.vm.effectivePort.direction[0]) < 1e-10); assert.equal(f.vm.effectivePort.direction[2], -1)
-  assert.equal(await f.exposed.savePending(), true); assert.deepEqual(f.calls.deviceSaves[0].body, { revision: 'revision-d', signals: { version: 1, inletPointId: null, outletPointId: null }, overrides: { ...empty(), inlet: { offset: [1, .25, -2], yawDegrees: 90 } } })
+  assert.equal(await f.exposed.savePending(), true); assert.deepEqual(f.calls.deviceSaves[0].body, { revision: 'revision-d', overrides: { ...empty(), inlet: { offset: [1, .25, -2], yawDegrees: 90 } } })
   assert.equal(f.calls.modelSaves.length, 0); assert.deepEqual(f.props.model, original); assert.equal(f.vm.dirty, false)
 })
 
@@ -286,7 +374,7 @@ test('instance restore is a null override and an absent model port can never be 
 
 test('device surface clicks directly calculate local offset and preserve default or existing override direction', async t => {
   const f = await fixture(t, { props: { device: device() }, preview: true }), runtime = f.calls.previews[0]
-  assert.equal(f.vm.row, null); assert.equal(runtime.picking, true)
+  assert.equal(f.vm.row, null); assert.equal(runtime.picking, false);assert.equal(f.vm.setDrawing(true),true);assert.equal(runtime.picking,true)
   runtime.handlers.onSurface({ position: [12, 2.5, 1], nodeName: 'unused_in_override', direction: [0, 0, -1] })
   assert.deepEqual(f.vm.row, { offset: [2, .5, -2], yawDegrees: 0 })
   assert.deepEqual(f.vm.effectivePort.position, [12, 2.5, 1]); assert.deepEqual(f.vm.effectivePort.direction, port().direction)
@@ -295,14 +383,15 @@ test('device surface clicks directly calculate local offset and preserve default
   runtime.handlers.onSurface({ position: [13, 2.75, -1], direction: [-1, 0, 0] })
   assert.deepEqual(f.vm.row, { offset: [3, .75, -4], yawDegrees: 45 }); assert.deepEqual(f.vm.effectivePort.direction, direction)
   assert.equal(await f.vm.save(), true); assert.equal(f.calls.modelSaves.length, 0)
-  assert.deepEqual(f.calls.deviceSaves[0].body, { revision: 'revision-d', signals: { version: 1, inletPointId: null, outletPointId: null }, overrides: { ...empty(), inlet: { offset: [3, .75, -4], yawDegrees: 45 } } })
+  assert.deepEqual(f.calls.deviceSaves[0].body, { revision: 'revision-d', overrides: { ...empty(), inlet: { offset: [3, .75, -4], yawDegrees: 45 } } })
   assert.deepEqual(f.props.model.metadata.loadingPorts, ports())
   f.vm.setEnabled(false); await nextTick(); assert.deepEqual(f.vm.effectivePort, port()); assert.equal(runtime.picking, true)
   runtime.handlers.onSurface({ position: [11, 2.125, 3] }); assert.deepEqual(f.vm.row, { offset: [1, .125, 0], yawDegrees: 0 })
 })
 
-test('busy saves suspend clicks and resume automatic picking, while conflicts and pending object switches stay protected', async t => {
+test('busy saves suspend an explicitly armed tool, while conflicts and pending object switches stay protected', async t => {
   const pending = deferred(), f = await fixture(t, { preview: true, saveModel: () => pending.promise }), runtime = f.calls.previews[0]
+  assert.equal(f.vm.setDrawing(true),true)
   runtime.handlers.onSurface({ position: [10, 3, 3] }); const work = f.vm.save(); await nextTick()
   assert.equal(runtime.picking, false); runtime.handlers.onSurface({ position: [88, 88, 88] }); assert.deepEqual(f.vm.row.position, [10, 3, 3])
   pending.resolve({ ...modelResult('m', { ...ports(), inlet: { ...port(), position: [10, 3, 3] } }), revision: 'saved' })
@@ -393,23 +482,42 @@ test('model and instance permissions are separate and readonly handlers cannot m
   const f = await fixture(t, { modelEdit: false, deviceEdit: true, preview: true })
   const original = JSON.stringify(f.vm.draft); f.vm.setEnabled(false); f.vm.setDirection([0, 0, -1]); assert.equal(JSON.stringify(f.vm.draft), original); assert.equal(await f.vm.save(), false)
   assert.equal(f.vm.picking, false); f.calls.previews[0].handlers.onSurface({ position: [1, 2, 3] }); assert.equal(JSON.stringify(f.vm.draft), original)
-  const instance = await fixture(t, { modelEdit: true, deviceEdit: false, props: { device: device() } })
+  assert.equal(f.vm.setDrawing(true),false);f.calls.previews[0].handlers.onRegion(regionPort());f.calls.previews[0].handlers.onRegionState(true);f.calls.previews[0].handlers.onRegionError('readonly error')
+  assert.equal(JSON.stringify(f.vm.draft),original);assert.equal(f.vm.dirty,false);assert.equal(f.vm.regionSelecting,false);assert.equal(f.vm.error,'')
+  const instance = await fixture(t, { modelEdit: true, deviceEdit: false, props: { device: device() },preview:true })
   instance.vm.setEnabled(true); assert.equal(instance.vm.row, null); assert.equal(await instance.vm.save(), false)
+  assert.equal(instance.vm.setDrawing(true),false);instance.calls.previews[0].handlers.onSurface({position:[99,99,99]});instance.calls.previews[0].handlers.onRegion(regionPort());instance.calls.previews[0].handlers.onRegionState(true)
+  assert.equal(instance.vm.row,null);assert.equal(instance.vm.dirty,false);assert.equal(instance.vm.regionSelecting,false)
+  assert.equal(f.calls.modelSaves.length,0);assert.equal(instance.calls.deviceSaves.length,0)
 })
 
 test('compiled UI has accessible labels, status/errors, explicit suggestions and independent viewport', () => {
   assert.match(source, /aria-label="进出料口 Y 送料高度"/); assert.match(source, /aria-label="进出料口送料高度偏移"/)
   assert.match(source, /focus-visible/); assert.match(source, /role="alert"/); assert.match(source, /role="status"/)
-  assert.match(source, /ref="viewport"/); assert.match(source, /应用建议到草稿/); assert.match(source, /恢复模型默认/)
+  assert.match(source, /ref="viewport"/); assert.match(source, /应用建议到草稿/); assert.match(source, /使用模型料口/)
   const ordinary = descriptor.template.content.slice(descriptor.template.content.indexOf('<div class="config-panel">'), descriptor.template.content.indexOf('<details class="advanced-panel">'))
   assert.doesNotMatch(ordinary, /v-model\.number|type="checkbox"|type="number"|node-assistant|direction-buttons/)
-  assert.match(ordinary, /单点/); assert.match(ordinary, /可跳过/); assert.match(ordinary, /画料口区域/); assert.match(ordinary, /清除选区/); assert.match(ordinary, /保存配置/)
+  assert.match(ordinary, /单点/); assert.match(ordinary, /可跳过/); assert.match(ordinary, /框选料口区域/); assert.match(ordinary, /清除选区/); assert.match(ordinary, /保存配置/)
   assert.match(ordinary, /下沿中点/); assert.match(ordinary, /同一个竖直料口面/)
   assert.doesNotMatch(descriptor.template.content, /<details[^>]*\sopen(?:\s|>)/)
   assert.doesNotMatch(descriptor.template.content, /取消表面定位|点击模型表面定位/)
   const fonts = [...descriptor.styles[0].content.matchAll(/font-size:calc\((\d+)px \* var\(--admin-font-scale,\s*1\)\)/g)].map(match => Number(match[1]))
   assert.equal(descriptor.styles[0].scoped, true); assert.ok(fonts.length >= 15); assert.ok(fonts.every(size => size >= 13))
   assert.match(descriptor.styles[0].content, /loading-port-editor\{[^}]*font-size:calc\(15px/)
+})
+
+test('left controls expose one unselected drawing tool and the docking button switches the existing right preview slot', () => {
+  const template=descriptor.template.content
+  const config=template.slice(template.indexOf('<div class="config-panel">'),template.indexOf('<section v-show="!dockingPreview"'))
+  assert.match(source,/const regionMode = ref\(false\)/)
+  assert.match(config,/class="point-actions"[\s\S]*:aria-pressed="regionMode"[^>]*@click="requestDrawing"[\s\S]*框选料口区域/)
+  assert.doesNotMatch(template,/>\s*浏览模型\s*<|@click="setDrawing\(false\)"/)
+  assert.match(config,/class="docking-preview-toggle"[^>]*:aria-pressed="dockingPreview"[^>]*@click="emit\('toggle-docking'\)"/)
+  assert.match(config,/检查小车对接与实体位置/)
+  assert.match(template,/<section v-show="!dockingPreview"[^>]*data-preview-mode="model"[^>]*aria-label="独立进出料口预览"/)
+  assert.match(template,/<section v-if="dockingAvailable" v-show="dockingPreview"[^>]*aria-label="小车与设备对齐情况预览"><slot name="preview" \/><\/section>/)
+  assert.match(template,/左键空白处旋转 · 右键平移 · 滚轮缩放/)
+  assert.doesNotMatch(template,/docking-check-section|docking-check-toggle/)
 })
 
 test('point-picking guidance stays outside the canvas so it cannot hide the model upper edge', () => {
@@ -489,15 +597,17 @@ test('signal draft guards device changes and model-only mode has no site PLC bin
   assert.doesNotMatch(template, /速度|加速度|间距|严格同步/)
 })
 
-test('rotating simple-cart choice is explicit and saves without adding points, stations or physical parameters', async t => {
-  const initial = { version: 1, kind: 'single', presentation: 'model', turntableNodeName: '' }
-  const f = await fixture(t, { props: { device: device() },
-    loadDevice: () => Promise.resolve({ ...deviceResult('d'), cartSupported: true, cartTransfer: initial }),
+test('rotation uses the selected model node; legacy simple flags restore single without automatic writes', async t => {
+  const legacy = { version: 1, kind: 'rotating', presentation: 'simple', turntableNodeName: '' }
+  const f = await fixture(t, { props: { device: device() }, preview: true,
+    loadDevice: () => Promise.resolve({ ...deviceResult('d'), cartSupported: true, cartTransfer: legacy }),
     saveDevice: (id, body) => Promise.resolve({ ...deviceResult(id, body.overrides), cartSupported: true, cartTransfer: body.cartTransfer, signals: body.signals }) })
   assert.equal(f.vm.cartMode, 'single'); assert.equal(f.calls.deviceSaves.length, 0)
-  f.vm.cartMode = 'simple'; await nextTick(); assert.equal(f.vm.dirty, true); assert.equal(await f.vm.save(), true)
-  assert.deepEqual(f.calls.deviceSaves[0].body.cartTransfer, { version: 1, kind: 'rotating', presentation: 'simple', turntableNodeName: '' })
-  assert.equal(Object.hasOwn(f.calls.deviceSaves[0].body, 'movement'), false); assert.equal(f.calls.modelSaves.length, 0)
+  assert.equal(f.vm.dirty, false); assert.equal(f.calls.previews[0].model.id, 'm')
+  f.vm.cartMode = 'simple'; await nextTick(); assert.equal(f.vm.cartMode, 'single'); assert.equal(f.vm.dirty, false)
   f.vm.cartMode = 'model'; await nextTick(); assert.match(f.vm.saveProblem, /上转台节点/); assert.equal(await f.vm.save(), false)
-  f.exposed.discardPending(); assert.equal(f.vm.cartMode, 'simple')
+  f.vm.cartDraft.turntableNodeName = 'Upper'; await nextTick(); assert.equal(await f.vm.save(), true)
+  assert.deepEqual(f.calls.deviceSaves[0].body.cartTransfer, { version: 1, kind: 'rotating', presentation: 'model', turntableNodeName: 'Upper' })
+  assert.equal(Object.hasOwn(f.calls.deviceSaves[0].body, 'movement'), false); assert.equal(f.calls.modelSaves.length, 0)
+  f.vm.cartMode = 'single'; await nextTick(); f.exposed.discardPending(); assert.equal(f.vm.cartMode, 'model')
 })

@@ -39,6 +39,8 @@ export const adminSession = reactive({
     configured: true,
     authenticated: false,
     displayAuthenticated: false,
+    displayOnly: false,
+    displayStartupSupported: null,
     user: null,
     pagePermissions: normalizePagePermissions(),
     permissions: { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false },
@@ -67,6 +69,7 @@ let touchTimer = null
 let lockPromise = null
 let pollTimer = null
 let activityHandler = null
+let displayBootstrapPromise = null
 
 function permissionsForRole(role) {
     const administrator = role === 'owner'
@@ -84,8 +87,11 @@ function permissionsForRole(role) {
 function applySession(data, expectedGeneration = generation) {
     if (expectedGeneration !== generation) return
     const hasAccess = data?.authenticated === true || data?.displayAuthenticated === true
+    const readOnlyDisplay = data?.displayOnly === true && data.authenticated === false && data.displayAuthenticated === true
+        && data.user?.role === 'display' && data.permissions?.view === true && data.permissions?.launch === true
+        && !data.permissions.edit && !data.permissions.manageUsers && !data.permissions.cast && !data.permissions.backup
     if (!data || typeof data.configured !== 'boolean' || typeof data.authenticated !== 'boolean'
-        || (hasAccess && (!data.configured || !data.user || typeof (data.user.id || data.user.username) !== 'string'
+        || (hasAccess && ((!data.configured && !readOnlyDisplay) || !data.user || typeof (data.user.id || data.user.username) !== 'string'
             || !data.user.role || typeof data.csrfToken !== 'string' || !data.csrfToken))
         || (data.authenticated && data.displayAuthenticated === false)) {
         adminSession.serviceUnavailable = true
@@ -95,6 +101,7 @@ function applySession(data, expectedGeneration = generation) {
     adminSession.ready = true
     adminSession.configured = data.configured !== false
     adminSession.authenticated = data.authenticated === true
+    adminSession.displayOnly = readOnlyDisplay
     adminSession.displayAuthenticated = data.displayAuthenticated === true
         || (data.displayAuthenticated === undefined && data.authenticated === true)
     adminSession.user = adminSession.displayAuthenticated || adminSession.authenticated ? data.user || null : null
@@ -127,6 +134,7 @@ function clearSession(message = '') {
     csrfToken = ''
     adminSession.authenticated = false
     adminSession.displayAuthenticated = false
+    adminSession.displayOnly = false
     adminSession.user = null
     adminSession.pagePermissions = normalizePagePermissions()
     adminSession.permissions = { view: false, edit: false, manageUsers: false, launch: false, cast: false, backup: false }
@@ -234,7 +242,14 @@ export async function refreshAdminSession() {
     refreshPromise = (async () => {
         if (pendingLock) return confirmPendingLock()
         try {
-            const data = await authRequest('/session')
+            let data = await authRequest('/session')
+            if (data?.displayAuthenticated === false && window.chrome?.webview?.postMessage
+                && new URLSearchParams(window.location.search).get('embedded') === 'unity'
+                && new URLSearchParams(window.location.search).get('surface') !== 'overlay'
+                && adminSession.displayStartupSupported !== false) {
+                await bootstrapDisplayAccess()
+                data = await authRequest('/session')
+            }
             applySession(data, expectedGeneration)
             return data
         } catch (error) {
@@ -298,7 +313,9 @@ export async function activateAdminAccount(slotId, csrfForAccount) {
 
 export async function logoutCurrentAdminAccount() {
     const expectedGeneration = ++generation
-    const data = await authRequest('/accounts/logout', { method: 'POST' })
+    let data = await authRequest('/accounts/logout', { method: 'POST' })
+    if (window.chrome?.webview?.postMessage && new URLSearchParams(window.location.search).get('embedded') === 'unity')
+        data = await authRequest('/session') // Independent read-only display survives admin sign-out.
     applySession(data, expectedGeneration)
     broadcast('changed')
     return data
@@ -344,8 +361,25 @@ export async function deletePlatformUser(id) {
 }
 
 export async function issueNativeSessionTicket() {
-    const data = await authRequest('/native-ticket', { method: 'POST', body: {} })
+    const data = await authRequest(adminSession.authenticated || adminSession.displayStartupSupported === false
+        ? '/native-ticket' : '/native-display-ticket', { method: 'POST', body: {} })
     return data.ticket
+}
+
+export async function bootstrapDisplayAccess() {
+    if (!displayBootstrapPromise) displayBootstrapPromise = (async () => {
+        let data
+        try { data = await authRequest('/display-bootstrap', { method: 'POST', body: {} }) }
+        catch (error) {
+            if (error.status === 404 || error.status === 501) adminSession.displayStartupSupported = false
+            throw error
+        }
+        if (data?.success !== true || data.displayOnly !== true) throw new Error('数据服务尚未支持免登录展示，请更新数据服务后重试')
+        adminSession.displayStartupSupported = true
+        broadcast('changed')
+        return data
+    })().finally(() => { displayBootstrapPromise = null })
+    return displayBootstrapPromise
 }
 
 export async function adminFetch(input, options = {}) {

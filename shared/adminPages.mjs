@@ -5,10 +5,10 @@ const page = (key, label, options = {}) => ({ key, label, actions: ['view', 'edi
 export const ADMIN_PAGES = [
   page('factories', '工厂与区域', { navGroup: 'main', icon: 'factories', menuOrder: 10 }),
   page('workshops', '车间管理', { navGroup: 'factory', icon: 'workshops', actions: ['view', 'edit', 'delete'] }),
-  page('lines', '产线管理', { navGroup: 'factory', icon: 'lines', actions: ['view', 'edit', 'delete'] }),
+  page('lines', '车间编排 · 产线布局', { navGroup: 'legacy', icon: 'lines', actions: ['view', 'edit', 'delete'] }),
   page('devices', '设备管理', { navGroup: 'factory', icon: 'devices', actions: ['view', 'edit', 'delete'] }),
+  page('composer', '车间编排', { navGroup: 'factory', icon: 'composer' }),
   page('mobile-devices', '设备运动配置', { navGroup: 'factory', icon: 'mobile' }),
-  page('composer', '现场编排器', { navGroup: 'main', icon: 'composer', menuOrder: 20 }),
   page('models', '模型库 · 模型管理', { navGroup: 'models', navLabel: '模型管理', icon: 'models', actions: ['view', 'edit', 'delete'] }),
   page('disassembly-layout', '模型库 · 拆解布局', { navGroup: 'models', navLabel: '拆解布局', icon: 'disassembly-layout' }),
   page('model-animations', '模型库 · 动作动画', { navGroup: 'models', navLabel: '动作动画', icon: 'animation' }),
@@ -37,7 +37,21 @@ const groups = [
   { key: 'settings', label: '系统设置', icon: 'settings', menuOrder: 60 }
 ]
 export const getAdminPageCatalog = () => JSON.parse(JSON.stringify(ADMIN_PAGES))
-export const adminNavPages = (group, pages = ADMIN_PAGES) => pages.filter(p => p.navGroup === group).map(p => ({ ...p, label: p.navLabel || p.label }))
+export const adminNavPages = (group, pages = ADMIN_PAGES) => {
+  // Older services still publish composer as a top-level menu. Navigation is
+  // presented in the current client hierarchy without changing permission keys.
+  const items = pages.map(p => p.key === 'composer' ? { ...p, navGroup: 'factory', label: '车间编排', navLabel: '车间编排' } : p)
+    .filter(p => p.navGroup === group && p.key !== 'lines')
+    .map(p => ({ ...p, label: p.navLabel || p.label }))
+  if (group === 'factory') {
+    const index = items.findIndex(p => p.key === 'composer')
+    if (index >= 0) {
+      const [composer] = items.splice(index, 1), devices = items.findIndex(p => p.key === 'devices')
+      items.splice(devices >= 0 ? devices + 1 : items.length, 0, composer)
+    }
+  }
+  return items
+}
 export const adminMainTabs = (pages = ADMIN_PAGES) => [...adminNavPages('main', pages), ...groups].sort((a, b) => (a.menuOrder || 100) - (b.menuOrder || 100))
 export const adminSubpages = (container, pages = ADMIN_PAGES) => pages.filter(p => !p.retired).flatMap(p => [p, ...(p.destinations || []).map(destination => ({ ...p, ...destination }))].filter(destination => destination.container === container).map(destination => ({ ...destination, permissionKey: p.key, key: destination.subpage, label: destination.tabLabel || p.label })))
 

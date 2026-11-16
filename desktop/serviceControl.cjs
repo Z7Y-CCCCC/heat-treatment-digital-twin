@@ -1,6 +1,16 @@
 'use strict';
 const crypto = require('node:crypto');
 
+function collectorCenterViewForPath(pathname) {
+    return pathname === '/service/collector-center/data' ? 'points'
+        : pathname === '/service/collector-center/runtime' ? 'overview' : null;
+}
+function collectorCenterArguments(view) {
+    if (view == null) return [];
+    if (!['points', 'overview'].includes(view)) throw new Error('不支持的运行中心视角');
+    return ['--open-view', view];
+}
+
 // Called only AFTER the existing loopback + private token gate. No command,
 // executable, remote target, body or shell string is accepted from the page.
 function createServiceControl({ restart, openCenter, now = Date.now, schedule = (fn) => setTimeout(fn, 1500) }) {
@@ -19,12 +29,15 @@ function createServiceControl({ restart, openCenter, now = Date.now, schedule = 
                 : { success: false, error: '未找到当前桌面重启操作' });
             return true;
         }
-        if (request.method !== 'POST' || !['/service/unity-restart', '/service/collector-center'].includes(pathname)) return false;
+        if (request.method !== 'POST' || !['/service/unity-restart', '/service/collector-center', '/service/collector-center/data', '/service/collector-center/runtime'].includes(pathname)) return false;
         if (busy) { reply(response, 409, { success: false, error: '已有服务操作正在执行' }); return true; }
         busy = true;
-        if (pathname === '/service/collector-center') {
-            Promise.resolve().then(openCenter).then(() => reply(response, 200, { success: true, opened: true }),
-                () => reply(response, 503, { success: false, error: '采集运行中心无法打开' })).finally(() => { busy = false; });
+        if (pathname.startsWith('/service/collector-center')) {
+            const view = collectorCenterViewForPath(pathname);
+            Promise.resolve().then(() => view ? openCenter({ view }) : openCenter()).then(result => {
+                if (view && (result?.opened !== true || result.view !== view)) throw new Error('运行中心视角未确认');
+                reply(response, 200, view ? { success: true, opened: true, view } : { success: true, opened: true });
+            }).catch(() => reply(response, 503, { success: false, error: '采集运行中心无法确认打开所选页面，请同步运行中心界面后重试' })).finally(() => { busy = false; });
             return true;
         }
         const operationId = crypto.randomBytes(16).toString('hex');
@@ -41,4 +54,4 @@ function createServiceControl({ restart, openCenter, now = Date.now, schedule = 
         return true;
     };
 }
-module.exports = { createServiceControl };
+module.exports = { createServiceControl, collectorCenterViewForPath, collectorCenterArguments };

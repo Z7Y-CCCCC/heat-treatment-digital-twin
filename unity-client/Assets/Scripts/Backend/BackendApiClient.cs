@@ -14,6 +14,7 @@ namespace HeatTreatment.DigitalTwin.Backend
         private readonly string _baseUrl;
         private readonly CookieContainer _sessionCookies = new CookieContainer();
         private readonly HttpClient _client;
+        private Uri _realtimeCookieUri;
 
         public CookieContainer SessionCookies => _sessionCookies;
 
@@ -54,7 +55,8 @@ namespace HeatTreatment.DigitalTwin.Backend
             var permissions = document?["permissions"];
             return new NativeLoginResult
             {
-                Authenticated = document?.Value<bool?>("authenticated") == true,
+                Authenticated = document?.Value<bool?>("authenticated") == true
+                    || (document?.Value<bool?>("displayAuthenticated") == true && document?.Value<bool?>("displayOnly") == true),
                 CanView = permissions?.Value<bool?>("view") == true,
                 CanLaunch = permissions?.Value<bool?>("launch") == true,
                 DisplayName = document?["user"]?.Value<string>("displayName") ?? "现场用户"
@@ -99,10 +101,20 @@ namespace HeatTreatment.DigitalTwin.Backend
                 Query = string.Empty,
                 Fragment = string.Empty
             }.Uri;
+            _realtimeCookieUri = cookieUri;
             foreach (Cookie cookie in _sessionCookies.GetCookies(apiUri))
             {
-                if (!cookie.Name.StartsWith("dt_admin_session_", StringComparison.Ordinal)) continue;
-                var realtimeCookie = new Cookie(cookie.Name, cookie.Value, "/ws")
+                // The server reads <API session name>_ws on upgrades. Mirroring
+                // just the API name/path creates an anonymous loopback socket:
+                // the scene works, but native-confirm cannot match its child
+                // session. Explicitly mirror the current exchange, even on Mono
+                // versions that retain only the first Set-Cookie response entry.
+                // Never promote account selectors or another account's cookies.
+                const string prefix = "dt_admin_session_";
+                if (!cookie.Name.StartsWith(prefix, StringComparison.Ordinal)
+                    || cookie.Name.Length != prefix.Length + 16
+                    || !System.Linq.Enumerable.All(cookie.Name.Substring(prefix.Length), Uri.IsHexDigit)) continue;
+                var realtimeCookie = new Cookie(cookie.Name + "_ws", cookie.Value, "/ws")
                 {
                     HttpOnly = true,
                     Secure = webSocketUri.Scheme == "wss",
@@ -116,6 +128,7 @@ namespace HeatTreatment.DigitalTwin.Backend
         {
             ClearCookiesAt(new Uri($"{_baseUrl}/api"));
             ClearCookiesAt(new Uri($"{_baseUrl}/ws"));
+            if (_realtimeCookieUri != null) ClearCookiesAt(_realtimeCookieUri);
         }
 
         private void ClearCookiesAt(Uri uri)

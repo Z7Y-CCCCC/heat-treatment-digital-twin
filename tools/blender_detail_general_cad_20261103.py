@@ -9,6 +9,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parent))
 import blender_build_general_cad_20261103 as base
 import bpy,bmesh
 from mathutils import Vector
+from lift_cylinder_rest_pose import cylinder_rest_pose, three_rest_pose_marker
 
 def delete_group(a,key):
     group=a.groups.pop(key,None)
@@ -210,9 +211,11 @@ def detailed_table(a,lifting):
     if lifting:
         remove(a,'hydraulic_barrel','hydraulic_piston','pump_pack')
         first,mid,last=(.48,0,.16),(.20,0,.59),(.03,0,.83)
-        cylinder_between(a,'hydraulic_cylinder_barrel',first,mid,.043,'teal','hydraulics',32)
-        cylinder_between(a,'hard_chrome_piston',mid,last,.019,'stainless','hydraulics',32)
-        for p in [first,last]:
+        cylinder=cylinder_rest_pose(first,mid,last,(0,0,.545))
+        cylinder_between(a,'hydraulic_cylinder_barrel',cylinder['base'],cylinder['barrel_tip'],.043,'teal','hydraulics',32)
+        cylinder_between(a,'hard_chrome_piston',cylinder['rod_start'],cylinder['tip'],.019,'stainless','hydraulics',32)
+        a.root['liftCylinderRestPose']=three_rest_pose_marker(cylinder)
+        for p in [first,cylinder['tip']]:
             a.ring('cylinder_mount_eye',p,.04,.019,.065,'metal','Y','hydraulics',24)
             hardware(a,Vector(p)+Vector((0,-.04,0)),'Y',.015,'pivot_detail')
         a.box('hydraulic_reservoir',(.30,0,.13),(.29,.25,.16),'teal','hydraulic_pack')
@@ -220,11 +223,16 @@ def detailed_table(a,lifting):
         a.motor((.49,0,.14),'X',.050,.14,'hydraulic_pack')
         for p in [(0,-.35,.545),(0,.35,.545)]:
             hardware(a,p,'Y',.028,'pivot_detail');a.cyl('pivot_cross_pin',p,.023,.16,'metal','Y','pivot_detail')
+        # base.table() supplies the uninterrupted Ø36 x 780 centre shaft.
+        # These wider side pins are sleeves overlapping it, not replacements.
         for y in [-.31,.31]:
             for x in [-.65,.65]:
                 a.cyl('scissor_travel_roller',(x,y,.145),.033,.055,'metal','Y','slide_detail',24)
                 a.box('slider_retainer',(x,y-.04,.14),(.09,.016,.055),'steel','slide_detail')
-        for p in [(.45,.04,.20),(.28,0,.51)]:a.cyl('hydraulic_hose_union',p,.017,.042,'brass','Z','hydraulics',6)
+        for p in [(.45,.04,.20),(.28,0,.51)]:
+            union=a.cyl('hydraulic_hose_union',p,.017,.042,'brass','Z','hydraulics',6)
+            bpy.context.view_layer.update()
+            union.matrix_world=cylinder['barrel']@union.matrix_world
     else:
         for x in [-.755,.755]:
             for y in [-.265,.265]:
@@ -389,7 +397,7 @@ def detailed_water(a):
 
 CONTRACT={
  'transfer_cart':{'central_return_chain_plate':1,'chain_rivet':30,'toothed_sprocket':3,'full_width_drive_axle':2,'hex_nut':24,'walkway_cross_brace':6,'pressed_louver':5,'central_push_guide':1,'limit_switch':1},
- 'lifting_staging_table':{'load_roller':10,'roller_axle_spacer':10,'hydraulic_cylinder_barrel':1,'hard_chrome_piston':1,'cylinder_mount_eye':2,'scissor_travel_roller':4,'hydraulic_hose_union':2,'hex_nut':6},
+ 'lifting_staging_table':{'load_roller':10,'roller_axle_spacer':10,'hydraulic_cylinder_barrel':1,'hard_chrome_piston':1,'cylinder_mount_eye':2,'pivot_crossshaft':1,'scissor_travel_roller':4,'hydraulic_hose_union':2,'hex_nut':6},
  'fixed_staging_table':{'load_roller':12,'levelling_thread':4,'hex_nut':8,'roller_axle_spacer':12,'fork_stop_bracket':1},
  'air_cooling_table':{'load_roller':12,'fan_safety_grille':8,'fan_grille_spoke':16,'hood_clip_pin':6,'chain_rivet':15,'hex_nut':12},
  'water_cooling_tank':{'agitator_impeller_blade':3,'basket_guide_shaft':2,'basket_guide_bush':4,'service_hatch':1,'hex_nut':20,'gauge_dial':1},
@@ -418,6 +426,16 @@ def check_mechanisms(a,key):
         if key!='air_cooling_table':
             for obj in objects('roller_axle'):assert abs(min(obj.dimensions)-.020)<.0001
         checked.append('paired roller count, diameter, length and shaft direction')
+    if key=='lifting_staging_table':
+        shafts=objects('pivot_crossshaft');assert len(shafts)==1
+        shaft=shafts[0];axis_y(shaft)
+        assert (shaft.location-Vector((0,0,.545))).length<1e-6
+        dimensions=sorted(shaft.dimensions)
+        assert abs(dimensions[0]-.036)<1e-6 and abs(dimensions[2]-.78)<1e-6
+        assert shaft.parent==a.group('crossshaft')
+        assert shaft.parent.parent==a.group('lift')
+        assert a.root['liftCrossshaft']['node']==a.id+'_crossshaft_metal'
+        checked.append('continuous centre shaft spans both side sleeves and upper cylinder eye')
     if key=='air_cooling_table':
         guides=objects('door_guide');assert len(guides)==2
         assert all(o.matrix_world.translation.x<-.8 for o in guides)

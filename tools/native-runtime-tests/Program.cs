@@ -41,6 +41,7 @@ internal static partial class Program
             ("ordinary configuration edits preserve scene identity and structural edits remain explicit", ConfigurationRefreshIsScoped),
             ("geometry identity ignores labels and track-only updates but invalidates changed rigs and optimization", GeometryCacheIsStable),
             ("realtime receive progresses while the render synchronization context is idle", ReceiveDoesNotWaitForRender),
+            ("native API session is mirrored under the exact websocket cookie identity on reconnect", NativeSessionCookieMatchesWebSocket),
             ("cancelled send cannot release another owner's semaphore", CancelledSendKeepsLock),
             ("stale queued send cannot move to a replacement session", QueuedSendKeepsSession),
             ("queued outbound messages snapshot their JSON before waiting", QueuedSendSnapshotsMessage),

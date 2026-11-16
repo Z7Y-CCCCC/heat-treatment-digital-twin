@@ -7,27 +7,35 @@ import { DockingCalibrationPreview } from '../../../three/DockingCalibrationPrev
 import { dockingCandidates, prepareDockingCalibration, dockingPreview, dockingSavePayload } from '../utils/dockingCalibration.js'
 
 const props = defineProps({ model: Object, preferredDeviceId: String, devices: { type: Array, default: () => [] }, lines: { type: Array, default: () => [] },
-  models: { type: Array, default: () => [] }, confirm: { type: Function, default: async () => false }, canCalibrate: { type: Function, default: () => true } })
+  models: { type: Array, default: () => [] }, confirm: { type: Function, default: async () => false }, canCalibrate: { type: Function, default: () => true },
+  inline: Boolean, autoPreview: Boolean, previewOnly: Boolean, active: { type: Boolean, default: true } })
 const emit = defineEmits(['calibrated'])
 const stationId = ref(''), cartId = ref(''), deviceKind = ref('inlet'), cartKind = ref('outlet'), stepMm = ref(10)
 const plan = ref(null), position = ref(null), loading = ref(false), saving = ref(false), error = ref(''), conflict = ref(false)
 const confirming = ref(false)
+const autoRefreshPending = ref(false)
 const viewport = ref(null), previewReady = ref(false), previewError = ref(''), view = ref('front')
 const candidates = computed(() => dockingCandidates(props.devices, props.lines))
 const station = computed(() => candidates.value.stations.find(r => r.device.id === stationId.value))
 const carts = computed(() => candidates.value.carts.filter(r => r.line.id === station.value?.line.id && r.config.railId === station.value?.railId))
-const editable = computed(() => canAdminApi('/api/devices/docking-calibration', 'PUT'))
+const editable = computed(() => !props.previewOnly && canAdminApi('/api/devices/docking-calibration', 'PUT'))
 const busy = computed(() => loading.value || saving.value || confirming.value)
 const dirty = computed(() => !!plan.value && JSON.stringify(position.value) !== JSON.stringify(plan.value.position))
 const deviation = computed(() => plan.value && position.value ? dockingPreview(plan.value, position.value) : null)
 const deviceSource = row => row && Object.fromEntries(['id','line_id','coordinate_space','model_type','model_file','pos_x','pos_y','pos_z','rotation_y','scale','instance_config'].map(key => [key,row[key]]))
 const sourceSignature = computed(() => JSON.stringify([{id:station.value?.line.id,workshop_id:station.value?.line.workshop_id,layout_json:station.value?.line.layout_json,layout:station.value?.line.layout}, deviceSource(station.value?.device), deviceSource(carts.value.find(r => r.device.id === cartId.value)?.device),
   props.models.filter(m => [station.value?.device.model_type, carts.value.find(r => r.device.id === cartId.value)?.device.model_type].includes(m.id)).map(m=>({id:m.id,file_path:m.file_path,default_scale:m.default_scale,metadata:m.metadata,placement_level:m.placement_level,asset_type:m.asset_type}))]))
-let generation = 0, disposed = false, active = true, controller, preview
+let generation = 0, disposed = false, active = true, controller, preview, autoPreviewQueued = false
 const valid = version => active && !disposed && version === generation
+const validPreview = version => props.active && valid(version)
 const format = value => Number.isFinite(value) ? `${value > 0 ? '+' : ''}${value.toFixed(1)}` : '—'
+const portLabel = kind => kind === 'outlet' ? '出料口' : '进料口'
+function directionLabel(toward, target) {
+  if (!plan.value?.orientation?.perpendicular) return '未垂直导轨'
+  return toward ? `朝向${target}` : `背向${target}`
+}
 function release() { preview?.dispose(); preview = null; previewReady.value = false }
-function reset() { generation++; controller?.abort(); release(); plan.value = null; position.value = null; error.value = ''; previewError.value = ''; conflict.value = false; loading.value = false }
+function reset() { generation++; controller?.abort(); release(); plan.value = null; position.value = null; error.value = ''; previewError.value = ''; conflict.value = false; loading.value = false; autoRefreshPending.value = false }
 function discardPending() { if (saving.value) return false; if (plan.value) { position.value = { ...plan.value.position }; preview?.setPosition(position.value) } return true }
 async function confirmOnce(text) { if (disposed || confirming.value) return false; confirming.value = true; try { return await props.confirm(text) === true } finally { confirming.value = false } }
 async function canLeave() {
@@ -43,30 +51,38 @@ async function choose(key, event) {
   reset()
   const refs = { stationId, cartId, deviceKind, cartKind }; refs[key].value = event.target.value
   if (key === 'stationId' && !carts.value.some(r => r.device.id === cartId.value)) cartId.value = carts.value[0]?.device.id || ''
+  if (props.autoPreview) { await nextTick(); return load() }
 }
 async function load() {
-  if (busy.value || !station.value || !cartId.value) return false
+  if (!active || !props.active || disposed || busy.value || !station.value || !cartId.value) return false
   const requested = { version: generation, station: stationId.value, cart: cartId.value, signature: sourceSignature.value }
   if (dirty.value && !await confirmOnce('重新预览将放弃未保存的位置调整，继续？')) return false
-  if (!valid(requested.version) || !station.value || await props.canCalibrate(station.value.line.id) !== true) return false
-  if (!valid(requested.version) || requested.station !== stationId.value || requested.cart !== cartId.value || requested.signature !== sourceSignature.value || busy.value) return false
+  if (!validPreview(requested.version) || !station.value || await props.canCalibrate(station.value.line.id) !== true) return false
+  if (!validPreview(requested.version) || requested.station !== stationId.value || requested.cart !== cartId.value || requested.signature !== sourceSignature.value || busy.value) return false
   reset(); loading.value = true; const version = generation, signature = sourceSignature.value, line = JSON.parse(JSON.stringify(station.value.line))
   controller = new AbortController()
   try {
     const [deviceResult, cartResult] = await Promise.all([adminApi.getDeviceLoadingPorts(stationId.value, { signal: controller.signal }), adminApi.getDeviceLoadingPorts(cartId.value, { signal: controller.signal })])
-    if (!valid(version) || signature !== sourceSignature.value) return false
+    if (!validPreview(version) || signature !== sourceSignature.value) return false
     if (deviceResult?.device?.id !== stationId.value || cartResult?.device?.id !== cartId.value) throw Error(deviceResult?.error || cartResult?.error || '读取结果不属于所选工位和小车')
-    const result = await prepareDockingCalibration({ line, deviceResult, cartResult, deviceKind: deviceKind.value, cartKind: cartKind.value }, { signal: controller.signal })
-    if (!valid(version) || signature !== sourceSignature.value) return false
-    plan.value = result; position.value = { ...result.position }; view.value = 'front'; await nextTick()
-    if (!valid(version)) return false
+    if (props.previewOnly) {
+      // Reuse saved model/port definitions with this workbench's unsaved placement.
+      for (const loaded of [deviceResult, cartResult]) {
+        const draft = props.devices.find(d => d.id === loaded.device.id)
+        if (draft) loaded.device = { ...loaded.device, ...draft }
+      }
+    }
+    const result = await prepareDockingCalibration({ line, deviceResult, cartResult, deviceKind: deviceKind.value, cartKind: cartKind.value }, { signal: controller.signal, inspectionOnly: props.previewOnly })
+    if (!validPreview(version) || signature !== sourceSignature.value) return false
+    plan.value = result; position.value = { ...result.position }; view.value = result.issues?.length ? 'top' : 'front'; await nextTick()
+    if (!validPreview(version)) return false
     if (viewport.value) {
-      try { preview = new DockingCalibrationPreview(viewport.value); await preview.load(result, { signal: controller.signal }); if (valid(version)) previewReady.value = true }
-      catch (cause) { if (valid(version)) { release(); previewError.value = `模型预览失败：${cause.message}，不能保存。请重新预览。` } }
+      try { preview = new DockingCalibrationPreview(viewport.value, { allowRotate: props.inline }); await preview.load(result, { signal: controller.signal }); if (validPreview(version)) { if (view.value !== 'front') preview.setView(view.value); previewReady.value = true } }
+      catch (cause) { if (validPreview(version)) { release(); previewError.value = `模型预览失败：${cause.message}，不能保存。请重新预览。` } }
     }
     return true
-  } catch (cause) { if (valid(version) && cause.name !== 'AbortError') error.value = cause.message; return false }
-  finally { if (valid(version)) loading.value = false }
+  } catch (cause) { if (validPreview(version) && cause.name !== 'AbortError') error.value = cause.message; return false }
+  finally { if (validPreview(version)) loading.value = false }
 }
 function move(axis, direction) {
   if (!editable.value || busy.value || conflict.value || !previewReady.value || !plan.value) return
@@ -98,15 +114,23 @@ async function save() {
     }
     const saved = result.devices[0]
     if (['x','y'].some(axis => Math.fround(saved['pos_' + axis]) !== Math.fround(position.value[axis]) || Math.abs(saved['pos_' + axis] - position.value[axis]) > Math.max(1e-9, Math.abs(position.value[axis]) * 1e-12))) { conflict.value = true; throw Error('后端回读位置未确认，可能已提交；已锁定调整，请重新预览读取真实位置') }
-    reset(); saving.value = false; showSaveFeedback('对接校准已保存'); emit('calibrated', result); return true
+    reset(); saving.value = false; showSaveFeedback('对接校准已保存'); emit('calibrated', result)
+    if (props.inline && props.autoPreview) { autoRefreshPending.value = true; await nextTick(); queueAutoPreview() }
+    return true
   } catch (cause) { if (valid(version)) { error.value = cause.message; showSaveFeedback(`校准保存失败：${cause.message}`, 'error') } return false }
   finally { saving.value = false }
 }
 watch(sourceSignature, () => {
   if (!plan.value && !loading.value) return
-  if (saving.value) { conflict.value = true; error.value = '校准来源在保存期间更新，正在核对后端提交结果。'; return }
+  if (saving.value) { autoRefreshPending.value = false; conflict.value = true; error.value = '校准来源在保存期间更新，正在核对后端提交结果。'; return }
+  // Refresh only known-clean observations, not drafts or a write whose result
+  // needs explicit review. A pending clean refresh can absorb a later source
+  // update while its read-only preflight is still running.
+  const refresh = props.inline && props.autoPreview && !dirty.value && (!conflict.value || autoRefreshPending.value)
   generation++; controller?.abort(); loading.value = false; release()
-  if (plan.value) { conflict.value = true; error.value = '设备、模型或产线来源已更新，请重新预览；当前位置草稿未保存。' }
+  autoRefreshPending.value = refresh
+  if (plan.value) { conflict.value = true; error.value = refresh ? '设备、模型或产线来源已更新，正在刷新对齐预览。' : '设备、模型或产线来源已更新，请重新预览；当前位置草稿未保存。' }
+  if (refresh) queueAutoPreview()
 })
 watch(() => candidates.value.stations.map(r => r.device.id).join('|'), () => {
   if (!station.value) { stationId.value = candidates.value.stations.find(r => r.device.id === props.preferredDeviceId)?.device.id || candidates.value.stations.find(r => r.device.model_type === props.model?.id)?.device.id || candidates.value.stations[0]?.device.id || ''; cartId.value = carts.value[0]?.device.id || '' }
@@ -116,20 +140,40 @@ watch(() => props.preferredDeviceId, id => {
   if (!busy.value && !dirty.value && candidates.value.stations.some(r => r.device.id === id)) stationId.value = id
 })
 function beforeUnload(event) { if (dirty.value) { event.preventDefault(); event.returnValue = '' } }
-onMounted(() => window.addEventListener('beforeunload', beforeUnload))
-onDeactivated(() => {
-  active = false; generation++; controller?.abort()
+function pausePreview() {
+  generation++; controller?.abort()
   if (loading.value) { loading.value = false; release(); if (plan.value) { conflict.value = true; error.value = '预览已暂停，请重新预览再保存；当前位置草稿保留。' } }
   else preview?.pause()
+}
+async function queueAutoPreview() {
+  if (autoPreviewQueued || !props.autoPreview || !active || !props.active || disposed || dirty.value || (plan.value && !autoRefreshPending.value) || busy.value) return
+  autoPreviewQueued = true; const version = generation
+  try { await nextTick(); if (props.autoPreview && active && props.active && !disposed && !dirty.value && (!plan.value || autoRefreshPending.value) && !busy.value) await load() }
+  catch (cause) { if (validPreview(version) && cause.name !== 'AbortError') error.value = `对接预览检查失败：${cause.message}` }
+  finally {
+    autoPreviewQueued = false
+    // Consume an attempted refresh even if preflight/read failed. Only a newer
+    // source invalidation may queue another attempt; failures never poll/retry.
+    if (generation === version) autoRefreshPending.value = false
+    if (autoRefreshPending.value) queueAutoPreview()
+  }
+}
+watch(() => props.active, value => {
+  if (!value) pausePreview()
+  else if (active) { preview?.resume(); queueAutoPreview() }
 })
-onActivated(() => { active = true; preview?.resume() })
+watch(() => props.autoPreview, value => { if (value) queueAutoPreview() })
+onMounted(() => { window.addEventListener('beforeunload', beforeUnload); queueAutoPreview() })
+onDeactivated(() => { active = false; pausePreview() })
+onActivated(() => { active = true; if (props.active) { preview?.resume(); queueAutoPreview() } })
 onBeforeUnmount(() => { disposed = true; reset(); window.removeEventListener('beforeunload', beforeUnload) })
 defineExpose({ canLeave, savePending: () => dirty.value ? save() : true, discardPending, busy, dirty })
 </script>
 
 <template>
-  <section class="docking-calibration" aria-label="对接校准" data-testid="docking-calibration">
-    <header><div><h3>对接校准</h3><p>按工位同时核对小车与设备的真实料口。实体错位调整摆放；区域或基准点选错，请在上方重新画料口区域。</p></div><span class="permission-note" v-if="!editable">需要产线布局编辑权限才能调整和保存</span></header>
+  <section class="docking-calibration" :class="{ 'is-inline': inline }" :data-preview-only="previewOnly" :data-preview-mode="inline ? 'docking' : undefined" aria-label="对接校准" data-testid="docking-calibration">
+    <header v-if="!inline"><div><h3>对接校准</h3><p>按工位同时核对小车与设备的真实料口。实体错位调整摆放；区域或基准点选错，请返回模型重新框选料口区域。</p></div><span class="permission-note" v-if="!editable">需要产线布局编辑权限才能调整和保存</span></header>
+    <p v-if="previewOnly" class="inline-permission-note">使用当前编排草稿查看真实料口与模型，只读预览；不保存位置、不发送 PLC 指令。</p><p v-else-if="inline && !editable" class="inline-permission-note">当前账号可查看对齐预览；调整和保存实体位置需要产线布局编辑权限。</p>
     <div class="calibration-pickers">
       <label>对接工位<select aria-label="选择对接工位" :value="stationId" :disabled="busy" @change="choose('stationId', $event)"><option v-if="!candidates.stations.length" value="">暂无已放置工位</option><option v-for="row in candidates.stations" :key="row.device.id" :value="row.device.id">{{ row.label }}</option></select></label>
       <label>对应小车<select aria-label="选择对接小车" :value="cartId" :disabled="busy" @change="choose('cartId', $event)"><option v-if="!carts.length" value="">该产线没有已放置小车</option><option v-for="row in carts" :key="row.device.id" :value="row.device.id">{{ row.device.name || row.device.id }}</option></select></label>
@@ -138,10 +182,16 @@ defineExpose({ canLeave, savePending: () => dirty.value ? save() : true, discard
       <button type="button" :disabled="busy || !station || !cartId" @click="load">{{ loading ? '正在预览…' : plan ? '重新预览' : '显示对接预览' }}</button>
     </div>
     <p v-if="error" class="calibration-error" role="alert">{{ error }}</p><p v-if="previewError" class="calibration-error" role="alert">{{ previewError }}</p>
+    <div v-if="previewOnly && plan" class="calibration-port-status" :class="{ warning: plan.issues.length }" role="status">
+      <strong>两个料口均已读取</strong>
+      <span>{{ plan.deviceResult.device.name }} · {{ portLabel(plan.deviceKind) }}：{{ directionLabel(plan.orientation.deviceTowardCart, '小车') }}</span>
+      <span>{{ plan.cartResult.device.name }} · {{ portLabel(plan.cartKind) }}：{{ directionLabel(plan.orientation.cartTowardDevice, '设备') }}</span>
+      <p v-for="issue in plan.issues" :key="issue.code">{{ issue.message }} 可用俯视图核对蓝／橙色方向箭头。</p>
+    </div>
     <div v-if="plan" class="calibration-body">
       <aside class="calibration-adjustments">
-        <h4>实体位置调整</h4>
-        <div class="deviation-card" :class="{ aligned: deviation.aligned }"><span>左右偏差 <strong data-testid="docking-horizontal-deviation">{{ format(deviation.millimeters[0]) }} mm</strong></span><span>高度偏差 <strong data-testid="docking-height-deviation">{{ format(deviation.millimeters[1]) }} mm</strong></span><small>{{ deviation.aligned ? '左右与高度在 2 mm 容差内' : '蓝色设备料口相对橙色小车料口的偏差' }}</small></div>
+        <h4>{{ previewOnly ? '对接偏差' : '实体位置调整' }}</h4>
+        <div class="deviation-card" :class="{ aligned: deviation.aligned }"><span>左右偏差 <strong data-testid="docking-horizontal-deviation">{{ format(deviation.millimeters[0]) }} mm</strong></span><span>高度偏差 <strong data-testid="docking-height-deviation">{{ format(deviation.millimeters[1]) }} mm</strong></span><small>{{ plan.issues.length ? '朝向异常；以下偏差仅供查看，不代表可完成交接' : deviation.aligned ? '左右与高度在 2 mm 容差内' : '蓝色设备料口相对橙色小车料口的偏差' }}</small></div>
         <p class="depth-note">前后间隙 {{ Math.abs(deviation.millimeters[2]).toFixed(1) }} mm；本页不改变设备前后位置或朝向。</p>
         <label>调整步长 / mm<input aria-label="校准调整步长毫米" type="number" min="0.1" max="1000" step="0.1" v-model="stepMm" :disabled="busy || !editable" /></label>
         <div class="nudge-controls"><button type="button" :disabled="busy || !editable || conflict || !previewReady" @click="move('x', -1)">← 向左</button><button type="button" :disabled="busy || !editable || conflict || !previewReady" @click="move('x', 1)">向右 →</button><button type="button" :disabled="busy || !editable || conflict || !previewReady" @click="move('y', 1)">↑ 升高</button><button type="button" :disabled="busy || !editable || conflict || !previewReady" @click="move('y', -1)">↓ 降低</button></div>
@@ -150,12 +200,18 @@ defineExpose({ canLeave, savePending: () => dirty.value ? save() : true, discard
         <button type="button" class="save-calibration" :disabled="busy || !editable || !dirty || conflict || !previewReady" @click="save">{{ saving ? '正在保存…' : '保存设备位置' }}</button>
         <p class="calibration-safety">预览小车按所选工位的真实料口摆放，左右基准固定，供手动调整比较；这里只做几何校准，不代表 PLC 工位映射已验证。调整只作用于预览，保存前现场位置不变，不保存小车偏移，也不发送 PLC 指令。</p>
       </aside>
-      <div class="calibration-view"><nav aria-label="校准视图"><button type="button" :aria-pressed="view === 'front'" :disabled="busy || !previewReady" @click="setView('front')">正面</button><button type="button" :aria-pressed="view === 'top'" :disabled="busy || !previewReady" @click="setView('top')">俯视</button><span><i class="device-dot" />设备料口 <i class="cart-dot" />小车料口</span></nav><div ref="viewport" class="docking-viewport" aria-label="小车与设备对接模型预览" /><p>滚轮缩放 · 右键平移；蓝／橙标记固定在各自实体真实料口，不能拖动标记。</p></div>
+      <div class="calibration-view"><nav aria-label="校准视图"><button type="button" :aria-pressed="view === 'front'" :disabled="busy || !previewReady" @click="setView('front')">正面</button><button type="button" :aria-pressed="view === 'top'" :disabled="busy || !previewReady" @click="setView('top')">俯视</button><span><i class="device-dot" />设备料口 <i class="cart-dot" />小车料口</span></nav><div ref="viewport" class="docking-viewport" aria-label="小车与设备对接模型预览" /><p>{{ inline ? '左键拖动旋转 · 右键平移 · 滚轮缩放；正面／俯视可恢复标准观察。' : '滚轮缩放 · 右键平移；' }}蓝／橙标记固定在各自实体真实料口，箭头为当前方向；不能拖动标记。</p></div>
     </div>
-    <p v-else class="calibration-empty">选择工位及对应产线小车，再显示预览。两个料口必须已配置；单向小车需相向，旋转小车按真实转台朝向预览。这里只做几何校准，不代替 PLC 工位映射与实际停车验收；未配置时不会自动生成或移动标记。</p>
+    <p v-else class="calibration-empty" role="status"><template v-if="loading">正在载入小车与设备的对齐情况…</template><template v-else>{{ autoPreview ? '选择工位及对应产线小车，即可在这里查看对齐情况。' : '选择工位及对应产线小车，再显示预览。' }}两个料口必须已配置；单向小车需相向，旋转小车按真实转台朝向预览。这里只做几何校准，不代替 PLC 工位映射与实际停车验收；未配置时不会自动生成或移动标记。</template></p>
   </section>
 </template>
 
 <style scoped>
 .docking-calibration{border:1px solid #dbe4ee;border-radius:12px;background:#fff;color:#2a3d52;overflow:hidden}.docking-calibration header{display:flex;gap:20px;justify-content:space-between;padding:18px 20px;background:#f4f8fc}.docking-calibration h3,.docking-calibration h4{margin:0 0 8px}.docking-calibration p{font-size:13px;line-height:1.65;margin:0;color:#64768b}.permission-note{font-size:12px;color:#916a2b;max-width:200px}.calibration-pickers{display:flex;gap:12px;align-items:end;flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid #e5ebf2}.docking-calibration label{display:grid;gap:7px;font-size:13px;min-width:0}.calibration-pickers label:first-child{flex:2;min-width:220px}.calibration-pickers label:nth-child(2){flex:1;min-width:140px}.docking-calibration select,.docking-calibration input{min-width:0;max-width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid #ced9e6;border-radius:7px;background:#fff;color:#2a3d52;font:inherit}.docking-calibration button{padding:9px 13px;border:1px solid #ced9e6;border-radius:7px;background:#f9fbfe;color:#34516d;font:inherit;font-size:13px;cursor:pointer}.docking-calibration button:disabled{opacity:.45;cursor:not-allowed}.calibration-body{display:grid;grid-template-columns:290px minmax(0,1fr)}.calibration-adjustments{display:flex;flex-direction:column;gap:14px;padding:20px;border-right:1px solid #e5ebf2;background:#f8fafc;min-width:0}.deviation-card{display:grid;gap:11px;padding:14px;border:1px solid #d4dfee;border-radius:9px;background:#fff;font-size:13px}.deviation-card span{display:flex;justify-content:space-between;gap:10px}.deviation-card strong{font-variant-numeric:tabular-nums}.deviation-card small{font-size:11px;color:#6e7f92}.deviation-card.aligned{border-color:#a7d8bd;background:#f3fbf6}.nudge-controls{display:grid;grid-template-columns:1fr 1fr;gap:8px}.calibration-adjustments .save-calibration{background:#254761;color:#fff;border-color:#254761}.calibration-view{display:flex;flex-direction:column;min-width:0}.calibration-view nav{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid #e5ebf2}.calibration-view nav button[aria-pressed=true]{background:#e7f1fc;border-color:#a7c8e9;color:#14568b}.calibration-view nav span{margin-left:auto;font-size:12px;display:flex;align-items:center;gap:7px}.calibration-view i{display:inline-block;width:9px;height:9px;border-radius:50%}.device-dot{background:#1677c8}.cart-dot{background:#e29124}.docking-viewport{height:480px;min-width:0;overflow:hidden;background:#eef3f8}.docking-viewport :deep(canvas){display:block;max-width:100%}.calibration-view>p{padding:10px 16px;background:#f8fafc}.calibration-error{padding:12px 20px!important;color:#b33c35!important;background:#fff4f2}.calibration-empty{padding:30px 20px!important}.calibration-safety,.position-readout,.depth-note{font-size:12px!important}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #367cca;outline-offset:2px}@media(max-width:1050px){.calibration-body{grid-template-columns:1fr}.calibration-adjustments{border-right:0;border-bottom:1px solid #e5ebf2;display:grid;grid-template-columns:1fr 1fr}.calibration-adjustments h4,.calibration-safety{grid-column:1/-1}.docking-viewport{height:420px}}@media(max-width:620px){.calibration-adjustments{grid-template-columns:1fr}.docking-calibration header{display:block}.calibration-pickers{padding:14px}.calibration-pickers label{flex:1;min-width:140px}.calibration-view nav span{margin-left:0}.docking-viewport{height:360px}}
+.docking-calibration.is-inline{border:0;border-radius:0;min-width:0}.is-inline .calibration-pickers{gap:10px;padding:14px 16px;background:#f8fafc}.is-inline .calibration-pickers label:first-child{min-width:180px}.is-inline .calibration-pickers label:nth-child(2){min-width:130px}.is-inline .calibration-body{display:flex;flex-direction:column}.is-inline .calibration-view{order:0}.is-inline .docking-viewport{height:480px;min-height:360px}.is-inline .calibration-adjustments{order:1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:16px;border:0;border-top:1px solid #e5ebf2}.is-inline .calibration-adjustments h4,.is-inline .calibration-safety{grid-column:1/-1}.is-inline .calibration-adjustments h4{margin-bottom:0}.is-inline .calibration-adjustments .position-readout{align-self:center}.is-inline .calibration-empty{min-height:420px;box-sizing:border-box;display:flex;align-items:center}.inline-permission-note{padding:10px 16px;background:#fff8e9;color:#916a2b!important}@media(max-width:620px){.is-inline .calibration-adjustments{grid-template-columns:1fr}.is-inline .calibration-pickers label:first-child,.is-inline .calibration-pickers label:nth-child(2){min-width:140px}.is-inline .docking-viewport{height:360px}}
+</style>
+
+<style scoped>
+.calibration-port-status{display:flex;align-items:center;gap:8px 18px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid #e2ebf2;background:#f3f8fc;font-size:12px;color:#4c647c}.calibration-port-status strong{font-size:12px;color:#355777}.calibration-port-status.warning{background:#fff8ec;border-color:#efdfbc;color:#8c692c}.calibration-port-status.warning strong{color:#8a6124}.calibration-port-status p{flex-basis:100%;font-size:12px;color:inherit}
+.docking-calibration[data-preview-only="true"] .calibration-adjustments>label,.docking-calibration[data-preview-only="true"] .calibration-adjustments>.nudge-controls,.docking-calibration[data-preview-only="true"] .calibration-adjustments>button,.docking-calibration[data-preview-only="true"] .calibration-adjustments>.position-readout,.docking-calibration[data-preview-only="true"] .calibration-safety{display:none}
 </style>

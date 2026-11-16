@@ -5,6 +5,7 @@ import {CART_FEED,CART_WORK_CHAIN,locateCartChain,sampleCartChain,cartWorkingCha
 import {CLEANER_BATH} from './cleanerBathLayout.js'
 import {TRANSFER_DATUM,transferAuthoringY} from '../../../shared/equipmentTransferDatum.mjs'
 import {buildLineSimulation,sampleLineSimulation} from './lineSimulation.js'
+import {createLiftCylinderAnchors,sampleLiftCylinderPose} from './liftCylinderPose.js'
 
 /** Temporary preview rig. Original GLB bytes and saved disassembly hierarchy stay unchanged. */
 export class CadMotionRig {
@@ -211,7 +212,8 @@ export class CadMotionRig {
         this.node('radiant_tubes')?.traverse(o=>{if(!o.isMesh)return;const materials=[].concat(o.material).map(m=>{const c=m.clone();this.heatMaterials.push({material:c,emissive:c.emissive.clone(),intensity:c.emissiveIntensity});return c});o.material=Array.isArray(o.material)?materials:materials[0]})
     }
     prepareLift(){
-        const base=new T.Vector3(.48,this.authoringY(.16),0),mid=new T.Vector3(.20,this.authoringY(.59),0),tip=new T.Vector3(.03,this.authoringY(.83),0)
+        this.liftCylinderAnchors=createLiftCylinderAnchors(this.authoringY,this.node('root').userData.liftCylinderRestPose)
+        const {base,mid,tip}=this.liftCylinderAnchors
         const upperParts=[],nearMount=(part,point)=>Math.hypot(part.center.x-point.x,part.center.y-point.y)<.06&&Math.abs(part.center.z)<.09
         for(const part of this.parts('lift_edge')){
             // Determine the original slope from covariance; keep each rigid arm's length.
@@ -245,8 +247,15 @@ export class CadMotionRig {
         upperParts.forEach((part,index)=>{part.mesh.name=part.mesh.name.includes('hydraulics_metal')?'preview_lift_upper_eye':'preview_lift_upper_fastener_'+index})
         this.cylinderEye=this.pivot('cylinder_eye',tip,upperParts)
         const metal=new T.MeshStandardMaterial({color:'#63757b',metalness:.75,roughness:.38})
-        this.liftCrosshead=new T.Mesh(new T.CylinderGeometry(.018,.018,.78,24),metal)
-        this.liftCrosshead.name='preview_lift_crosshead';this.liftCrosshead.rotation.x=Math.PI/2;this.root.add(this.liftCrosshead)
+        // New assets contain the actual cross shaft in their raw source GLB.
+        // Animate that authored solid instead of drawing a second preview-only shaft.
+        // Legacy assets deliberately retain their old fallback; loading never rewrites them.
+        const crossshaftParts=this.parts('crossshaft_metal')
+        if(crossshaftParts.length)this.liftCrosshead=this.pivot('lift_crosshead',tip,crossshaftParts)
+        else{
+            this.liftCrosshead=new T.Mesh(new T.CylinderGeometry(.018,.018,.78,24),metal)
+            this.liftCrosshead.name='preview_lift_crosshead';this.liftCrosshead.rotation.x=Math.PI/2;this.root.add(this.liftCrosshead)
+        }
         const support=new T.Group();support.name='preview_lift_cylinder_base';this.root.add(support)
         const beam=new T.Mesh(new T.BoxGeometry(.08,.06,.65),metal);beam.position.set(base.x,this.authoringY(.12),0);support.add(beam)
         for(const z of [-.045,.045]){const ear=new T.Mesh(new T.BoxGeometry(.085,.08,.012),metal);ear.position.set(base.x,base.y-.015,z);support.add(ear)}
@@ -376,10 +385,10 @@ export class CadMotionRig {
         this.poseLiftCylinder(height)
     }
     poseLiftCylinder(height){
-        const top=new T.Vector3(0,this.authoringY(.14)+height/2,0),axis=top.clone().sub(this.cylinderBase).normalize()
+        const {top,barrelRotation,rodRotation}=sampleLiftCylinderPose(this.liftCylinderAnchors,height,false)
         this.liftCrosshead.position.copy(top);this.cylinderEye.position.copy(top)
-        this.cylinder.position.copy(this.cylinderBase);this.cylinder.quaternion.setFromUnitVectors(this.cylinderAxis,axis)
-        this.rod.position.copy(top);this.rod.quaternion.setFromUnitVectors(this.rodAxis,axis)
+        this.cylinder.position.copy(this.cylinderBase);this.cylinder.quaternion.copy(barrelRotation)
+        this.rod.position.copy(top);this.rod.quaternion.copy(rodRotation)
     }
     applyLinked(state={}){
         this.reset()

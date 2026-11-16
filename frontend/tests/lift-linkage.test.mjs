@@ -15,11 +15,26 @@ function assertConnected(root){
  const node=name=>root.getObjectByName('preview_'+name),point=n=>root.worldToLocal(n.getWorldPosition(new T.Vector3()))
  const eyeMesh=node('lift_upper_eye')
  assert.ok(eyeMesh)
- const base=point(node('cylinder')),eye=geometryCenter(root,eyeMesh),cross=point(node('lift_crosshead'))
+ const crossNode=node('lift_crosshead'),shaftMeshes=[]
+ assert.ok(crossNode,'both authored source and legacy portable rig contain a cross shaft')
+ crossNode.traverse(n=>{if(n.isMesh)shaftMeshes.push(n)})
+ assert.equal(shaftMeshes.length,1,'source-backed motion must not add a second synthetic cross shaft')
+ const base=point(node('cylinder')),eye=geometryCenter(root,eyeMesh),cross=point(crossNode)
  assert.ok(eye.distanceTo(cross)<.002,'the actual upper mounting eye stays on the cross shaft')
+ const shaftBounds=new T.Box3(),shaftMesh=shaftMeshes[0],shaftVertices=shaftMesh.geometry.attributes.position
+ for(let i=0;i<shaftVertices.count;i++)shaftBounds.expandByPoint(root.worldToLocal(shaftMesh.localToWorld(new T.Vector3().fromBufferAttribute(shaftVertices,i))))
+ assert.ok(shaftBounds.getCenter(new T.Vector3()).distanceTo(cross)<2e-6,'the moving shaft solid remains centred on its pivot')
+ const shaftSize=shaftBounds.getSize(new T.Vector3())
+ assert.ok(Math.abs(shaftSize.z-.78)<2e-6&&Math.abs(shaftSize.x-.036)<2e-6&&Math.abs(shaftSize.y-.036)<2e-6,'the whole rigid shaft stays transverse without shrinking or duplicating')
  const centers=[];root.traverse(n=>{if(/^preview_scissor_\d+$/.test(n.name))centers.push(point(n))})
  assert.equal(centers.length,4)
- for(const p of centers){assert.ok(Math.abs(p.x-cross.x)<1e-6&&Math.abs(p.y-cross.y)<1e-6,'cross shaft joins all four scissor-arm centres');assert.ok(Math.abs(p.z)<.39)}
+ for(const p of centers){assert.ok(Math.abs(p.x-cross.x)<1e-6&&Math.abs(p.y-cross.y)<1e-6,'cross shaft joins all four scissor-arm centres');assert.ok(Math.abs(p.z)<.39);assert.ok(shaftBounds.min.z<p.z&&shaftBounds.max.z>p.z,'actual shaft geometry spans both scissor pairs at every pose')}
+ const eyeVertices=eyeMesh.geometry.attributes.position,eyeBounds=new T.Box3()
+ for(let i=0;i<eyeVertices.count;i++){
+  const p=root.worldToLocal(eyeMesh.localToWorld(new T.Vector3().fromBufferAttribute(eyeVertices,i)));eyeBounds.expandByPoint(p)
+  assert.ok(Math.hypot(p.x-cross.x,p.y-cross.y)>=.018-2e-6,'the transverse shaft passes through the upper eye bore, not its metal ring')
+ }
+ assert.ok(shaftBounds.min.z<eyeBounds.min.z&&shaftBounds.max.z>eyeBounds.max.z,'the actual shaft passes through both upper-eye faces at every pose')
  const axis=eye.clone().sub(base).normalize(),distance=eye.distanceTo(base)
  const interval=mesh=>{const a=mesh.geometry.attributes.position,values=[];for(let i=0;i<a.count;i++)values.push(root.worldToLocal(mesh.localToWorld(new T.Vector3().fromBufferAttribute(a,i))).sub(base).dot(axis));return {min:Math.min(...values),max:Math.max(...values)}}
  const barrel=node('cylinder').getObjectByProperty('isMesh',true),rod=node('cylinder_rod').getObjectByProperty('isMesh',true)

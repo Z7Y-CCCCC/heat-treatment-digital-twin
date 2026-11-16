@@ -186,11 +186,11 @@
         1.274999976158142,
         0.8600000143051147
       ],
-      "editable_meshes": 169,
-      "runtime_meshes": 25,
-      "triangles": 15216,
-      "bytes": 815352,
-      "sha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81",
+      "editable_meshes": 170,
+      "runtime_meshes": 26,
+      "triangles": 15312,
+      "bytes": 820608,
+      "sha256": "7522a9bbf407833a153af26feb67722a34aa8f5b8149e5d0a93c13e28c804281",
       "roundtrip_max_error_m": 5.960464477539063e-8,
       "functional_groups": [
         "structure",
@@ -201,7 +201,8 @@
         "pivot_detail",
         "hydraulic_pack",
         "slide_detail",
-        "stop_detail"
+        "stop_detail",
+        "crossshaft"
       ],
       "runtime": {
         "enableGenericBindings": false,
@@ -216,11 +217,48 @@
         "cylinder_mount_eye": 2,
         "scissor_travel_roller": 4,
         "hydraulic_hose_union": 2,
-        "hex_nut": 6
+        "hex_nut": 6,
+        "pivot_crossshaft": 1
       },
       "mechanism_checks": [
-        "paired roller count, diameter, length and shaft direction"
-      ]
+        "paired roller count, diameter, length and shaft direction",
+        "authored continuous crossshaft connects both scissor sides through the upper cylinder eye"
+      ],
+      "liftCylinderRestPose": {
+        "schemaVersion": 1,
+        "coordinateSpace": "three-y-up-local-m",
+        "base": [
+          0.48,
+          0.16,
+          0
+        ],
+        "mid": [
+          0.07972172109738287,
+          0.4810565362031407,
+          0
+        ],
+        "tip": [
+          0,
+          0.5449999999999999,
+          0
+        ]
+      },
+      "liftCrossshaft": {
+        "schemaVersion": 1,
+        "node": "cad_lifting_staging_table_v1_crossshaft_metal",
+        "center": [
+          0,
+          0.5449999999999999,
+          0
+        ],
+        "axis": [
+          0,
+          0,
+          1
+        ],
+        "radius": 0.018,
+        "length": 0.78
+      }
     },
     {
       "model_id": "cad_tempering_furnace_v1",

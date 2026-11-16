@@ -57,6 +57,13 @@ namespace HeatTreatment.DigitalTwin.EditorTests
                 scene=new GameObject("Isolated two-sided rotating cart");
                 var cartRoot=new GameObject("Rail cart");cartRoot.transform.SetParent(scene.transform);
                 var original=Cube("Original one-sided model",cartRoot.transform,Vector3.zero,new Vector3(3,1,2),Color.gray);
+                var selectedUpper=new GameObject("SelectedUpper").transform;selectedUpper.SetParent(cartRoot.transform,false);selectedUpper.localPosition=new Vector3(0,.5f,0);
+                Cube("Selected model deck",selectedUpper,new Vector3(0,-.1f,0),new Vector3(1.6f,.2f,2),Color.cyan);
+                var legacyConfig=JObject.Parse("{version:1,kind:'rotating',presentation:'simple',turntableNodeName:''}");
+                using(var legacy=new CartTransferPresentation(cartRoot.transform,legacyConfig,new LoadingPortPose{Position=new[]{0d,.5d,1d},Direction=new[]{0d,0d,1d}})) {
+                    Check(!legacy.Ready && original.GetComponent<Renderer>().enabled,"Legacy simple flag hid selected model");
+                    Check(!cartRoot.GetComponentsInChildren<Transform>(true).Any(t=>t.name=="__SimpleRotatingCart"),"Legacy flag manufactured a substitute");
+                }
                 var right=Furnace("Side A",scene.transform,5,0);var left=Furnace("Side B",scene.transform,-5,180);
                 Cube("Rail A",scene.transform,new Vector3(0,-.58f,-.65f),new Vector3(8,.12f,.12f),Color.gray);
                 Cube("Rail B",scene.transform,new Vector3(0,-.58f,.65f),new Vector3(8,.12f,.12f),Color.gray);
@@ -67,7 +74,7 @@ namespace HeatTreatment.DigitalTwin.EditorTests
                 }
                 var movement=JObject.Parse("{enabled:true,displayMode:'simple',valueMode:'station',stationInputMeaning:'target',currentPositionPointId:'1',arrivalSignalPointId:'2',arrivalSmoothing:false,start:{x:0,y:0,z:0},end:{x:8,y:0,z:0},stations:[{value:1,anchorDeviceId:'right',position:{x:0,y:0,z:0}},{value:2,anchorDeviceId:'left',position:{x:0,y:0,z:0}},{value:3,anchorDeviceId:'right',position:{x:8,y:0,z:0}}]}");
                 var stationBaseline=movement.DeepClone();
-                var cart=new DeviceDto{Id="cart",ModelType="generic_rotating_cart",InstanceConfig=new JObject{["movement"]=movement,["cartTransfer"]=JObject.Parse("{version:1,kind:'rotating',presentation:'simple',turntableNodeName:''}"),["loadingPortSignals"]=JObject.Parse("{version:1,inletPointId:'3',outletPointId:'4'}")},DataPoints=new List<DataPointDto>{Point(1,"target","WORD"),Point(2,"arrived"),Point(3,"take"),Point(4,"feed")}};
+                var cart=new DeviceDto{Id="cart",ModelType="generic_rotating_cart",InstanceConfig=new JObject{["movement"]=movement,["cartTransfer"]=JObject.Parse("{version:1,kind:'rotating',presentation:'model',turntableNodeName:'SelectedUpper'}"),["loadingPortSignals"]=JObject.Parse("{version:1,inletPointId:'3',outletPointId:'4'}")},DataPoints=new List<DataPointDto>{Point(1,"target","WORD"),Point(2,"arrived"),Point(3,"take"),Point(4,"feed")}};
                 var fixedRight=new DeviceDto{Id="right",ModelType="generic_fixed",InstanceConfig=new JObject()};var fixedLeft=new DeviceDto{Id="left",ModelType="generic_fixed",RotationY=180,InstanceConfig=new JObject()};
                 var models=new[]{new ModelAssetDto{Id=cart.ModelType,Metadata=JObject.Parse("{loadingPorts:{version:1,inlet:{position:[0,0.5,1],direction:[0,0,1],nodeName:''},outlet:{position:[0,0.5,1],direction:[0,0,1],nodeName:''}}}")},new ModelAssetDto{Id="generic_fixed",Metadata=JObject.Parse("{loadingPorts:{version:1,inlet:{position:[0,0.5,-1],direction:[0,0,-1],nodeName:''},outlet:{position:[0,0.5,-1],direction:[0,0,-1],nodeName:''}}}")}};
                 var roots=new Dictionary<string,Transform>{["cart"]=cartRoot.transform,["right"]=right.transform,["left"]=left.transform};
@@ -81,8 +88,8 @@ namespace HeatTreatment.DigitalTwin.EditorTests
                 bool Owns(string id)=>runtime.Describe()["estimatedCargoDevices"].Values<string>().Contains(id);
                 float Angle()=>runtime.Describe()["turntables"]?["cart"]?.Value<float>("angleDegrees")??0;
                 Send(1,false,false);Step(0);Check(motion.HasConfirmedPosition,"Initial PLC-confirmed parking not available");
-                Check(!original.GetComponent<Renderer>().enabled,"Simple cart did not replace the old one-sided appearance");
-                var upper=cartRoot.GetComponentsInChildren<Transform>().Single(node=>node.name=="__SimpleCartUpper");var basePose=cartRoot.transform.localToWorldMatrix;
+                Check(original.GetComponent<Renderer>().enabled,"Rotation hid the selected model chassis");
+                var upper=cartRoot.GetComponentsInChildren<Transform>().Single(node=>node.name=="SelectedUpper");var basePose=cartRoot.transform.localToWorldMatrix;
                 Send(1,true,false);Step(0);Check(Active()==1,"Could not pick up from side A");Send(1,false,false);
                 for(var i=0;i<13;i++)Step(.25f);Check(Owns("cart"),"Pickup did not keep cargo on cart");
                 var cargo=upper.GetComponentsInChildren<Transform>().Single(node=>node.name.StartsWith("Illustrative cargo "));Check(cargo.parent==upper,"Cargo is not attached to upper platform");var cargoRotation=cargo.rotation;

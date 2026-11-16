@@ -9,12 +9,20 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { adminApi } from '../config/factoryConfig.js'
 import { API_BASE } from '../runtime/backendEndpoint.js'
 import { SceneRuntime } from '../runtime/SceneRuntime.js'
+import { WorkshopTransformControls } from '../three/WorkshopTransformControls.js'
+import { fitCameraBox } from '../utils/cameraBoxFit.js'
+import { transformValues, WorkshopTransformHistory } from './admin/utils/workshopTransform.js'
 import { usePreviewFullscreen } from '../runtime/usePreviewFullscreen.js'
 import { useNativeQuality } from '../runtime/nativeQuality.js'
 import { useServiceConnections } from './admin/composables/useServiceConnections.js'
 import QualityNotice from '../components/QualityNotice.vue'
 import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
 import AdminConnectionStatus from './admin/components/AdminConnectionStatus.vue'
+import { deviceTransformPayload } from '../../../shared/deviceAuthoring.mjs'
+import { prepareGuidedLineArrangement } from '../../../shared/lineGuidedArrangement.mjs'
+import DockingCalibration from './admin/components/DockingCalibration.vue'
+import LineArrangementProposal from './admin/components/LineArrangementProposal.vue'
+import WorkshopArrangement from './admin/components/WorkshopArrangement.vue'
 import LinePlannerControls from './admin/components/LinePlannerControls.vue'
 import LineAdjustmentOverlay from './admin/components/LineAdjustmentOverlay.vue'
 import { useLineAdjustmentBand } from './admin/composables/useLineAdjustmentBand.js'
@@ -63,6 +71,7 @@ import {
 } from './admin/utils/lineLayout.js'
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
 import { editLineRailSpacing, shiftRailMovement, lineSceneUnitsPerMeter } from '../../../shared/lineRailSpacing.mjs'
+import { isLineRailLengthAutomatic, syncLineRailLength } from '../../../shared/lineRailLength.mjs'
 import { planLinePlacementTemplate, canMoveLineStructure, assertLineTemplateTransition, assertLineTemplateClearance } from '../../../shared/linePlacementTemplate.mjs'
 import { simpleMotionError } from './admin/utils/mobileMotionPolicy.js'
 import { simpleMovementPayload } from './admin/utils/simpleMotionDraft.js'
@@ -163,6 +172,8 @@ const visibleSettingsSubpages = computed(() => SETTINGS_SUBPAGES.value.filter(pa
 const visiblePlatformSubpages = computed(() => PLATFORM_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey) || page.key === 'designer' && canAdminPage('platform.scene')))
 const visiblePointsSubpages = computed(() => POINTS_SUBPAGES.value.filter(page => canAdminPage(page.permissionKey)))
 function canSelectTab(key) {
+    if (key === 'composer') return ['composer', 'lines', 'workshops'].some(page => canAdminPage(page))
+    if (key === 'lines') return canAdminPage('lines') // Internal legacy focus alias; never a visible menu.
     if (key === 'data-center') return visibleDataCenterSubpages.value.length > 0
     if (key === 'platform') return visiblePlatformSubpages.value.length > 0
     if (key === 'settings') return visibleSettingsSubpages.value.length > 0
@@ -175,8 +186,17 @@ function restoreSubpage(value, options, fallback) {
 }
 
 // 当前选中的 Tab
+if (storedAdminUiState.activeTab === 'lines') { storedAdminUiState.activeTab = 'composer'; storedAdminUiState.arrangementLayer = 'line' }
+if (storedAdminUiState.activeTab === 'workshops' && storedAdminUiState.workshopManagementStep === 'layout') { storedAdminUiState.activeTab = 'composer'; storedAdminUiState.arrangementLayer = 'workshop' }
 const activeTab = ref(storedAdminUiState.activeTab || 'composer')
+const arrangementLayer = ref(storedAdminUiState.arrangementLayer === 'line' ? 'line' : 'workshop')
+const arrangementView = ref('plan')
+const arrangementSaving = ref(false)
+const arrangementProposal = ref(null), arrangementUndo = ref(null), arrangementDockingOpen = ref(false)
+let arrangementProposalResolve = null
+const isArrangementLinePlan = computed(() => activeTab.value === 'composer' && arrangementLayer.value === 'line' && arrangementView.value === 'plan')
 const isModelWorkspace = computed(() => ['models', 'model-animations'].includes(activeTab.value))
+const modelAssetLocked = ref(false)
 const platformSubpage = ref(restoreSubpage(storedAdminUiState.platformSubpage, PLATFORM_SUBPAGES.value, 'designer'))
 const settingsSubpage = ref(restoreSubpage(storedAdminUiState.settingsSubpage, SETTINGS_SUBPAGES.value, 'runtime'))
 const databaseSection = ref('primary')
@@ -215,6 +235,7 @@ watch(dataCenterSection, section => { if (section === 'mapping') pointsSubpage.v
 const currentPermissionPage = computed(() => activeTab.value === 'platform' ? `platform.${platformSubpage.value}`
     : activeTab.value === 'settings' ? `settings.${settingsSubpage.value}`
     : activeTab.value === 'data-center' ? DATA_CENTER_SUBPAGES.value.find(page => page.key === (dataCenterSection.value === 'table-editor' ? 'tables' : dataCenterSection.value))?.permissionKey || ''
+    : activeTab.value === 'composer' ? (arrangementView.value === 'three' ? 'composer' : arrangementLayer.value === 'line' ? 'lines' : 'workshops')
     : activeTab.value === 'points' ? POINTS_SUBPAGES.value.find(page => page.key === pointsSubpage.value)?.permissionKey || '' : activeTab.value)
 const controlPermissionPage = computed(() => currentPermissionPage.value === 'settings.license' ? 'settings.security' : currentPermissionPage.value)
 // Saved tab/focus state is navigation data, never an authorization grant.
@@ -288,22 +309,35 @@ const navIconPaths = {
 
 const { appDialog, openAppDialog, closeAppDialog, alert, confirm } = useAppDialog()
 const { connectionState, connectionActions, refresh: refreshServiceConnections,
-    handleConnectionAction, recoverConnectionRestart } = useServiceConnections({ confirm, prepareRestart: prepareConnectionRestart })
-async function prepareConnectionRestart() {
-    // Reconnection never navigates. Restart does, so refuse known live drafts;
+    handleConnectionAction, recoverConnectionRestart } = useServiceConnections({ confirm, prepareRestart: prepareConnectionRestart, unlock: requestConnectionUnlock })
+function hasConnectionNavigationDrafts() {
+    // Reconnection never navigates. Restart/re-lock do, so refuse known drafts;
     // never silently save/discard or invoke a canLeave that discards them.
     const editors = [modelLoadingPortRef.value, deviceLoadingPortRef.value, groundEditorRef.value]
-    if (lineAlignmentMode.value || loadingPortDeviceId.value
+    return Boolean(modelAssetLocked.value || selectedModelFile.value || lineAlignmentMode.value || loadingPortDeviceId.value
         || editors.some(editor => editor?.busy || editor?.dirty) || listFactoryDrafts(getFactoryScope()).length
-        || dirtyLineIds.value.length || modelInspectionDirty.value || manualDisassemblyDirty.value
+        || arrangementDirty.value || dirtyLineIds.value.length || modelInspectionDirty.value || manualDisassemblyDirty.value
         || workshopSpatialDirty.value || workshopMapDirty.value || isPointsDirty.value
         || showDeviceForm.value || newWorkshop.id || newWorkshop.name || newLine.id || newLine.name
         || lineDeviceLayoutBusy.value || pointsSaving.value || composerSaving.value || composerBulkSaving.value
-        || dataCenterRef.value?.isBusy || dataCenterSourceRef.value?.isBusy || modelBindingSaving.value) {
+        || dataCenterRef.value?.isBusy || dataCenterSourceRef.value?.isBusy || modelBindingSaving.value)
+}
+async function prepareConnectionRestart() {
+    if (hasConnectionNavigationDrafts()) {
         await alert('当前有未保存的修改、编辑表单或正在执行的操作。请先保存 / 取消编辑，再重启大屏。重连数据通道不需要关闭页面。', { title: '已保留当前草稿' })
         return false
     }
     return true
+}
+async function requestConnectionUnlock() {
+    if (hasConnectionNavigationDrafts()) {
+        await alert('当前有未保存的修改、编辑表单或正在执行的操作。请先保存 / 取消编辑，再重新解锁后台；当前修改已保留。', { title: '已保留当前草稿' })
+        return false
+    }
+    await lockAdmin()
+    // lockAdmin opens the existing password gate. This is not a completed login
+    // and does not stop Unity, the collector, or the Windows service.
+    return !adminSession.authenticated
 }
 const unifiedDesignerRef = ref(null)
 const mapSettingsRef = ref(null), loadingSettingsRef = ref(null), modelPlacementMenuRef = ref(null)
@@ -338,6 +372,9 @@ async function requestMotionFactorySwitch({ factoryId, factoryName }) {
 }
 
 async function requestFactorySwitch({ factoryName }) {
+    if (modelAssetLocked.value || modelUploading.value || modelBindingSaving.value || manualDisassemblySaving.value || manualDisassemblyRef.value?.dragging) return false
+    if (activeTab.value === 'composer') stageArrangementDevice()
+    if (arrangementSaving.value || arrangementProposal.value) return false
     // Native modal dialogs are top-layer surfaces: finish them before opening
     // a factory-switch prompt on the ordinary application overlay.
     if (lineAlignmentMode.value || loadingPortDeviceId.value) return false
@@ -382,6 +419,7 @@ async function requestFactorySwitch({ factoryName }) {
         await savePendingSystemSettings()
         await mobileMotionRef.value?.savePending?.()
         if (!await manualDisassemblyPage.savePending()) throw new Error(manualDisassemblyStatus.value || '拆解布局未保存')
+        if (activeTab.value === 'composer' && arrangementDirty.value && !await saveArrangement({ silent: true })) throw new Error('车间编排未保存，已取消切换')
         await groundEditorRef.value?.savePending?.()
         if (deviceAnimationLinkRef.value && !await deviceAnimationLinkRef.value.savePending()) throw new Error('设备动画联动未保存')
         await saveCurrentFactoryPageDrafts()
@@ -627,8 +665,7 @@ const selectedWorkshopEditorId = ref(storedAdminUiState.selectedWorkshopEditorId
 const workshopSavingId = ref('')
 const workshopManagementSteps = [
     { key: 'list', number: '01', title: '车间列表', description: '新增、选择与管理车间' },
-    { key: 'space', number: '02', title: '空间与边界', description: '设置世界位置和车间尺寸' },
-    { key: 'layout', number: '03', title: '产线布局', description: '按比例拖动并查看产线间距' }
+    { key: 'space', number: '02', title: '空间与边界', description: '设置世界位置和车间尺寸' }
 ]
 const workshopManagementStep = ref(
     workshopManagementSteps.some(step => step.key === storedAdminUiState.workshopManagementStep)
@@ -906,12 +943,6 @@ const lineCreating = ref(false)
 const selectedLineStructure = ref(null)
 watch(selectedLineEditorId, () => { selectedLineStructure.value = null })
 const isLineDevicePoolCollapsed = ref(!!storedAdminUiState.isLineDevicePoolCollapsed)
-const lineDevicePoolDock = reactive({
-    x: Number.isFinite(Number(storedAdminUiState.lineDevicePoolDockX)) ? Number(storedAdminUiState.lineDevicePoolDockX) : 28,
-    y: Number.isFinite(Number(storedAdminUiState.lineDevicePoolDockY)) ? Number(storedAdminUiState.lineDevicePoolDockY) : 26,
-    moving: false,
-    moved: false
-})
 const linePreviewStageRef = ref(null)
 const lineLayoutSaving = ref(false)
 const lineFlowMenuLaneId = ref('')
@@ -919,7 +950,6 @@ const lineStationEditingDeviceId = ref('')
 const lineStationDraft = ref('')
 let linePreviewDragState = null
 let lineDeviceDragState = null
-let lineDevicePoolMoveState = null
 const lineDeviceSavingId = ref('')
 const selectedLineDeviceIds = ref([])
 const lineGroupSaving = ref(false)
@@ -1153,6 +1183,7 @@ async function flushDashboardViewPreview() {
 }
 
 function scheduleNativeScenePreview({ source = activeTab.value, includeLayout = false, deviceOverride } = {}) {
+    if (activeTab.value === 'composer') return // Workbench drafts stay local until explicit save.
     if (!canAdminPage(source === 'spatial' ? 'workshops' : source, 'edit')) return
     if (!['composer', 'lines', 'spatial'].includes(source)) return
     nativeScenePreviewPending = {
@@ -1376,7 +1407,7 @@ function openCreateDevice() {
     deviceFormTargetId.value = ''
     editingDeviceType.value = 'fixed'
     editingDeviceWorkshopId.value = workshops.value[0]?.id || ''
-    Object.assign(editingDevice, { 
+    Object.assign(editingDevice, {
         id: '', name: '', line_id: placedLines.value[0]?.id || '',
         model_type: availableModelOptions.value[0]?.id || '', model_file: '', template_id: '', instance_config: '{}',
         pos_x: 0, pos_y: 0, pos_z: 0, rotation_y: 0, scale: 1.0, coordinate_space: 'line_local', sort_order: devices.value.length,
@@ -2058,6 +2089,7 @@ function modelLibraryStepAvailable(step) {
 }
 
 async function selectModelLibraryStep(step) {
+    if (modelAssetLocked.value) return
     if (modelLibraryStep.value === step) return
     if (!modelLibraryStepAvailable(step)) return
     if (modelLoadingPortRef.value && !await modelLoadingPortRef.value.canLeave()) return
@@ -2152,6 +2184,21 @@ function translateModelNodeName(rawName) {
 
 function formatModelNodeType(type) {
     return modelNodeTypeTranslations[type] || type || '节点'
+}
+
+const modelAssetTransferDirty = computed(() => !!selectedModelFile.value || modelInspectionDirty.value || manualDisassemblyDirty.value
+    || Boolean(savedModelEditorSnapshot.value && activePreviewModel.value && modelEditorSnapshot() !== savedModelEditorSnapshot.value))
+async function importRawModelAsset(file) {
+    await selectModelFile({ target: { files: [file], value: '' } })
+}
+async function refreshImportedModelAsset(model) {
+    await loadModels()
+    const selected = models.value.find(item => item.id === model?.id) || activePreviewModel.value
+    if (selected) await previewExistingModel(selected, { afterUpload: true })
+    if (!manualDisassemblyDirty.value && !manualDisassemblySaving.value && !manualDisassemblyRef.value?.dragging && canAdminPage('disassembly-layout')) {
+        if (selected && manualDisassemblyChoices.value.some(item => item.id === selected.id)) await manualDisassemblyPage.selectModel(selected.id)
+        await manualDisassemblyPage.ensureSelection()
+    }
 }
 
 function formatMeshCount(count) {
@@ -3318,6 +3365,7 @@ function resetModelImportForm(file) {
 }
 
 async function selectModelFile(event) {
+    if (modelAssetLocked.value || !await manualDisassemblyPage.canLeave()) { event.target.value = ''; return }
     if (!canAdminPage('models', 'edit') || modelUploading.value || modelNameSaving.value) { event.target.value = ''; return }
     const file = event.target.files[0]
     if (!file) return
@@ -3397,6 +3445,7 @@ async function uploadModel() {
 }
 
 async function previewExistingModel(model, { afterUpload = false } = {}) {
+    if (modelAssetLocked.value && !afterUpload) return
     if (modelBindingSaving.value || modelNameSaving.value || (modelUploading.value && !afterUpload)) { modelBindingStatus.value = '正在保存模型，请等待保存完成再切换。'; return }
     if (model.id !== selectedPreviewModelId.value && modelLoadingPortRef.value && !await modelLoadingPortRef.value.canLeave()) return
     if (activeTab.value === 'model-animations' && model.id !== selectedPreviewModelId.value && activePreviewModel.value) {
@@ -4087,6 +4136,11 @@ const composerPreviewMode = ref('line')
 const composerPreviewStatus = ref('等待加载预览')
 const composerPreviewErrors = ref([])
 const composerSaving = ref(false)
+const composerTool = ref('translate'), composerSpatial = ref(false), composerSnap = ref(.1)
+const composerGesture = ref(false), composerHistoryVersion = ref(0)
+const composerHistory = new WorkshopTransformHistory()
+let composerTransform = null, composerGestureBefore = null
+const arrangementComposerBaseline = ref('')
 const composerBulkSaving = ref(false)
 const isComposerPreviewWide = ref(false)
 const composerRotationPresets = [0, 90, 180, 270]
@@ -4172,7 +4226,7 @@ const assetHierarchyDeviceId = computed(() => {
 })
 const assetHierarchyLineId = computed(() => {
     if (activeTab.value === 'composer') return selectedComposerLineId.value
-    if (activeTab.value === 'lines') return selectedLineEditorId.value
+    if (isArrangementLinePlan.value) return selectedLineEditorId.value
     if (activeTab.value === 'devices' && showDeviceForm.value) return editingDevice.line_id
     return ''
 })
@@ -4248,7 +4302,7 @@ const composerPreviewDevices = computed(() => devices.value.map(device => {
     const source = device.id === composerDraft.id ? { ...device, ...composerDraft } : device
     return normalizeDeviceConfig(source)
 }))
-const selectedComposerWorkshop = computed(() => workshops.value.find(ws => ws.id === selectedComposerLine.value?.workshop_id))
+const selectedComposerWorkshop = computed(() => selectedWorkshopEditor.value || workshops.value.find(ws => ws.id === selectedComposerLine.value?.workshop_id))
 const selectedComposerDevices = computed(() => sortByOrder(composerPreviewDevices.value.filter(device => {
     return device.line_id === selectedComposerLineId.value && !isAuxiliaryDeviceConfig(device)
 })))
@@ -4397,15 +4451,18 @@ function syncComposerDraftFromSelection() {
         return
     }
     Object.assign(composerDraft, normalizeDeviceConfig(device))
+    arrangementComposerBaseline.value = snapshotJson(deviceTransformPayload(composerDraft))
 }
 
 function selectComposerLine(lineId) {
+    if (activeTab.value === 'composer') stageArrangementDevice()
     selectedComposerLineId.value = lineId
     selectedComposerDeviceId.value = ''
     composerPreviewMode.value = 'line'
 }
 
 function selectComposerDevice(deviceId) {
+    if (activeTab.value === 'composer') stageArrangementDevice()
     if (selectedComposerDeviceId.value === deviceId) {
         clearComposerDeviceSelection()
         return
@@ -4415,9 +4472,10 @@ function selectComposerDevice(deviceId) {
 }
 
 function selectComposerDeviceFromPreview(deviceId) {
+    if (activeTab.value === 'composer') stageArrangementDevice()
     if (!devices.value.some(device => device.id === deviceId)) return
     selectedComposerDeviceId.value = deviceId
-    composerPreviewMode.value = 'device'
+    composerPreviewMode.value = arrangementLayer.value === 'line' ? 'line' : 'workshop'
 }
 
 function clearComposerDeviceSelection() {
@@ -4581,7 +4639,7 @@ async function flipSelectedComposerLine() {
     const lineDevices = selectedComposerDevices.value
     if (!lineDevices.length) return alert('当前产线没有设备可调转')
     const lineName = selectedComposerLine.value?.name || selectedComposerLineId.value
-    if (!(await confirm(`确定调转 ${lineName} 的整体朝向吗？这会镜像位置、旋转设备并反转排序。`))) return
+    if (!(await confirm(`确定调转 ${lineName} 的整体朝向吗？这会镜像位置、旋转设备并反转排序。修改进入编排草稿，点击顶部保存后生效。`))) return
 
     const xValues = lineDevices.map(device => numberOrDefault(device.pos_x, 0))
     const zValues = lineDevices.map(device => numberOrDefault(device.pos_z, 0))
@@ -4596,6 +4654,17 @@ async function flipSelectedComposerLine() {
         .map(device => numberOrDefault(device.sort_order, 0))
         .sort((a, b) => a - b)
 
+    if (activeTab.value === 'composer') {
+        stageArrangementDevice()
+        const patches = new Map(sortedDevices.map((device, index) => [device.id, {
+            [mirrorAxis]: roundComposerNumber((mirrorCenter * 2) - numberOrDefault(device[mirrorAxis], 0)),
+            rotation_y: normalizeComposerAngle(numberOrDefault(device.rotation_y, 0) + Math.PI),
+            sort_order: sortOrders[sortOrders.length - 1 - index] ?? device.sort_order
+        }]))
+        devices.value = devices.value.map(d => patches.has(d.id) ? { ...d, ...patches.get(d.id) } : d)
+        composerPreviewMode.value = 'line'; scheduleComposerPreview(0)
+        return
+    }
     composerBulkSaving.value = true
     try {
         const results = await Promise.all(sortedDevices.map((device, index) => {
@@ -4659,6 +4728,8 @@ async function openDataCenterSection(section) {
 }
 
 async function selectAdminTab(tabKey) {
+    if (modelAssetLocked.value) return
+    if (tabKey === 'lines') { arrangementLayer.value = 'line'; arrangementView.value = 'plan'; tabKey = 'composer' }
     let requestedDataSection = ''
     if (['points', 'point-monitor'].includes(tabKey)) {
         const section = tabKey === 'point-monitor' ? 'monitor' : pointsSubpage.value || 'mapping'
@@ -4667,6 +4738,10 @@ async function selectAdminTab(tabKey) {
         tabKey = 'data-center'
     }
     if (!canSelectTab(tabKey)) return
+    if (activeTab.value === 'composer' && tabKey !== activeTab.value && arrangementDirty.value) {
+        if (!await confirm('车间编排还有未保存修改。放弃本次修改并离开？', { title: '未保存的编排' })) return
+        await discardArrangement(false)
+    }
     if (tabKey !== activeTab.value && modelLoadingPortRef.value && !await modelLoadingPortRef.value.canLeave()) return
     if (tabKey !== activeTab.value && deviceLoadingPortRef.value && !await deviceLoadingPortRef.value.canLeave()) return
     if (tabKey !== activeTab.value && (lineGroupSaving.value || lineLoadingMeasuring.value)) return
@@ -4738,6 +4813,7 @@ function startComposerPreviewWatchdog() {
 
 function disposeActiveComposerRuntime() {
     disconnectComposerResizeObserver()
+    composerTransform?.dispose(); composerTransform = null
     if (!composerRuntime) return
     composerRuntime.dispose()
     composerRuntime = null
@@ -4760,7 +4836,7 @@ function disposeComposerPreview() {
 }
 
 function scheduleComposerPreview(delay = 220) {
-    if (activeTab.value !== 'composer') return
+    if (activeTab.value !== 'composer' || arrangementView.value !== 'three') return
     if (composerDragActive) return
     if (composerPreviewBuilding) {
         composerPreviewQueued = true
@@ -4786,7 +4862,18 @@ function focusComposerPreview() {
     }
     if (composerPreviewMode.value === 'device' && selectedComposerDeviceId.value) {
         const model = composerRuntime.furnaces.get(selectedComposerDeviceId.value)
-        if (model) composerRuntime.sceneManager?.flyToDevice(model)
+        if (model) {
+            // Dashboard flyToDevice calls onDeviceSelect, hides peers and enables
+            // X-ray. An editor focus must not trigger that navigation cycle.
+            const index = getComposerLineIndex(selectedComposerLineId.value)
+            if (index >= 0) composerRuntime.flyToLine(index)
+            const manager = composerRuntime.sceneManager
+            manager.stopCameraTransition(); model.updateWorldMatrix(true, true)
+            const box = new THREE.Box3().setFromObject(model)
+            if (box.isEmpty()) return
+            const fit = fitCameraBox({ minX: box.min.x, maxX: box.max.x, minY: box.min.y, maxY: box.max.y, minZ: box.min.z, maxZ: box.max.z }, { fov: manager.camera.fov, aspect: manager.camera.aspect, direction: [.6,.55,1] })
+            manager.camera.position.fromArray(fit.position); manager.controls.target.fromArray(fit.target); manager.controls.update()
+        }
         return
     }
     const lineIndex = getComposerLineIndex(selectedComposerLineId.value)
@@ -4838,7 +4925,7 @@ async function renderComposerPreview() {
             },
             onDeviceRegistered: () => {},
             interactionOptions: {
-                enableDeviceDrag: canAdminPage('composer', 'edit'),
+                enableDeviceDrag: false, // Workbench transform handles own the pointer lifecycle.
                 canDragDevice: deviceId => isComposerTransferCart(deviceId),
                 onDeviceDragStart: handleComposerDeviceDragStart,
                 onDeviceDrag: handleComposerDeviceDrag,
@@ -4855,6 +4942,11 @@ async function renderComposerPreview() {
             return
         }
         composerRuntime = runtime
+        composerTransform = new WorkshopTransformControls(runtime, {
+            getContext: composerTransformContext, onSelect: selectComposerDeviceFromPreview,
+            onStart: beginComposerGesture, onChange: applyComposerGesture, onEnd: endComposerGesture, onUndo: undoComposerGesture
+        })
+        composerTransform.sync()
         composerGroundWarning.value = runtime.groundRenderer?.warning || ''
         composerPreviewErrors.value = runtime.getModelErrors?.() || []
         connectComposerResizeObserver(container)
@@ -4910,6 +5002,7 @@ function updateComposerPreviewFromDraft() {
     )
     composerGroundWarning.value = composerRuntime?.groundRenderer?.warning || ''
     if (updated && composerRuntime?.isRenderSurfaceHealthy?.()) {
+        composerTransform?.sync()
         composerPreviewStatus.value = '预览已同步'
         return
     }
@@ -4919,7 +5012,7 @@ function updateComposerPreviewFromDraft() {
 async function saveComposerDevice() {
     if (!composerDraft.id) return alert('请先选择设备')
     if (isComposerTransferCart(composerDraft.id)) {
-        if (!composerRailOptions.value.length) return alert('请先在产线管理中为当前车间添加小车导轨')
+        if (!composerRailOptions.value.length) return alert('请先在车间编排的产线层添加小车导轨')
         if (!parseInstanceConfig(composerDraft.instance_config).railId) {
             snapComposerTransferCartToRail({ x: composerDraft.pos_x, y: composerDraft.pos_y, z: composerDraft.pos_z })
         }
@@ -4953,8 +5046,73 @@ watch(selectedComposerLineId, () => {
 })
 
 watch(selectedComposerDeviceId, () => {
+    composerSpatial.value = false
     syncComposerDraftFromSelection()
+    nextTick(() => composerTransform?.sync())
     scheduleNativeScenePreview({ source: 'composer' })
+})
+
+function composerTransformContext() {
+    const device = composerDraft.id ? { ...composerDraft } : null
+    const line = device && lines.value.find(l => l.id === (device.line_id || parseInstanceConfig(device.instance_config).railLineId))
+    const workshop = device && workshops.value.find(w => w.id === getDeviceWorkshopId(device))
+    const binding = line && resolveDeviceLayoutTarget(device, line, { allowFallback: false })
+    return { device, line, workshop, binding, model: models.value.find(m => m.id === device?.model_type),
+        cart: binding?.type === 'rail', mode: composerTool.value, spatial: composerSpatial.value,
+        units: line ? lineSceneUnitsPerMeter(getLineLayout(line)) : 1, step: composerSnap.value,
+        active: activeTab.value === 'composer' && arrangementView.value === 'three',
+        editable: canAdminPage('composer', 'edit') && !arrangementBusy.value }
+}
+function composerGestureSnapshot(device = composerDraft) {
+    return { ...transformValues(device), ground: parseInstanceConfig(device.instance_config).ground ?? null }
+}
+function composerGesturePatch(device, value) {
+    const { ground, ...transform } = value, config = { ...parseInstanceConfig(device.instance_config) }
+    if (ground === null) delete config.ground; else config.ground = ground
+    return { ...transform, instance_config: JSON.stringify(config) }
+}
+function beginComposerGesture(id) {
+    if (composerDraft.id !== id || !composerTransformContext().editable) return
+    composerGestureBefore = composerGestureSnapshot(); composerGesture.value = true
+}
+function applyComposerGesture(id, patch) {
+    if (composerDraft.id !== id || !composerGestureBefore) return
+    const movedHeight = Math.abs(composerDraft.pos_y - patch.pos_y) > 1e-9
+    Object.assign(composerDraft, patch)
+    if (movedHeight) ensureComposerDeviceGround()
+    const before = composerGestureBefore
+    composerPreviewStatus.value = composerTool.value === 'rotate' ? `正在转向 · ${composerRotationDegrees.value}`
+        : `移动中 · 沿产线 ${((patch.pos_x - before.pos_x) / composerTransformContext().units).toFixed(2)} 米 · Esc 取消`
+}
+function endComposerGesture(id, cancelled = false) {
+    const before = composerGestureBefore; composerGestureBefore = null; composerGesture.value = false
+    if (!before || composerDraft.id !== id) return
+    if (cancelled) Object.assign(composerDraft, composerGesturePatch(composerDraft, before))
+    else composerHistory.push(id, before, composerGestureSnapshot())
+    composerHistoryVersion.value++; composerPreviewStatus.value = cancelled ? '已取消本次拖动' : '已加入布局草稿，可撤销；保存布局后同步大屏'
+}
+function undoComposerGesture(redo = false) {
+    if (arrangementBusy.value || composerGesture.value || !canAdminPage('composer', 'edit')) return
+    const entry = composerHistory.take(redo, id => {
+        const device = id === composerDraft.id ? composerDraft : devices.value.find(d => d.id === id)
+        return device && composerGestureSnapshot(device)
+    })
+    if (entry) {
+        if (entry.id === composerDraft.id) Object.assign(composerDraft, composerGesturePatch(composerDraft, entry.value))
+        else { devices.value = devices.value.map(d => d.id === entry.id ? { ...d, ...composerGesturePatch(d, entry.value) } : d); nextTick(() => composerRuntime?.updateDeviceLayout(composerWorkshops.value, entry.id, models.value)) }
+        composerPreviewStatus.value = redo ? '已重做本次摆放' : '已撤销本次摆放'
+    }
+    composerHistoryVersion.value++
+}
+const composerCanUndo = computed(() => (composerHistoryVersion.value, composerHistory.undo.length > 0))
+const composerCanRedo = computed(() => (composerHistoryVersion.value, composerHistory.redo.length > 0))
+function turnComposerDevice(degrees) {
+    if (!composerDraft.id || !composerTransformContext().editable) return
+    beginComposerGesture(composerDraft.id); setComposerRotationDegrees(radiansToDegrees(composerDraft.rotation_y) + degrees); endComposerGesture(composerDraft.id)
+}
+watch([composerTool, composerSpatial, composerSnap, () => arrangementView.value], () => {
+    if (composerTransform?.drag) composerTransform.finish(true)
+    composerTransform?.sync()
 })
 
 watch(composerPreviewMode, () => {
@@ -4968,7 +5126,7 @@ watch(composerDraft, () => {
 }, { deep: true })
 
 watch([lines, devices, selectedLineEditorId], () => {
-    if (activeTab.value === 'lines') {
+    if (isArrangementLinePlan.value) {
         scheduleNativeScenePreview({ source: 'lines', includeLayout: true })
     }
 }, { deep: true })
@@ -5089,8 +5247,6 @@ watch([
     isLineDevicePoolCollapsed,
     pointsSubpage,
     dataCenterSection,
-    () => lineDevicePoolDock.x,
-    () => lineDevicePoolDock.y
 ], () => {
     try {
     localStorage.setItem(ADMIN_UI_STATE_KEY, JSON.stringify({
@@ -5106,6 +5262,7 @@ watch([
         selectedLineEditorId: selectedLineEditorId.value,
         selectedWorkshopEditorId: selectedWorkshopEditorId.value,
         workshopManagementStep: workshopManagementStep.value,
+        arrangementLayer: arrangementLayer.value,
         workshopMapSelectedLineId: workshopMapSelectedLineId.value,
         modelLibraryStep: modelLibraryStep.value,
         selectedPreviewModelId: selectedPreviewModelId.value,
@@ -5114,8 +5271,6 @@ watch([
         isLineDevicePoolCollapsed: isLineDevicePoolCollapsed.value,
         pointsSubpage: pointsSubpage.value,
         dataCenterSection: dataCenterSection.value,
-        lineDevicePoolDockX: lineDevicePoolDock.x,
-        lineDevicePoolDockY: lineDevicePoolDock.y
     }))
     } catch { /* Local UI preferences are optional when storage is unavailable. */ }
 })
@@ -5171,7 +5326,7 @@ async function initializeAdminPanel() {
     if (adminPanelDisposed || !adminPanelActive) return
     if (!nativeScenePreviewStatusTimer) nativeScenePreviewStatusTimer = setInterval(refreshAdminConnectionStatus, 3000)
     if (activeTab.value === 'composer') scheduleNativeScenePreview({ source: 'composer' })
-    if (activeTab.value === 'lines') scheduleNativeScenePreview({ source: 'lines', includeLayout: true })
+    if (isArrangementLinePlan.value) scheduleNativeScenePreview({ source: 'lines', includeLayout: true })
     if (activeTab.value === 'workshops') {
         ensureWorkshopMapLineSelection()
         scheduleNativeScenePreview({ source: 'spatial', includeLayout: true })
@@ -5215,7 +5370,6 @@ onDeactivated(() => {
     finishWorkshopMapLineDrag()
     finishWorkshopPendingLineDrag()
     cancelLineDeviceDrag()
-    cancelLineDevicePoolMove()
     finishComposerLayoutPanelDrag()
     stopPointMonitor()
     disposeComposerPreview()
@@ -5239,7 +5393,6 @@ onUnmounted(() => {
     finishWorkshopMapLineDrag()
     finishWorkshopPendingLineDrag()
     cancelLineDeviceDrag()
-    cancelLineDevicePoolMove()
     finishComposerLayoutPanelDrag()
     stopPointMonitor()
     disposeComposerPreview()
@@ -5392,12 +5545,15 @@ function deviceLayoutSnapshot(device) {
         lineIds: [...new Set(lineIds)].sort(),
         serialized: snapshotJson({
             id: device?.id || '',
+            model_type: device?.model_type || '',
+            model_file: device?.model_file || '',
             line_id: device?.line_id || '',
             pos_x: numberOrDefault(device?.pos_x, 0),
             pos_y: numberOrDefault(device?.pos_y, 0),
             pos_z: numberOrDefault(device?.pos_z, 0),
             rotation_y: numberOrDefault(device?.rotation_y, 0),
             scale: numberOrDefault(device?.scale, 1),
+            sort_order: numberOrDefault(device?.sort_order, 0),
             coordinate_space: device?.coordinate_space || '',
             instance_config: config
         })
@@ -5432,7 +5588,7 @@ const lineLayoutDirty = computed(() => lineHasUnsavedLayout(selectedLineEditor.v
 
 function handleUnsavedCanvasBeforeUnload(event) {
     if (factorySwitchApproved) return
-    if (!dirtyLineIds.value.length && !modelInspectionDirty.value && !manualDisassemblyDirty.value) return
+    if (!arrangementDirty.value && !dirtyLineIds.value.length && !modelInspectionDirty.value && !manualDisassemblyDirty.value) return
     event.preventDefault()
     event.returnValue = ''
 }
@@ -5444,11 +5600,13 @@ function syncLineLayout(line, layout) {
     line.layout_json = JSON.stringify(normalized)
 }
 
-function applyLineLayoutDraft(line, candidate) {
+function applyLineLayoutDraft(line, candidate, deviceTransforms = []) {
     if (!line) return
-    const before = getLineLayout(line), normalized = normalizeLineLayout(candidate)
+    const before = getLineLayout(line), sourceDevices = devices.value
+    const occupiedLaneIds = (candidate.lanes || []).filter(lane => getDevicesBoundToLayoutItem('lane', lane.id, line, sourceDevices).length).map(lane => lane.id)
+    const normalized = normalizeLineLayout(syncLineRailLength(candidate, occupiedLaneIds))
     if (normalized.placementTemplate) assertLineTemplateTransition(before, normalized)
-    const sourceDevices = devices.value, patches = new Map()
+    const patches = new Map()
     // Build every affected device/path patch before changing any reactive draft.
     // A bad carrier on a later rail must not leave the lane, first rail or first
     // carrier moved while the user sees a rejection message.
@@ -5458,9 +5616,26 @@ function applyLineLayoutDraft(line, candidate) {
             if (!previous || previous.offsetZ === item.offsetZ && previous.length === item.length && previous.name === item.name) continue
             const deltaZ = numberOrDefault(item.offsetZ, 0) - numberOrDefault(previous.offsetZ, 0)
             for (const device of getDevicesBoundToLayoutItem(type, item.id, line, sourceDevices)) {
-                patches.set(device.id, buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ))
+                const patch = buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ)
+                // A visual length change needs only bounds validation. Do not
+                // rewrite bindings or movement just to resize a drawing.
+                if (previous.offsetZ !== item.offsetZ || previous.name !== item.name) patches.set(device.id, patch)
             }
         }
+    }
+    const ids = new Set()
+    for (const pose of deviceTransforms) {
+        const device = sourceDevices.find(row => row.id === pose.id)
+        const target = device && resolveDeviceLayoutTarget(device, line, { allowFallback: false })
+        if (!device || !target || ids.has(pose.id) || Object.keys(pose).some(key => !['id', 'pos_z', 'rotation_y'].includes(key))
+            || !Number.isFinite(pose.pos_z) || Math.abs(pose.pos_z) > 10000
+            || target.type === 'rail' && Math.abs(pose.pos_z - Number(device.pos_z)) > 1e-6
+            || pose.rotation_y !== undefined && (!Number.isFinite(pose.rotation_y) || Math.abs(pose.rotation_y) > Math.PI + 1e-6)) throw Error('自动对齐设备来源或姿态无效，未应用任何修改')
+        ids.add(pose.id)
+        // These devices already have explicit bindings. Automatic alignment
+        // owns only yaw/depth, not even cosmetic binding-name normalization.
+        patches.set(pose.id, { pos_z: pose.pos_z,
+            ...(pose.rotation_y !== undefined ? { rotation_y: pose.rotation_y } : {}) })
     }
     line.layout = normalized
     line.layout_json = JSON.stringify(normalized, null, 2)
@@ -5480,10 +5655,13 @@ function changeLineRailSpacing({ railId, field, value }) {
     } catch (error) { alert(error.message, { title: '设备线与轨道间距无效', type: 'warning' }) }
 }
 
-async function measureLineLayoutEnvelopes(line) {
-    const source = devices.value.filter(device => {
+async function measureLineLayoutEnvelopes(line, candidates = devices.value) {
+    const source = candidates.filter(device => {
         const config = parseInstanceConfig(device.instance_config)
-        return device.line_id === line.id || config.laneLineId === line.id || config.railLineId === line.id
+        const belongs = device.line_id === line.id || config.laneLineId === line.id || config.railLineId === line.id
+        // The pool is not part of the placed layout. Leave its devices alone;
+        // only explicitly bound devices participate in the docking proposal.
+        return belongs && resolveDeviceLayoutTarget(device, line, { allowFallback: false })
     })
     const bindings = new Map(source.map(device => {
         const binding = resolveDeviceLayoutTarget(device, line, { allowFallback: false })
@@ -5500,13 +5678,16 @@ async function measureLineLayoutEnvelopes(line) {
         if (points.some(point => !point || !Number.isFinite(point.z))) throw Error(`「${device.name || device.id}」移动路径无效，未把未知位置当作安全通道`)
         const zs = points.map(point => point?.z).filter(Number.isFinite)
         return { ...row, [binding.type === 'rail' ? 'railId' : 'laneId']: binding.item.id,
+            ...(binding.type === 'rail' && getLineLayout(line).placementTemplate?.mouthAligned && row.loadingPort && row.transferStroke > 0 ? {
+                transferReach: { stroke: row.transferStroke * Math.abs(row.transferAxis[2]), positiveFaceZ: row.loadingPort.position[2], negativeFaceZ: row.loadingPort.position[2] }
+            } : {}),
             ...(binding.type === 'rail' && zs.length ? { pathMinZ: Math.min(...zs), pathMaxZ: Math.max(...zs) } : {}) }
     })
 }
 
 function lineAdjustmentRequest() {
     const line = selectedLineEditor.value, layout = line && getLineLayout(line)
-    if (activeTab.value !== 'lines' || !layout?.placementTemplate) return null
+    if (!isArrangementLinePlan.value || !layout?.placementTemplate || layout.placementTemplate.independentSides || layout.placementTemplate.mouthAligned) return null
     const source = devices.value.filter(device => {
         const config = parseInstanceConfig(device.instance_config)
         return device.line_id === line.id || config.laneLineId === line.id || config.railLineId === line.id
@@ -5535,20 +5716,36 @@ async function chooseLinePlacementTemplate(kind) {
     if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value || lineCreating.value) return
     const line = selectedLineEditor.value
     if (!line) return
+    stageArrangementDevice()
     const before = snapshotJson({ layout: getLineLayout(line), devices: devices.value, models: models.value }), scope = getFactoryScope()
+    let manualDeviceId = ''
     lineLoadingMeasuring.value = true
     try {
+        const sourceDevices = JSON.parse(JSON.stringify(devices.value))
         const rows = await measureLineLayoutEnvelopes(line)
-        const plan = planLinePlacementTemplate(getLineLayout(line), kind, rows)
+        const plan = await prepareGuidedLineArrangement(getLineLayout(line), kind, rows, { measure: orientations => {
+            const rotations = new Map(orientations.map(row => [row.id, row.rotation_y]))
+            return measureLineLayoutEnvelopes(line, sourceDevices.map(device => rotations.has(device.id) ? { ...device, rotation_y: rotations.get(device.id) } : device))
+        } })
+        if (plan.orientations.length && !canAdminPage('composer', 'edit')) throw Error('自动纠正朝向需要设备编排编辑权限；原布局未改动')
         const unchanged = () => !adminPanelDisposed && selectedLineEditor.value === line && getFactoryScope() === scope
             && before === snapshotJson({ layout: getLineLayout(line), devices: devices.value, models: models.value })
         if (!unchanged()) throw Error('测量期间产线或模型已改变，请重新选择模板')
-        const distance = Math.abs(plan.layout.lanes[0].offsetZ - plan.layout.rails[0].offsetZ) / lineSceneUnitsPerMeter(plan.layout)
-        if (!await confirm(`导轨保持原位，设备线按模型外形留出通道；显示中心距约 ${distance.toFixed(2)} 米。${kind === 'dual' ? '第一条线可在安全范围摆放，第二条线在导轨对侧跟随。' : '设备线可在所选侧的安全范围摆放。'}\n\n仅应用到当前草稿，不改模型尺寸、朝向、PLC 或运动配置。需要点击“保存产线结构”才会保存。`, { title: '应用布局模板' })) return
-        if (!unchanged()) throw Error('确认期间产线已改变，未覆盖新的草稿')
-        applyLineLayoutDraft(line, plan.layout)
-    } catch (error) { alert(error.message, { title: '布局模板未应用', type: 'warning' }) }
+        const undo = { lineId: line.id, layout: JSON.parse(JSON.stringify(getLineLayout(line))), devices: devices.value.filter(d => rows.some(r => r.id === d.id)).map(d => JSON.parse(JSON.stringify(d))) }
+        if (!await new Promise(resolve => { arrangementProposalResolve = resolve; arrangementProposal.value = { ...plan, lineName: line.name || line.id } })) return
+        if (!unchanged()) throw Error('预览期间产线、设备或模型已改变，未覆盖任何修改；请重新生成推荐方案')
+        applyLineLayoutDraft(line, plan.layout, plan.deviceTransforms)
+        syncComposerDraftFromSelection()
+        undo.applied = snapshotJson({ layout: getLineLayout(line), devices: devices.value.filter(d => undo.devices.some(old => old.id === d.id)) })
+        arrangementUndo.value = undo
+
+    } catch (error) {
+        if (error.code === 'LINE_AUTO_ALIGNMENT_REQUIRES_3D' && error.deviceIds?.length && canAdminPage('composer')) {
+            if (await confirm(error.message, { title: error.deviceIds.length === 1 ? '这台设备需三维调整' : '这几台设备需三维调整', type: 'warning', confirmText: '到三维调整', cancelText: '保留原布局' })) manualDeviceId = error.deviceIds[0]
+        } else await alert(error.message, { title: '自动对齐未应用', type: 'warning' })
+    }
     finally { lineLoadingMeasuring.value = false }
+    if (manualDeviceId && !adminPanelDisposed && getFactoryScope() === scope && selectedLineEditor.value === line) await openArrangementDevice(manualDeviceId)
 }
 
 function selectLineEditor(lineId) {
@@ -5567,10 +5764,17 @@ function editLineDetails(draft) {
     selectLineEditor(line.id)
 }
 
-function changeLineLayoutItem({ type, id, field, value }) {
+function changeLineLengthFromCanvas(lane, event, preview = false) {
+    const units = lineSceneUnitsPerMeter(selectedLineLayout.value)
+    changeLineLayoutItem({ type: 'lane', id: lane.id, field: 'length', value: Number(event.target.value) * units, preview })
+    if (!preview) event.target.value = Number((findLineLayoutItem('lane', lane.id).length / units).toFixed(2))
+}
+
+function changeLineLayoutItem({ type, id, field, value, preview = false }) {
     if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
     const item = findLineLayoutItem(type, id)
     if (!item || !['name', 'offsetZ', 'length'].includes(field)) return
+    if (type === 'rail' && field === 'length' && isLineRailLengthAutomatic(getLineLayout(selectedLineEditor.value))) return
     if (field === 'offsetZ' && (type === 'rail' || getLineLayout(selectedLineEditor.value).lanes.length > 1 && !canMoveLineStructure(getLineLayout(selectedLineEditor.value), type, id))) return
     if (type === 'rail' && field === 'offsetZ' && item.spacing) return
     const next = field === 'name' ? String(value) : Number(value)
@@ -5583,7 +5787,7 @@ function changeLineLayoutItem({ type, id, field, value }) {
     }
     candidate[type === 'rail' ? 'rails' : 'lanes'].find(row => row.id === id)[field] = next
     try { applyLineLayoutDraft(line, candidate) }
-    catch (error) { alert(error.message, { title: '产线结构未修改', type: 'warning' }) }
+    catch (error) { if (!preview) alert(error.message, { title: '产线结构未修改', type: 'warning' }) }
 }
 
 async function focusLineStructure({ type, id }) {
@@ -5620,92 +5824,6 @@ function setLineFlowDirectionFromCanvas(direction) {
 
 function lineFlowDirectionClass() {
     return `direction-${selectedLineLayout.value.flowDirection || 'right'}`
-}
-
-function lineDevicePoolDockStyle() {
-    return {
-        left: `${lineDevicePoolDock.x}px`,
-        bottom: `${lineDevicePoolDock.y}px`
-    }
-}
-
-function clampLineDevicePoolDock(x, y, state) {
-    const padding = 12
-    const maxX = Math.max(padding, state.hostWidth - state.dockWidth - padding)
-    const maxY = Math.max(padding, state.hostHeight - state.dockHeight - padding)
-    return {
-        x: Math.min(maxX, Math.max(padding, x)),
-        y: Math.min(maxY, Math.max(padding, y))
-    }
-}
-
-function startLineDevicePoolMove(event) {
-    if (event.button !== 0) return
-    if (event.target.closest?.('.line-device-pool-chip, .line-device-pool-close')) return
-    const dock = event.currentTarget.closest?.('.line-device-pool-dock')
-    const host = event.currentTarget.closest?.('.line-planner-preview')
-    if (!dock || !host) return
-    event.stopPropagation()
-
-    const dockRect = dock.getBoundingClientRect()
-    const hostRect = host.getBoundingClientRect()
-    lineDevicePoolMoveState = {
-        startX: event.clientX,
-        startY: event.clientY,
-        startDockX: lineDevicePoolDock.x,
-        startDockY: lineDevicePoolDock.y,
-        dockWidth: dockRect.width,
-        dockHeight: dockRect.height,
-        hostWidth: hostRect.width,
-        hostHeight: hostRect.height
-    }
-    lineDevicePoolDock.moving = true
-    lineDevicePoolDock.moved = false
-    document.body.classList.add('line-preview-dragging')
-    window.addEventListener('pointermove', handleLineDevicePoolMove)
-    window.addEventListener('pointerup', finishLineDevicePoolMove, { once: true })
-}
-
-function handleLineDevicePoolMove(event) {
-    const state = lineDevicePoolMoveState
-    if (!state) return
-    const deltaX = event.clientX - state.startX
-    const deltaY = event.clientY - state.startY
-    const next = clampLineDevicePoolDock(
-        state.startDockX + deltaX,
-        state.startDockY - deltaY,
-        state
-    )
-    lineDevicePoolDock.x = Math.round(next.x)
-    lineDevicePoolDock.y = Math.round(next.y)
-    if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) {
-        lineDevicePoolDock.moved = true
-    }
-}
-
-function finishLineDevicePoolMove() {
-    lineDevicePoolMoveState = null
-    lineDevicePoolDock.moving = false
-    document.body.classList.remove('line-preview-dragging')
-    window.removeEventListener('pointermove', handleLineDevicePoolMove)
-    window.setTimeout(() => {
-        lineDevicePoolDock.moved = false
-    }, 0)
-}
-
-function cancelLineDevicePoolMove() {
-    lineDevicePoolMoveState = null
-    lineDevicePoolDock.moving = false
-    document.body.classList.remove('line-preview-dragging')
-    window.removeEventListener('pointermove', handleLineDevicePoolMove)
-}
-
-function handleLineDevicePoolTabClick() {
-    if (lineDevicePoolDock.moved) {
-        lineDevicePoolDock.moved = false
-        return
-    }
-    toggleLineDevicePool()
 }
 
 function addLineLayoutItem(type) {
@@ -5947,6 +6065,7 @@ async function saveLineStationNumber(device) {
     const config = { ...parseInstanceConfig(device.instance_config), stationNumber: value }
     const patch = { instance_config: JSON.stringify(config, null, 2) }
     patchDeviceLocally(device.id, patch)
+    if (activeTab.value === 'composer') { lineSelectionFeedback.value = '已加入编排草稿，点击顶部保存后生效'; cancelLineStationEdit(); return true }
     lineDeviceSavingId.value = device.id
     try {
         const payload = buildDevicePayloadForSave({ ...device, ...patch, instance_config: config }, line.workshop_id)
@@ -5972,7 +6091,7 @@ function buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ = 0) {
     // Spacing/name edits and save/reopen must retain sub-metre calibration;
     // only the canvas placement gesture itself should snap to its grid.
     const nextX = numberOrDefault(device.pos_x, 0)
-    if (Math.abs(nextX) > halfLength + .000001) throw new Error('设备位置超出调整后的设备线或导轨，请先调整设备位置再缩短长度')
+    if (Math.abs(nextX) > halfLength + .000001) throw new Error(`「${device.name || device.id}」设备位置超出调整后的${item.name || '设备线或导轨'}，请先调整设备位置再缩短长度`)
     const nextZ = Number((numberOrDefault(device.pos_z, getLineBaseZ(line.id) + numberOrDefault(item.offsetZ, 0)) + deltaZ).toFixed(6))
 
     if (type === 'rail') {
@@ -6333,6 +6452,7 @@ function startLinePreviewDrag(type, itemId, mode, event) {
     const stage = event.currentTarget.closest?.('.line-preview-stage')
     if (!item || !stage) return
     if (mode === 'move' && !canMoveLineStructure(selectedLineLayout.value, type, itemId)) return
+    if (type === 'rail' && mode !== 'move' && isLineRailLengthAutomatic(selectedLineLayout.value)) return
     if (mode === 'move' && selectedLineLayout.value.placementTemplate) {
         const band = lineAdjustmentDisplayBand.value
         if (lineAdjustmentPending.value || !band?.currentInside) return alert('请先检查微调范围；当前设备线在范围外时，重新选择模板并确认预览，不会自动挪动原布局。', { type: 'warning' })
@@ -6389,7 +6509,8 @@ function handleLinePreviewDrag(event) {
 }
 
 function finishLinePreviewDrag() {
-    if (selectedLineEditor.value) touchLineLayout(selectedLineEditor.value)
+    // Pointer moves already apply complete validated drafts. Reapplying here
+    // could retry a rejected shrink or dirty a layout on a click without drag.
     linePreviewDragState = null
     document.body.classList.remove('line-preview-dragging')
     window.removeEventListener('pointermove', handleLinePreviewDrag)
@@ -6696,6 +6817,16 @@ async function saveLineDevicePlan(plan, lineId) {
             : { laneLineId: line.id, laneId: target.id, laneName: target.name, stationNumber: stations.get(device.id), railLineId: null, railId: null, railName: null }
         return { id: row.id, line_id: line.id, coordinate_space: 'line_local', pos_x: row.x, pos_z: getLineBaseZ(line.id) + row.z, layoutConfig }
     })
+    if (activeTab.value === 'composer') {
+        for (const patch of patches) {
+            const device = getLineDeviceById(patch.id), config = { ...parseInstanceConfig(device.instance_config) }
+            for (const [key, value] of Object.entries(patch.layoutConfig)) { if (value === null) delete config[key]; else config[key] = value }
+            const { id, layoutConfig, ...transform } = patch
+            patchDeviceLocally(id, { ...transform, instance_config: JSON.stringify(config) })
+        }
+        lineSelectionFeedback.value = '已加入编排草稿，点击顶部保存后生效'
+        return true
+    }
     lineGroupSaving.value = true
     lineSelectionFeedback.value = '正在保存…'
     try {
@@ -6770,6 +6901,7 @@ async function placeLineDeviceOnTarget(drag) {
         instance_config: JSON.stringify(config, null, 2)
     }
     patchDeviceLocally(device.id, patch)
+    if (activeTab.value === 'composer') { lineSelectionFeedback.value = '已加入编排草稿，点击顶部保存后生效'; return true }
     lineDeviceSavingId.value = device.id
     try {
         const payload = buildDevicePayloadForSave({ ...device, ...patch, instance_config: config }, line.workshop_id)
@@ -6809,6 +6941,7 @@ async function removeDeviceFromLineCanvas(device) {
         instance_config: JSON.stringify(config, null, 2)
     }
     patchDeviceLocally(device.id, patch)
+    if (activeTab.value === 'composer') { lineSelectionFeedback.value = '已加入编排草稿，点击顶部保存后生效'; return true }
     lineDeviceSavingId.value = device.id
     try {
         const payload = buildDevicePayloadForSave({ ...device, ...patch, instance_config: config }, line.workshop_id)
@@ -7201,8 +7334,8 @@ async function openLinePlacement(line) {
     if (!line?.id || !line.workshop_id) return
     selectedWorkshopEditorId.value = line.workshop_id
     workshopMapPlacementHintLineId.value = line.id
-    selectAdminTab('workshops')
-    selectWorkshopManagementStep('layout')
+    await selectAdminTab('composer')
+    arrangementLayer.value = 'workshop'; arrangementView.value = 'plan'
     await nextTick()
     adminContentRef.value?.scrollTo({ top: 0, behavior: 'smooth' })
 }
@@ -7300,11 +7433,160 @@ async function resetWorkshopMapLayout() {
     await reloadSavedNativeScenePreview('spatial')
 }
 
+
+// Shared selection and draft ownership for the single workshop workbench.
+const arrangementDevices = computed(() => devices.value.map(device => {
+    const config = parseInstanceConfig(device.instance_config)
+    return { ...device, arrangementLineId: device.line_id || config.railLineId || config.laneLineId || '',
+        arrangementWorkshopId: getDeviceWorkshopId(device), arrangementCart: isAuxiliaryDeviceConfig(device) }
+}))
+const arrangementBusy = computed(() => arrangementSaving.value || lineDeviceLayoutBusy.value || composerSaving.value || composerBulkSaving.value || workshopMapSaving.value)
+watch(arrangementBusy, () => { if (composerTransform?.drag) composerTransform.finish(true); composerTransform?.sync() })
+function arrangementDeviceChanged(device) {
+    return deviceLayoutSnapshot(device).serialized !== savedDeviceLayoutSnapshots.value[device.id]?.serialized
+}
+function arrangementDeviceDraft(current) {
+    if (!current || !composerDraft.id || current.id !== composerDraft.id || !arrangementComposerBaseline.value) return current
+    const patch = deviceTransformPayload(composerDraft), baseline = JSON.parse(arrangementComposerBaseline.value)
+    if (snapshotJson(patch) === snapshotJson(baseline)) return current
+    const config = { ...parseInstanceConfig(current.instance_config) }, next = { ...current }
+    for (const [key, value] of Object.entries(patch.layoutConfig || {})) if (snapshotJson(value) !== snapshotJson(baseline.layoutConfig?.[key])) { if (value === null) delete config[key]; else config[key] = value }
+    if (patch.ground !== undefined && snapshotJson(patch.ground) !== snapshotJson(baseline.ground)) config.ground = patch.ground
+    for (const [key, value] of Object.entries(patch)) if (!['layoutConfig', 'ground'].includes(key) && snapshotJson(value) !== snapshotJson(baseline[key])) next[key] = value
+    next.instance_config = JSON.stringify(config)
+    return next
+}
+const arrangementDraftDevices = computed(() => devices.value.map(arrangementDeviceDraft))
+const arrangementDirty = computed(() => dirtyLineIds.value.length > 0 || arrangementDraftDevices.value.some(arrangementDeviceChanged) || !!groundEditorRef.value?.dirty)
+function buildArrangementPayload() {
+    const batch = { lines: [], placements: [], devices: [], grounds: groundEditorRef.value?.pendingChanges?.() || [] }
+    for (const line of lines.value) {
+        const saved = savedLineLayoutSnapshots.value[line.id]
+        if (!saved) continue
+        const layout = normalizeLineLayout(getLineLayout(line)), before = JSON.parse(saved)
+        const record = JSON.parse(savedLineRecordSnapshots.value[line.id] || '{}')
+        const metadataChanged = snapshotJson(record) !== lineRecordSnapshot(line)
+        if (snapshotJson(layout) === snapshotJson(before) && !metadataChanged) continue
+        const stripPlacement = ({ transform, placementPending, ...rest }) => rest
+        if (!metadataChanged && snapshotJson(stripPlacement(layout)) === snapshotJson(stripPlacement(before))) {
+            batch.placements.push({ id: String(line.id), expectedLayout: before, value: { transform: layout.transform, placementPending: layout.placementPending } })
+        } else batch.lines.push({ id: String(line.id), expectedLayout: before, expectedRecord: record, value: { layout, name: line.name, workshop_id: line.workshop_id, sort_order: line.sort_order || 0 } })
+    }
+    for (const device of arrangementDraftDevices.value) {
+        const saved = savedDeviceLayoutSnapshots.value[device.id]
+        if (saved?.serialized && arrangementDeviceChanged(device)) batch.devices.push({ id: String(device.id), expected: JSON.parse(saved.serialized), value: deviceTransformPayload(device) })
+    }
+    return batch
+}
+const arrangementCanSave = computed(() => canAdminApi('/api/workshop-arrangement', 'PUT', buildArrangementPayload()))
+function stageArrangementDevice() {
+    const current = devices.value.find(d => d.id === composerDraft.id)
+    const next = arrangementDeviceDraft(current)
+    if (!current || next === current) return
+    devices.value = devices.value.map(d => d.id === current.id ? next : d)
+    arrangementComposerBaseline.value = snapshotJson(deviceTransformPayload(composerDraft))
+}
+function resolveArrangementProposal(value) {
+    const resolve = arrangementProposalResolve; arrangementProposalResolve = null; arrangementProposal.value = null; resolve?.(value === true)
+}
+function undoArrangementLayout() {
+    const undo = arrangementUndo.value, line = undo && lines.value.find(l => l.id === undo.lineId)
+    if (!line || arrangementBusy.value) return
+    const current = snapshotJson({ layout: getLineLayout(line), devices: devices.value.filter(d => undo.devices.some(old => old.id === d.id)) })
+    if (current !== undo.applied) return alert('自动排布之后已有其他修改，不能覆盖这些修改。可使用“取消修改”恢复已保存布局。', { type: 'warning' })
+    syncLineLayout(line, JSON.parse(JSON.stringify(undo.layout)))
+    const originals = new Map(undo.devices.map(d => [d.id, d])); devices.value = devices.value.map(d => originals.get(d.id) || d)
+    syncComposerDraftFromSelection()
+    arrangementUndo.value = null
+}
+async function createArrangementLine() {
+    if (arrangementDirty.value) return alert('请先保存或取消本次布局修改，再新增产线。', { type: 'warning' })
+    if (!canAdminPage('lines', 'edit') || arrangementBusy.value) return
+    stageArrangementDevice(); arrangementLayer.value = 'line'; arrangementView.value = 'plan'
+    newLine.workshop_id = selectedWorkshopEditor.value?.id || ''
+    await nextTick(); linePlannerControlsRef.value?.openCreation?.()
+}
+async function deleteArrangementLine(id) {
+    if (arrangementDirty.value) return alert('请先保存或取消本次布局修改，再删除产线。', { type: 'warning' })
+    await deleteLine(id)
+}
+async function editArrangementLine(id) {
+    await openArrangementLine(id); await nextTick()
+    linePlannerControlsRef.value?.editLine?.(lines.value.find(l => l.id === id))
+}
+async function openArrangementWorkshop(id) {
+    if (arrangementBusy.value || !workshops.value.some(w => w.id === id)) return
+    stageArrangementDevice(); selectedComposerDeviceId.value = ''; selectedWorkshopEditorId.value = id
+    const line = lines.value.find(l => l.workshop_id === id)
+    selectedLineEditorId.value = line?.id || ''; selectedComposerLineId.value = line?.id || ''
+    arrangementLayer.value = 'workshop'; composerPreviewMode.value = 'workshop'
+    ensureWorkshopMapLineSelection(); await nextTick(); scheduleComposerPreview(0)
+}
+function openArrangementOverview() {
+    if (arrangementBusy.value) return
+    stageArrangementDevice(); selectedComposerDeviceId.value = ''; arrangementLayer.value = 'workshop'; composerPreviewMode.value = 'workshop'
+}
+async function openArrangementLine(id) {
+    if (arrangementBusy.value || !canAdminPage('lines')) return
+    const line = lines.value.find(l => l.id === id); if (!line) return
+    stageArrangementDevice(); selectedComposerDeviceId.value = ''; selectedWorkshopEditorId.value = line.workshop_id
+    selectedLineEditorId.value = id; selectedComposerLineId.value = id; workshopMapSelectedLineId.value = id
+    arrangementLayer.value = 'line'; composerPreviewMode.value = 'line'
+    await nextTick(); scheduleComposerPreview(0)
+}
+async function openArrangementDevice(id) {
+    if (arrangementBusy.value || !canAdminPage('composer')) return
+    const device = arrangementDevices.value.find(d => d.id === id); if (!device) return
+    stageArrangementDevice(); selectedWorkshopEditorId.value = device.arrangementWorkshopId
+    if (device.arrangementLineId) { selectedLineEditorId.value = device.arrangementLineId; selectedComposerLineId.value = device.arrangementLineId; arrangementLayer.value = 'line' }
+    selectedComposerDeviceId.value = id; syncComposerDraftFromSelection()
+    arrangementView.value = 'three'; composerPreviewMode.value = 'device'
+    await nextTick()
+    // Selection alone must not dispose a healthy canvas and its new handles.
+    // The runtime already owns all placed models; rebuild only when needed.
+    if (composerRuntime?.furnaces.has(id) && composerRuntime.isRenderSurfaceHealthy()) {
+        composerTransform?.sync(); focusComposerPreview(); resizeComposerPreviewAfterLayout()
+    } else scheduleComposerPreview(0)
+}
+async function setArrangementView(view) {
+    if (arrangementBusy.value || !['plan', 'three'].includes(view) || view === 'three' && !canAdminPage('composer')) return
+    stageArrangementDevice(); arrangementView.value = view
+    if (view === 'three') { composerPreviewMode.value = selectedComposerDeviceId.value ? 'device' : arrangementLayer.value === 'line' ? 'line' : 'workshop'; await nextTick(); scheduleComposerPreview(0); resizeComposerPreviewAfterLayout() }
+}
+async function saveArrangement({ silent = false } = {}) {
+    if (arrangementBusy.value || !arrangementDirty.value) return
+    stageArrangementDevice(); const body = buildArrangementPayload()
+    if (!canAdminApi('/api/workshop-arrangement', 'PUT', body)) return alert('没有本次修改所需的编辑权限；草稿保留。', { type: 'warning' })
+    arrangementSaving.value = true
+    try {
+        const result = await adminApi.saveWorkshopArrangement(body)
+        if (result?.success !== true) throw Error(result?.error || '后端未确认保存，草稿保留')
+        arrangementUndo.value = null
+        composerHistory.clear(); composerHistoryVersion.value++
+        groundEditorRef.value?.acceptChanges?.(result.grounds || [])
+        await Promise.all([loadLines(), loadDevices(), loadWorkshops()]); syncComposerDraftFromSelection()
+        await reloadSavedNativeScenePreview('composer')
+        if (!silent) await alert('车间编排已整批保存并同步大屏。', { title: '保存成功', type: 'success' })
+        return true
+    } catch (error) { await alert(error.message || '编排未保存，草稿保留', { title: '保存失败', type: 'danger' }); return false }
+    finally { arrangementSaving.value = false }
+}
+async function discardArrangement(ask = true) {
+    if (arrangementBusy.value) return
+    if (composerTransform?.drag) composerTransform.finish(true)
+    if (ask && !await confirm('放弃本次尚未保存的编排修改？', { title: '取消修改' })) return
+    composerHistory.clear(); composerHistoryVersion.value++
+    arrangementUndo.value = null
+    groundEditorRef.value?.discardPending?.(); await Promise.all([loadLines(), loadDevices()]); syncComposerDraftFromSelection()
+}
+watch([arrangementView, arrangementLayer], async () => {
+    finishLinePreviewDrag(); cancelLineDeviceDrag(); await nextTick()
+    if (arrangementView.value === 'three') scheduleComposerPreview(0)
+})
 function openSelectedWorkshopLineEditor() {
     const line = selectedWorkshopMapLine.value
     if (!line) return
-    selectedLineEditorId.value = line.id
-    selectAdminTab('lines')
+    openArrangementLine(line.id)
 }
 
 const factoryTabs = computed(() => adminNavPages('factory', adminPageCatalog.value))
@@ -7338,7 +7620,7 @@ async function openAdminSetupStep(step) {
 
 <template>
     <SaveFeedbackToast />
-    <div class="admin-container" data-admin-workspace :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': activeTab === 'lines', 'manual-layout-active': activeTab === 'disassembly-layout', 'animation-active': activeTab === 'model-animations' }">
+    <div class="admin-container" data-admin-workspace :class="{ 'unity-embedded': isUnityEmbedded, 'unity-dashboard-tab': isUnityEmbedded && unityHostState.attached && !unityHostState.adminVisible, 'nav-collapsed': isAdminNavCollapsed, 'composer-active': activeTab === 'composer', 'line-planner-active': isArrangementLinePlan, 'manual-layout-active': activeTab === 'disassembly-layout', 'animation-active': activeTab === 'model-animations' }">
         <AdminWindowChrome v-if="isUnityEmbedded" @state="Object.assign(unityHostState, $event)" @before-dashboard="flushDashboardViewPreview" />
         <!-- 顶部工具栏 -->
         <header class="admin-header" aria-label="后台工具栏">
@@ -7512,101 +7794,397 @@ async function openAdminSetupStep(step) {
                 <Transition name="tab-switch" mode="out-in">
                     <div v-if="canSelectTab(activeTab)" :key="activeTab" class="tab-transition-host">
 
-                <!-- ======== 现场编排器 ======== -->
-                <div v-if="activeTab === 'composer'" class="tab-content composer-tab" :class="{ 'preview-wide': isComposerPreviewWide }">
-                    <section class="composer-editor">
-                        <div class="composer-section">
-                            <h2>现场编排器</h2>
-                            <p class="desc">编排设备、标高与地面，实时预览，保存后同步大屏。</p>
-                            <div class="native-live-row">
-                                <button type="button" class="btn btn-sm" @click="restoreSavedNativeScenePreview">恢复已保存布局</button>
-                            </div>
-                            <div class="composer-stat-grid">
-                                <div><span>车间</span><strong>{{ composerStats.workshops }}</strong></div>
-                                <div><span>产线</span><strong>{{ composerStats.lines }}</strong></div>
-                                <div><span>设备</span><strong>{{ composerStats.devices }}</strong></div>
-                                <div><span>当前线</span><strong>{{ composerStats.selectedLineDevices }}</strong></div>
-                            </div>
-                        </div>
+                <WorkshopArrangement v-if="activeTab === 'composer'"
+                    :workshops="workshops" :lines="lines" :devices="arrangementDevices"
+                    :workshop-id="selectedWorkshopEditor?.id || ''" :line-id="selectedLineEditorId" :device-id="selectedComposerDeviceId"
+                    :layer="arrangementLayer" :view="arrangementView" :busy="arrangementBusy || composerGesture" :dirty="arrangementDirty"
+                    :can-undo="!!arrangementUndo" @undo="undoArrangementLayout" :can-create-line="canAdminPage('lines', 'edit')" :can-delete-line="canAdminPage('lines', 'delete')" :can-save="arrangementCanSave" :can-view-lines="canAdminPage('lines')" :can-view-devices="canAdminPage('composer')"
+                    @workshop="openArrangementWorkshop" @overview="openArrangementOverview" @line="openArrangementLine" @device="openArrangementDevice"
+                    @create-line="createArrangementLine" @edit-line="editArrangementLine" @delete-line="deleteArrangementLine" @view="setArrangementView" @save="saveArrangement" @discard="discardArrangement">
+                    <template #workshop>                    <div v-if="selectedWorkshopEditor" class="arrangement-workshop-plan">
+                        <section class="workshop-map-shell">
+                            <div class="workshop-map-toolbar">
+                                <div>
+                                    <h3>{{ selectedWorkshopEditor.name }} · 产线平面布局</h3>
+                                    <p>每个产线块按真实长度与宽度同比例绘制。拖动即可调整 X / Z，自动以 0.5 米吸附并限制在车间边界内。</p>
+                                </div>
 
-                        <details class="composer-section composer-ground-panel">
+                            </div>
+
+
+
+                            <div class="workshop-map-layout">
+                                <div class="workshop-map-board">
+                                    <div class="workshop-map-dimension workshop-map-dimension-x">X 方向 · {{ getWorkshopLayout(selectedWorkshopEditor).size.width }} 米</div>
+                                    <div class="workshop-map-dimension workshop-map-dimension-z">Z 方向 · {{ getWorkshopLayout(selectedWorkshopEditor).size.depth }} 米</div>
+                                    <div
+                                        ref="workshopMapStageRef"
+                                        class="workshop-map-stage"
+                                        :class="{
+                                            'pending-drag-active': workshopMapPendingDragLineId,
+                                            'pending-drop-active': workshopMapPendingDropReady
+                                        }"
+                                    >
+                                        <span class="workshop-map-axis workshop-map-axis-x"></span>
+                                        <span class="workshop-map-axis workshop-map-axis-z"></span>
+                                        <span class="workshop-map-origin">0, 0</span>
+                                        <article
+                                            v-for="line in placedWorkshopMapLines"
+                                            :key="line.id"
+                                            class="workshop-map-line"
+                                            :class="{
+                                                selected: selectedWorkshopMapLine?.id === line.id,
+                                                dragging: workshopMapDraggingLineId === line.id,
+                                                outside: workshopMapLineOutside(line)
+                                            }"
+                                            :style="workshopMapLineStyle(line)"
+                                            tabindex="0"
+                                            @click.stop="selectWorkshopMapLine(line)"
+                                            @pointerdown="startWorkshopMapLineDrag($event, line)"
+                                            @keydown.enter="openArrangementLine(line.id)" @dblclick.stop="openArrangementLine(line.id)"
+                                        >
+                                            <header>
+                                                <strong>{{ line.name }}</strong>
+                                                <span>{{ workshopLineFootprint(line).length }} × {{ workshopLineFootprint(line).width }} m</span>
+                                            </header>
+                                            <span
+                                                v-for="track in workshopLineFootprint(line).tracks"
+                                                :key="`${track.type}-${track.id}`"
+                                                class="workshop-map-track"
+                                                :class="track.type"
+                                                :style="workshopMapTrackStyle(track, line)"
+                                            ></span>
+                                        </article>
+                                        <aside v-if="pendingWorkshopMapLines.length" class="workshop-line-placement-dock" @click.stop>
+                                            <header>
+                                                <div>
+                                                    <strong>待放置产线</strong>
+                                                    <span>按住卡片拖入画布</span>
+                                                </div>
+                                                <b>{{ pendingWorkshopMapLines.length }}</b>
+                                            </header>
+                                            <div class="workshop-line-placement-list">
+                                                <div
+                                                    v-for="line in pendingWorkshopMapLines"
+                                                    :key="line.id"
+                                                    class="workshop-line-placement-card"
+                                                    :class="{
+                                                        attention: workshopMapPlacementHintLineId === line.id,
+                                                        dragging: workshopMapPendingDragLineId === line.id
+                                                    }"
+                                                    :title="`拖动「${line.name}」到画布中的目标位置`"
+                                                    @pointerdown="startWorkshopPendingLineDrag($event, line)"
+                                                    @lostpointercapture="finishWorkshopPendingLineDrag"
+                                                >
+                                                    <span class="workshop-line-placement-handle">⠿</span>
+                                                    <span class="workshop-line-placement-copy">
+                                                        <strong>{{ line.name }}</strong>
+                                                        <small>{{ workshopLineFootprint(line).length }} × {{ workshopLineFootprint(line).width }} 米</small>
+                                                    </span>
+                                                    <em>拖入</em>
+                                                </div>
+                                            </div>
+                                        </aside>
+                                        <div v-if="!placedWorkshopMapLines.length" class="workshop-map-empty">
+                                            <strong>{{ pendingWorkshopMapLines.length ? '把待放置产线拖进来' : '这个车间还没有产线' }}</strong>
+                                            <span>{{ pendingWorkshopMapLines.length ? '从右上角工具浮标拖动卡片，松手后自动限制在车间边界内。' : '点击左侧“＋”新增产线，再在当前画布中安排位置。' }}</span>
+                                            <button v-if="!pendingWorkshopMapLines.length" type="button" class="btn btn-primary" @click="createArrangementLine">新增产线</button>
+                                        </div>
+                                    </div>
+                                    <div class="workshop-map-legend">
+                                        <span><i class="lane"></i>设备线</span>
+                                        <span><i class="rail"></i>小车导轨</span>
+                                        <span><i class="center"></i>车间中心轴</span>
+                                    </div>
+                                </div>
+
+                                <aside class="workshop-map-inspector">
+                                    <template v-if="selectedWorkshopMapLine">
+                                        <label class="workshop-map-line-select">当前产线
+                                            <select v-model="workshopMapSelectedLineId" class="input">
+                                                <option v-for="line in placedWorkshopMapLines" :key="line.id" :value="line.id">{{ line.name }}</option>
+                                            </select>
+                                        </label>
+                                        <div class="workshop-map-footprint-card">
+                                            <span>实际占地</span>
+                                            <strong>{{ workshopLineFootprint(selectedWorkshopMapLine).length }} × {{ workshopLineFootprint(selectedWorkshopMapLine).width }} 米</strong>
+                                            <small>{{ getLineLayout(selectedWorkshopMapLine).lanes.length }} 条设备线 · {{ getLineLayout(selectedWorkshopMapLine).rails.length }} 条导轨</small>
+                                        </div>
+                                        <div class="workshop-map-input-grid" @input="previewWorkshopMapLine()" @change="previewWorkshopMapLine()">
+                                            <label>相对车间 X<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.x" type="number" step="0.5" class="input"  /></label>
+                                            <label>相对车间 Z<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.z" type="number" step="0.5" class="input"  /></label>
+                                            <label>离地 Y<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.y" type="number" step="0.1" class="input"  /></label>
+                                            <label>朝向<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.rotationY" type="number" min="-180" max="180" step="1" class="input"  /></label>
+                                        </div>
+                                        <div v-if="selectedWorkshopMapMetrics" class="workshop-map-metrics">
+                                            <h4>距车间边界</h4>
+                                            <div class="workshop-map-metric-grid">
+                                                <span>左<strong>{{ selectedWorkshopMapMetrics.boundary.left }} m</strong></span>
+                                                <span>右<strong>{{ selectedWorkshopMapMetrics.boundary.right }} m</strong></span>
+                                                <span>前<strong>{{ selectedWorkshopMapMetrics.boundary.top }} m</strong></span>
+                                                <span>后<strong>{{ selectedWorkshopMapMetrics.boundary.bottom }} m</strong></span>
+                                            </div>
+                                            <p v-if="selectedWorkshopMapMetrics.nearest" :class="{ danger: selectedWorkshopMapMetrics.nearest.overlaps }">
+                                                {{ selectedWorkshopMapMetrics.nearest.overlaps ? '与' : '最近' }}「{{ selectedWorkshopMapMetrics.nearest.line.name }}」
+                                                {{ selectedWorkshopMapMetrics.nearest.overlaps ? '发生占地重叠' : `间隔约 ${selectedWorkshopMapMetrics.nearest.distance} 米` }}
+                                            </p>
+                                            <p v-else>当前车间只有这一条产线。</p>
+                                        </div>
+                                        <button type="button" class="btn workshop-line-detail-button" @click="openSelectedWorkshopLineEditor">进入产线</button>
+                                    </template>
+                                    <div v-else class="workshop-map-inspector-empty">选择一条产线后可精确调整。</div>
+                                </aside>
+                            </div>
+                        </section>
+                    </div>
+</template>
+                    <template #line>                <!-- ======== 产线管理 ======== -->
+                <div v-if="canAdminPage('lines')" class="tab-content line-planner-tab">
+                    <div class="line-planner-shell">
+
+
+
+
+                        <div class="line-planner-layout">
+                            <LinePlannerControls guided ref="linePlannerControlsRef"
+                                :lines="lines" :workshops="workshops" :selected-id="selectedLineEditorId" :layout="selectedLineLayout"
+                                :saved-snapshot="savedLineLayoutSnapshots[selectedLineEditorId] || ''"
+                                :draft="newLine" :busy="lineDeviceLayoutBusy" :creating="lineCreating"
+                                :layout-dirty="lineLayoutDirty" :layout-saving="lineLayoutSaving"
+                                :device-count="selectedLineEditorDevices.length" :total-devices="selectedLineTotalDeviceCount"
+                                @select="selectLineEditor" @delete="deleteLine" @create="createLine" @edit="editLineDetails"
+                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @change-rail-spacing="changeLineRailSpacing" @docking-preview="arrangementDockingOpen = true" @choose-placement-template="chooseLinePlacementTemplate" @save-layout="saveSelectedLineLayout" @focus-item="focusLineStructure"
+                            />
+
+                            <section class="line-planner-preview">
+
+                                <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
+                                    <span class="line-selection-hint">Ctrl / Shift 多选</span>
+                                    <button type="button" class="line-device-pool-toggle" :disabled="!selectedLineDevicePool.length" :aria-expanded="selectedLineDevicePool.length > 0 && !isLineDevicePoolCollapsed" aria-controls="line-unplaced-device-pool" @click="toggleLineDevicePool">未摆放设备 <strong>{{ selectedLineDevicePool.length }}</strong></button>
+                                    <span v-if="selectedLineDeviceIds.length">已选 {{ selectedLineDeviceIds.length }} 台</span>
+                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget || selectedLineDeviceIds.length < 3" title="固定两端，平均分配所选设备的中心间距" @click="applyLineDeviceSpacing()" v-permission="{ page: 'lines', action: 'edit' }">等间距</button>
+                                    <label>中心距(m) <input v-model.number="lineDeviceGap" aria-label="设备中心间距（米）" type="number" min="0.01" step="0.5" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" /></label>
+                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" @click="applyLineDeviceSpacing(true)" v-permission="{ page: 'lines', action: 'edit' }">应用间距</button>
+                                    <button v-if="selectedLineDeviceIds.length" type="button" :disabled="lineDeviceLayoutBusy" @click="clearLineDeviceSelection">取消选择</button>
+                                    <span role="status" aria-live="polite">{{ lineSelectionFeedback }}</span>
+                                </div>
+                                <div
+                                    id="line-unplaced-device-pool"
+                                    class="line-device-pool-dock"
+                                    v-if="selectedLineDevicePool.length && !isLineDevicePoolCollapsed"
+                                    role="region" aria-label="未摆放设备"
+                                >
+                                    <div class="line-device-pool">
+                                        <div class="line-device-pool-title">
+                                            <strong>未摆放设备 · {{ selectedLineDevicePool.length }}</strong>
+                                            <span>拖到设备线或小车导轨</span>
+                                        </div>
+                                        <div class="line-device-pool-items">
+                                        <button
+                                        v-for="device in selectedLineDevicePool"
+                                        :key="device.id"
+                                        type="button"
+                                        draggable="false"
+                                        class="line-device-pool-chip"
+                                            :title="`${device.name} · ${formatModelName(device.model_type)}`"
+                                            :class="{ cart: isAuxiliaryDeviceConfig(device), saving: lineDeviceSavingId === device.id }"
+                                            @pointerdown="startLineDeviceDrag(device.id, $event)"
+                                        >
+                                            <strong>{{ device.name }}</strong>
+                                            <span>{{ formatModelName(device.model_type) }}</span>
+                                        </button>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            class="line-device-pool-close"
+                                            title="收起设备池"
+                                            @click="toggleLineDevicePool"
+                                        >
+                                            收起
+                                        </button>
+                                    </div>
+                                </div>
+                                <div ref="linePreviewStageRef" class="line-preview-stage" v-if="selectedLineEditor" @pointerdown.self="clearLineDeviceSelection">
+                                    <div class="line-preview-legend">
+                                        <span><i class="legend-lane"></i>设备线</span>
+                                        <span><i class="legend-rail"></i>小车导轨</span>
+                                        <span><i class="legend-device"></i>设备</span>
+                                        <span><i class="legend-cart"></i>小车</span>
+                                    </div>
+                                    <div class="line-preview-axis axis-x">X 方向</div>
+                                    <div class="line-preview-axis axis-z">Z 偏移</div>
+                                    <div
+                                        v-if="lineDeviceDrag.active && lineDeviceDrag.alignActive"
+                                        class="line-align-guide"
+                                        :style="lineAlignmentGuideStyle()"
+                                    ></div>
+                                    <div
+                                        v-for="lane in selectedLineLayout.lanes"
+                                        :key="lane.id"
+                                        class="line-map-item line-map-lane"
+                                        :class="[linePreviewItemClass('lane', lane), { 'has-settings-open': lineFlowMenuLaneId === lane.id }]"
+                                        :style="[linePreviewItemStyle(lane), { cursor: 'pointer' }]"
+                                        data-line-target-type="lane"
+                                        :data-line-target-id="lane.id"
+                                        tabindex="-1" role="group" :aria-label="lane.name"
+                                        title="设备排由系统定位；点击查看，设备可沿导轨方向调整"
+                                        @pointerdown="focusLineStructure({ type: 'lane', id: lane.id })"
+                                    >
+                                        <span>{{ lane.name }}</span>
+                                        <i
+                                            v-if="selectedLineLayout.flowDirection !== 'none'"
+                                            class="line-map-flow-arrow"
+                                            :class="lineFlowDirectionClass()"
+                                        ></i>
+                                        <i class="line-map-handle handle-left" @pointerdown.stop="startLinePreviewDrag('lane', lane.id, 'resize-left', $event)"></i>
+                                        <i class="line-map-handle handle-right" @pointerdown.stop="startLinePreviewDrag('lane', lane.id, 'resize-right', $event)"></i>
+                                        <span class="line-map-flow-settings" @pointerdown.stop @click.stop>
+                                            <button
+                                                type="button"
+                                                class="line-map-flow-settings-trigger"
+                                                :class="{ active: lineFlowMenuLaneId === lane.id }"
+                                                :aria-expanded="lineFlowMenuLaneId === lane.id"
+                                                title="设置设备线长度与方向"
+                                                :aria-label="`${lane.name} 设置`"
+                                                @click.stop="toggleLineFlowMenu(lane.id)"
+                                            >
+                                                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>
+                                            </button>
+                                            <span v-if="lineFlowMenuLaneId === lane.id" class="line-map-flow-menu" role="menu">
+                                                <label class="line-length-field"><span>长度（米）</span><input :aria-label="`${lane.name} 长度（米）`" type="number" :min="1 / lineSceneUnitsPerMeter(selectedLineLayout)" step="0.5" :value="Number((lane.length / lineSceneUnitsPerMeter(selectedLineLayout)).toFixed(2))" :disabled="lineDeviceLayoutBusy || !canAdminPage('lines', 'edit')" @input="changeLineLengthFromCanvas(lane, $event, true)" @change="changeLineLengthFromCanvas(lane, $event)" /></label>
+                                                <small class="line-rail-length-hint">导轨长度自动跟随</small>
+                                                <button
+                                                    v-for="option in lineFlowDirectionOptions"
+                                                    :key="option.value"
+                                                    type="button"
+                                                    role="menuitem"
+                                                    :class="{ active: selectedLineLayout.flowDirection === option.value }"
+                                                    @click.stop="setLineFlowDirectionFromCanvas(option.value)"
+                                                >
+                                                    {{ option.label }}
+                                                </button>
+                                            </span>
+                                        </span>
+                                    </div>
+                                    <div
+                                        v-for="rail in selectedLineLayout.rails"
+                                        :key="rail.id"
+                                        class="line-map-item line-map-rail"
+                                        :class="linePreviewItemClass('rail', rail)"
+                                        :style="[linePreviewItemStyle(rail), { cursor: 'default' }]"
+                                        data-line-target-type="rail"
+                                        :data-line-target-id="rail.id"
+                                        tabindex="-1" role="group" :aria-label="rail.name"
+                                        :title="isLineRailLengthAutomatic(selectedLineLayout) ? '长度自动跟随有固定设备的设备线；双侧取较长排' : '小车导轨位置固定；左右把手可调整显示长度'"
+                                        @pointerdown.stop="selectedLineStructure = { type: 'rail', id: rail.id }"
+                                    >
+                                        <span>{{ rail.name }}</span>
+                                        <small v-if="isLineRailLengthAutomatic(selectedLineLayout)" class="line-map-rail-follow">随设备线</small>
+                                        <i v-if="!isLineRailLengthAutomatic(selectedLineLayout)" class="line-map-handle handle-left" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-left', $event)"></i>
+                                        <i v-if="!isLineRailLengthAutomatic(selectedLineLayout)" class="line-map-handle handle-right" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-right', $event)"></i>
+                                    </div>
+                                    <div
+                                        v-for="device in selectedLineEditorDevices"
+                                        :key="device.id"
+                                        class="line-map-device"
+                                        :class="{ saving: lineDeviceSavingId === device.id || (lineGroupSaving && selectedLineDeviceIds.includes(device.id)), selected: selectedLineDeviceIds.includes(device.id), 'group-dragging': lineDeviceDrag.active && selectedLineDeviceIds.includes(device.id), 'is-station-editing': lineStationEditingDeviceId === device.id }"
+                                        :style="linePreviewDeviceStyle(device)"
+                                        role="button" tabindex="0" :aria-label="device.name" :aria-pressed="selectedLineDeviceIds.includes(device.id)" :data-device-id="device.id"
+                                        @keydown="selectLineDeviceWithKeyboard(device.id, $event)"
+                                        :title="`${device.name} · ${formatModelName(device.model_type)} · X ${Number(device.pos_x||0).toFixed(2)} m；Ctrl / Shift 点击多选`"
+                                        @pointerdown="startLineDeviceDrag(device.id, $event)"
+                                    >
+                                        <span class="line-map-station-bubble" @pointerdown.stop @click.stop>
+                                            <template v-if="lineStationEditingDeviceId === device.id">
+                                                <span class="line-map-station-label">工位</span>
+                                                <input
+                                                    v-model="lineStationDraft"
+                                                    class="line-map-station-input"
+                                                    type="number"
+                                                    min="1"
+                                                    step="1"
+                                                    aria-label="工位编号"
+                                                    @keydown.enter.prevent.stop="saveLineStationNumber(device)"
+                                                    @keydown.esc.prevent.stop="cancelLineStationEdit"
+                                                 v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
+                                                <button type="button" class="line-map-station-action" title="保存编号" @click.stop="saveLineStationNumber(device)" v-permission="{ page: controlPermissionPage, action: 'edit' }">✓</button>
+                                                <button type="button" class="line-map-station-action cancel" title="取消修改" @click.stop="cancelLineStationEdit">×</button>
+                                            </template>
+                                            <button v-else type="button" class="line-map-station-trigger" @click.stop="startLineStationEdit(device)">
+                                                <span>工位 {{ lineStationNumber(device) }}</span>
+                                                <small>悬停后点击修改</small>
+                                            </button>
+                                        </span>
+                                        <strong>{{ device.name }}</strong>
+                                        <small>{{ formatModelName(device.model_type) }}</small>
+                                        <button
+                                            type="button"
+                                            class="line-map-remove"
+                                            title="从画布移出，回到设备池"
+                                            @pointerdown.stop
+                                            @click.stop="removeDeviceFromLineCanvas(device)"
+                                         v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                            移出
+                                        </button>
+                                    </div>
+                                    <div
+                                        v-for="cart in selectedLineEditorCarts"
+                                        :key="cart.id"
+                                        class="line-map-device line-map-cart"
+                                        :class="{ saving: lineDeviceSavingId === cart.id || (lineGroupSaving && selectedLineDeviceIds.includes(cart.id)), selected: selectedLineDeviceIds.includes(cart.id), 'group-dragging': lineDeviceDrag.active && selectedLineDeviceIds.includes(cart.id) }"
+                                        :style="linePreviewDeviceStyle(cart)"
+                                        role="button" tabindex="0" :aria-label="cart.name" :aria-pressed="selectedLineDeviceIds.includes(cart.id)" :data-device-id="cart.id"
+                                        @keydown="selectLineDeviceWithKeyboard(cart.id, $event)"
+                                        :title="`${cart.name} · ${formatModelName(cart.model_type)} · X ${Number(cart.pos_x||0).toFixed(2)} m；Ctrl / Shift 点击多选`"
+                                        @pointerdown="startLineDeviceDrag(cart.id, $event)"
+                                    >
+                                        <strong>{{ cart.name }}</strong>
+                                        <small>{{ formatModelName(cart.model_type) }}</small>
+                                        <button
+                                            type="button"
+                                            class="line-map-remove"
+                                            title="从画布移出，回到设备池"
+                                            @pointerdown.stop
+                                            @click.stop="removeDeviceFromLineCanvas(cart)"
+                                         v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                            移出
+                                        </button>
+                                    </div>
+                                    <div v-for="ghost in lineDeviceGhosts" :key="`ghost-${ghost.id}`"
+                                        class="line-map-device line-device-ghost" aria-hidden="true"
+                                        :class="{ 'line-map-cart': isAuxiliaryDeviceConfig(getLineDeviceById(ghost.id) || {}) }"
+                                        :style="lineDeviceGroupGhostStyle(ghost)">
+                                        <strong>{{ getLineDeviceById(ghost.id)?.name || '设备' }}</strong>
+                                        <small>{{ lineDeviceDrag.message }}</small>
+                                    </div>
+                                    <div v-if="!selectedLineEditorDevices.length && !selectedLineEditorCarts.length" class="line-preview-empty-state">
+                                        当前设备排还没有设备，可从当前画布的设备池拖入。
+                                    </div>
+                                </div>
+                                <div v-else class="line-preview-stage line-preview-empty">请先创建或选择一条产线</div>
+                            </section>
+                        </div>
+                    </div>
+                </div>
+
+</template>
+                    <template #three><div class="arrangement-three-stage">
+<aside v-if="!composerDraft.id && arrangementLayer === 'workshop'" class="arrangement-ground-inspector">                        <details open class="composer-section composer-ground-panel">
                             <summary>地面与基坑 <small v-if="groundEditorRef?.dirty">未保存</small></summary>
-                            <WorkshopGroundEditor ref="groundEditorRef" :workshop="selectedComposerWorkshop || workshops[0]" :readonly="!canAdminPage('composer', 'edit')"
+                            <WorkshopGroundEditor managed ref="groundEditorRef" :workshop="selectedComposerWorkshop || workshops[0]" :readonly="!canAdminPage('composer', 'edit')"
                                 :confirm-leave="confirmGroundLeave" @preview="previewComposerGround" @saved="composerGroundSaved" />
                         </details>
                         <p v-if="composerGroundWarning" class="composer-section" role="alert">{{ composerGroundWarning }}</p>
 
-                        <div class="composer-section">
-                            <h3>产线选择</h3>
-                            <select v-model="selectedComposerLineId" class="input composer-select">
-                                <option v-for="line in placedLines" :key="line.id" :value="line.id">
-                                    {{ workshops.find(w => w.id === line.workshop_id)?.name || line.workshop_id }} / {{ line.name }}
-                                </option>
-                            </select>
-                            <div class="composer-line-list">
-                                <button
-                                    v-for="line in placedLines"
-                                    :key="line.id"
-                                    class="line-pill"
-                                    :class="{ active: selectedComposerLineId === line.id }"
-                                    @click="selectComposerLine(line.id)"
-                                >
-                                    <span>{{ line.name }}</span>
-                                    <em>{{ (lineMemberDevicesByLine[line.id] || []).length }} 台</em>
-                                </button>
-                            </div>
-                            <div class="composer-action-row">
-                                <button class="btn btn-sm" type="button" @click="flipSelectedComposerLine" :disabled="composerBulkSaving || !selectedComposerDevices.length" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                    产线反向
-                                </button>
-                            </div>
-                        </div>
-
-                        <div class="composer-section">
-                            <h3>设备列表</h3>
-                            <div class="composer-device-list" v-if="selectedComposerDevices.length">
-                                <button
-                                    v-for="device in selectedComposerDevices"
-                                    :key="device.id"
-                                    class="device-pill"
-                                    :class="{ active: selectedComposerDeviceId === device.id }"
-                                    :aria-pressed="selectedComposerDeviceId === device.id"
-                                    :title="selectedComposerDeviceId === device.id ? '点击取消选中' : '选择并编辑设备'"
-                                    @click="selectComposerDevice(device.id)"
-                                >
-                                    <strong>{{ device.name }}</strong>
-                                    <span>X {{ device.pos_x }} / Z {{ device.pos_z }} <i v-if="selectedComposerDeviceId === device.id" class="device-pill-cancel">×</i></span>
-                                </button>
-                            </div>
-                            <div v-else class="composer-empty">当前产线还没有设备</div>
-                        </div>
-
-                        <div class="composer-section" v-if="selectedComposerAuxDevices.length">
-                            <h3>辅助设备</h3>
-                            <div class="composer-device-list">
-                                <button
-                                    v-for="device in selectedComposerAuxDevices"
-                                    :key="device.id"
-                                    class="device-pill"
-                                    :class="{ active: selectedComposerDeviceId === device.id }"
-                                    :aria-pressed="selectedComposerDeviceId === device.id"
-                                    :title="selectedComposerDeviceId === device.id ? '点击取消选中' : '选择并编辑设备'"
-                                    @click="selectComposerDevice(device.id)"
-                                >
-                                    <strong>{{ device.name }}</strong>
-                                    <span>X {{ device.pos_x }} / Z {{ device.pos_z }} <i v-if="selectedComposerDeviceId === device.id" class="device-pill-cancel">×</i></span>
-                                </button>
-                            </div>
-                        </div>
-
+</aside>
                         <Teleport defer to="#composer-preview-floating-host">
                         <div ref="composerLayoutPanelRef" class="composer-section composer-form composer-device-layout-float" v-if="composerDraft.id" :style="composerLayoutPanelStyle" @pointerdown.stop>
                             <div class="composer-device-layout-float-header" @pointerdown="startComposerLayoutPanelDrag">
                                 <div><span>设备布局</span><strong>{{ composerDraft.name }}</strong></div>
                                 <button type="button" title="取消选中" aria-label="取消选中设备" @pointerdown.stop @click.stop="clearComposerDeviceSelection">×</button>
                             </div>
-                            <div class="composer-device-layout-float-body">
-                            <label>设备名称<input v-model="composerDraft.name" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
+                            <div class="composer-device-layout-float-body"><p class="arrangement-inspector-help">拖动模型旁箭头移动；转向仅绕竖直轴。料口随实体移动，不改校准数据。</p><div class="arrangement-model-caption">{{ formatModelName(composerDraft.model_type) }}</div><button type="button" class="btn btn-sm arrangement-port-shortcut" @click="openDeviceLoadingPorts(composerDraft)">进出料口配置</button><details class="arrangement-space-details"><summary>精确输入</summary>
+                            <label>设备名称<input v-model="composerDraft.name" disabled class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                             <label>{{ isAuxiliaryDeviceConfig(composerDraft) ? '参考产线' : '所属产线' }}
                                 <select v-model="composerDraft.line_id" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                     <option v-if="isAuxiliaryDeviceConfig(composerDraft)" value="">不挂产线，作为车间级设备</option>
@@ -7614,7 +8192,7 @@ async function openAdminSetupStep(step) {
                                 </select>
                             </label>
                             <label>模型
-                                <select v-model="composerDraft.model_type" class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                <select v-model="composerDraft.model_type" disabled class="input" v-permission="{ page: controlPermissionPage, action: 'edit' }">
                                     <option v-for="m in availableModelOptions" :key="m.id" :value="m.id">{{ m.name }}</option>
                                 </select>
                             </label>
@@ -7688,28 +8266,28 @@ async function openAdminSetupStep(step) {
                                 <button class="btn" @click="nudgeComposerDevice(2, 0)" v-permission="{ page: controlPermissionPage, action: 'edit' }">右移</button>
                                 <button class="btn" @click="nudgeComposerDevice(0, 2)" v-permission="{ page: controlPermissionPage, action: 'edit' }">下移</button>
                             </div>
-                            <button class="btn btn-primary composer-save" @click="saveComposerDevice" :disabled="composerSaving" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                {{ composerSaving ? '保存中...' : '保存设备布局' }}
-                            </button>
-                            <small class="native-live-help">位置、朝向、缩放、镜像和模型切换会先实时显示在 Unity；点击保存后才写入数据库。</small>
+                            <small class="native-live-help">修改保留在编排草稿中，点击顶部“保存布局”后同步正式大屏。</small></details>
                             </div>
                         </div>
                         </Teleport>
-                    </section>
-
                     <section ref="composerPreviewShellRef" class="composer-preview">
                         <div class="composer-preview-toolbar">
                             <div>
                                 <strong>{{ selectedComposerWorkshop?.name || '未选择车间' }}</strong>
                                 <span>{{ selectedComposerLine?.name || '未选择产线' }}</span>
                             </div>
-                            <div class="preview-mode-buttons">
-                                <button class="btn btn-sm" :class="{ active: composerPreviewMode === 'factory' }" @click="composerPreviewMode = 'factory'">总览</button>
-                                <button class="btn btn-sm" :class="{ active: composerPreviewMode === 'workshop' }" @click="composerPreviewMode = 'workshop'">车间</button>
-                                <button class="btn btn-sm" :class="{ active: composerPreviewMode === 'line' }" @click="composerPreviewMode = 'line'">产线</button>
-                                <button class="btn btn-sm" :class="{ active: composerPreviewMode === 'device' }" :disabled="!selectedComposerDeviceId" @click="composerPreviewMode = 'device'">设备</button>
+
+                            <div v-if="composerDraft.id" class="composer-direct-tools" role="toolbar" aria-label="设备画布操作">
+                                <button type="button" :aria-pressed="composerTool === 'translate'" :disabled="!canAdminPage('composer', 'edit') || arrangementBusy || composerGesture" @click="composerTool = 'translate'">移动</button>
+                                <button type="button" :aria-pressed="composerTool === 'rotate'" :disabled="!canAdminPage('composer', 'edit') || arrangementBusy || composerGesture" @click="composerTool = 'rotate'">转向</button>
+                                <button v-if="composerTool === 'translate' && !composerTransformContext().cart" type="button" :aria-pressed="composerSpatial" :disabled="!canAdminPage('composer', 'edit') || arrangementBusy || composerGesture" title="按需开启高度与对接距离调整；调整后请复核对接" @click="composerSpatial = !composerSpatial">高度／对接距离</button>
+                                <select v-if="composerTool === 'translate'" v-model.number="composerSnap" aria-label="画布移动精度" :disabled="arrangementBusy || composerGesture"><option :value=".1">10 厘米</option><option :value=".01">1 厘米</option></select>
+                                <button v-if="composerTool === 'rotate'" type="button" :disabled="!canAdminPage('composer', 'edit') || arrangementBusy || composerGesture" @click="turnComposerDevice(90)">转 90°</button>
+                                <button v-if="composerTool === 'rotate'" type="button" :disabled="!canAdminPage('composer', 'edit') || arrangementBusy || composerGesture" @click="turnComposerDevice(180)">转 180°</button>
+                                <button type="button" aria-label="撤销设备摆放" :disabled="!composerCanUndo || arrangementBusy || composerGesture" @click="undoComposerGesture()">撤销</button>
+                                <button type="button" aria-label="重做设备摆放" :disabled="!composerCanRedo || arrangementBusy || composerGesture" @click="undoComposerGesture(true)">重做</button>
                             </div>
-                            <div class="preview-camera-buttons">
+                            <div class="preview-camera-buttons"><details v-if="selectedComposerLine && canAdminPage('composer', 'edit')" class="arrangement-more-actions"><summary>更多</summary><div><button type="button" class="btn btn-sm" :disabled="arrangementBusy || !selectedComposerDevices.length" @click="flipSelectedComposerLine">产线整体反向</button></div></details>
                                 <button class="btn btn-sm" type="button" title="适配当前视图" @click="fitComposerPreview">适配</button>
                                 <button class="btn btn-sm btn-icon" type="button" title="放大视角" @click="controlComposerCamera('zoomIn')">+</button>
                                 <button class="btn btn-sm btn-icon" type="button" title="缩小视角" @click="controlComposerCamera('zoomOut')">-</button>
@@ -7733,17 +8311,24 @@ async function openAdminSetupStep(step) {
                         </div>
                         <div id="composer-preview-floating-host" class="composer-preview-floating-host"></div>
                         <div class="composer-preview-footer">
-                            <span>{{ composerPreviewStatus }} · Web 操作辅助</span>
+                            <span>{{ composerPreviewStatus }} · {{ composerDraft.id ? '拖箭头移动／圆环转向 · Esc 取消 · Ctrl+Z 撤销' : '点击设备开始摆放 · 空白处旋转视角' }}</span>
                         </div>
                     </section>
-                </div>
+</div></template>
+                </WorkshopArrangement>
+
+                <Teleport to="body"><div v-if="arrangementDockingOpen && activeTab === 'composer'" class="arrangement-docking-backdrop" @keydown.esc.stop.prevent="arrangementDockingOpen = false">
+                    <section class="arrangement-docking-dialog" role="dialog" aria-modal="true" aria-label="产线对接预览"><header><div><h3>{{ selectedLineEditor?.name }} · 对接预览</h3><p>复用已有料口与真实模型，检查当前编排草稿。</p></div><button type="button" class="btn btn-sm" autofocus @click="arrangementDockingOpen = false">关闭预览</button></header>
+                    <DockingCalibration preview-only auto-preview inline :preferred-device-id="selectedComposerDeviceId" :devices="arrangementDraftDevices" :lines="selectedLineEditor ? [selectedLineEditor] : []" :models="models" />
+                    </section></div></Teleport>
+                <LineArrangementProposal v-if="arrangementProposal" :proposal="arrangementProposal" @resolve="resolveArrangementProposal" />
 
                 <!-- ======== 车间管理 ======== -->
                 <div v-if="activeTab === 'workshops'" class="tab-content workshop-management-tab">
                     <div class="workshop-management-heading">
                         <div>
                             <h2>车间管理</h2>
-                            <p class="desc">先建立车间，再定义空间边界，最后在比例画布上安排多条产线。</p>
+                            <p class="desc">管理车间资料与空间边界。产线及设备布局统一在“车间编排”中完成。</p>
                         </div>
                         <span v-if="selectedWorkshopEditor" class="workshop-current-chip">当前：{{ selectedWorkshopEditor.name }}</span>
                     </div>
@@ -7836,442 +8421,7 @@ async function openAdminSetupStep(step) {
                         </section>
                     </template>
 
-                    <template v-else-if="selectedWorkshopEditor">
-                        <div class="workshop-step-context">
-                            <label>查看车间
-                                <select v-model="selectedWorkshopEditorId" class="input">
-                                    <option v-for="workshop in workshops" :key="workshop.id" :value="workshop.id">{{ workshop.name }}</option>
-                                </select>
-                            </label>
-                            <span>
-                                画布 {{ getWorkshopLayout(selectedWorkshopEditor).size.width }} × {{ getWorkshopLayout(selectedWorkshopEditor).size.depth }} 米
-                                · {{ placedWorkshopMapLines.length }} 条已放置
-                                <template v-if="pendingWorkshopMapLines.length"> · {{ pendingWorkshopMapLines.length }} 条待放置</template>
-                            </span>
-                        </div>
-
-                        <section class="workshop-map-shell">
-                            <div class="workshop-map-toolbar">
-                                <div>
-                                    <h3>{{ selectedWorkshopEditor.name }} · 产线平面布局</h3>
-                                    <p>每个产线块按真实长度与宽度同比例绘制。拖动即可调整 X / Z，自动以 0.5 米吸附并限制在车间边界内。</p>
-                                </div>
-                                <div class="line-native-actions">
-                                    <button type="button" class="btn" :disabled="workshopMapSaving || !workshopMapDirty" @click="resetWorkshopMapLayout">放弃修改</button>
-                                    <button type="button" class="btn btn-primary" :disabled="workshopMapSaving || !workshopMapDirty || !placedWorkshopMapLines.length" @click="saveWorkshopMapLayout" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                        {{ workshopMapSaving ? '保存中...' : '保存全部产线位置' }}
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div v-if="workshopMapDirty" class="canvas-save-reminder" role="status">
-                                <span class="canvas-save-reminder-dot"></span>
-                                <div>
-                                    <strong>产线布局尚未保存</strong>
-                                    <span>刚才的放置或拖动只在当前画布中生效，请保存后再离开。</span>
-                                </div>
-                                <div class="canvas-save-reminder-actions">
-                                    <button type="button" class="btn btn-sm" :disabled="workshopMapSaving" @click="resetWorkshopMapLayout">放弃修改</button>
-                                    <button type="button" class="btn btn-primary btn-sm" :disabled="workshopMapSaving" @click="saveWorkshopMapLayout" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                        {{ workshopMapSaving ? '保存中...' : '立即保存布局' }}
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div class="workshop-map-layout">
-                                <div class="workshop-map-board">
-                                    <div class="workshop-map-dimension workshop-map-dimension-x">X 方向 · {{ getWorkshopLayout(selectedWorkshopEditor).size.width }} 米</div>
-                                    <div class="workshop-map-dimension workshop-map-dimension-z">Z 方向 · {{ getWorkshopLayout(selectedWorkshopEditor).size.depth }} 米</div>
-                                    <div
-                                        ref="workshopMapStageRef"
-                                        class="workshop-map-stage"
-                                        :class="{
-                                            'pending-drag-active': workshopMapPendingDragLineId,
-                                            'pending-drop-active': workshopMapPendingDropReady
-                                        }"
-                                    >
-                                        <span class="workshop-map-axis workshop-map-axis-x"></span>
-                                        <span class="workshop-map-axis workshop-map-axis-z"></span>
-                                        <span class="workshop-map-origin">0, 0</span>
-                                        <article
-                                            v-for="line in placedWorkshopMapLines"
-                                            :key="line.id"
-                                            class="workshop-map-line"
-                                            :class="{
-                                                selected: selectedWorkshopMapLine?.id === line.id,
-                                                dragging: workshopMapDraggingLineId === line.id,
-                                                outside: workshopMapLineOutside(line)
-                                            }"
-                                            :style="workshopMapLineStyle(line)"
-                                            tabindex="0"
-                                            @click.stop="selectWorkshopMapLine(line)"
-                                            @pointerdown="startWorkshopMapLineDrag($event, line)"
-                                            @keydown.enter="selectWorkshopMapLine(line)"
-                                        >
-                                            <header>
-                                                <strong>{{ line.name }}</strong>
-                                                <span>{{ workshopLineFootprint(line).length }} × {{ workshopLineFootprint(line).width }} m</span>
-                                            </header>
-                                            <span
-                                                v-for="track in workshopLineFootprint(line).tracks"
-                                                :key="`${track.type}-${track.id}`"
-                                                class="workshop-map-track"
-                                                :class="track.type"
-                                                :style="workshopMapTrackStyle(track, line)"
-                                            ></span>
-                                        </article>
-                                        <aside v-if="pendingWorkshopMapLines.length" class="workshop-line-placement-dock" @click.stop>
-                                            <header>
-                                                <div>
-                                                    <strong>待放置产线</strong>
-                                                    <span>按住卡片拖入画布</span>
-                                                </div>
-                                                <b>{{ pendingWorkshopMapLines.length }}</b>
-                                            </header>
-                                            <div class="workshop-line-placement-list">
-                                                <div
-                                                    v-for="line in pendingWorkshopMapLines"
-                                                    :key="line.id"
-                                                    class="workshop-line-placement-card"
-                                                    :class="{
-                                                        attention: workshopMapPlacementHintLineId === line.id,
-                                                        dragging: workshopMapPendingDragLineId === line.id
-                                                    }"
-                                                    :title="`拖动「${line.name}」到画布中的目标位置`"
-                                                    @pointerdown="startWorkshopPendingLineDrag($event, line)"
-                                                    @lostpointercapture="finishWorkshopPendingLineDrag"
-                                                >
-                                                    <span class="workshop-line-placement-handle">⠿</span>
-                                                    <span class="workshop-line-placement-copy">
-                                                        <strong>{{ line.name }}</strong>
-                                                        <small>{{ workshopLineFootprint(line).length }} × {{ workshopLineFootprint(line).width }} 米</small>
-                                                    </span>
-                                                    <em>拖入</em>
-                                                </div>
-                                            </div>
-                                        </aside>
-                                        <div v-if="!placedWorkshopMapLines.length" class="workshop-map-empty">
-                                            <strong>{{ pendingWorkshopMapLines.length ? '把待放置产线拖进来' : '这个车间还没有产线' }}</strong>
-                                            <span>{{ pendingWorkshopMapLines.length ? '从右上角工具浮标拖动卡片，松手后自动限制在车间边界内。' : '先到产线管理新增产线，再返回这里安排空间位置。' }}</span>
-                                            <button v-if="!pendingWorkshopMapLines.length" type="button" class="btn btn-primary" @click="selectAdminTab('lines')">前往产线管理</button>
-                                        </div>
-                                    </div>
-                                    <div class="workshop-map-legend">
-                                        <span><i class="lane"></i>设备线</span>
-                                        <span><i class="rail"></i>小车导轨</span>
-                                        <span><i class="center"></i>车间中心轴</span>
-                                    </div>
-                                </div>
-
-                                <aside class="workshop-map-inspector">
-                                    <template v-if="selectedWorkshopMapLine">
-                                        <label class="workshop-map-line-select">当前产线
-                                            <select v-model="workshopMapSelectedLineId" class="input">
-                                                <option v-for="line in placedWorkshopMapLines" :key="line.id" :value="line.id">{{ line.name }}</option>
-                                            </select>
-                                        </label>
-                                        <div class="workshop-map-footprint-card">
-                                            <span>实际占地</span>
-                                            <strong>{{ workshopLineFootprint(selectedWorkshopMapLine).length }} × {{ workshopLineFootprint(selectedWorkshopMapLine).width }} 米</strong>
-                                            <small>{{ getLineLayout(selectedWorkshopMapLine).lanes.length }} 条设备线 · {{ getLineLayout(selectedWorkshopMapLine).rails.length }} 条导轨</small>
-                                        </div>
-                                        <div class="workshop-map-input-grid" @input="previewWorkshopMapLine()" @change="previewWorkshopMapLine()">
-                                            <label>相对车间 X<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.x" type="number" step="0.5" class="input"  /></label>
-                                            <label>相对车间 Z<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.z" type="number" step="0.5" class="input"  /></label>
-                                            <label>离地 Y<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.y" type="number" step="0.1" class="input"  /></label>
-                                            <label>朝向<input v-model.number="getLineLayout(selectedWorkshopMapLine).transform.rotationY" type="number" min="-180" max="180" step="1" class="input"  /></label>
-                                        </div>
-                                        <div v-if="selectedWorkshopMapMetrics" class="workshop-map-metrics">
-                                            <h4>距车间边界</h4>
-                                            <div class="workshop-map-metric-grid">
-                                                <span>左<strong>{{ selectedWorkshopMapMetrics.boundary.left }} m</strong></span>
-                                                <span>右<strong>{{ selectedWorkshopMapMetrics.boundary.right }} m</strong></span>
-                                                <span>前<strong>{{ selectedWorkshopMapMetrics.boundary.top }} m</strong></span>
-                                                <span>后<strong>{{ selectedWorkshopMapMetrics.boundary.bottom }} m</strong></span>
-                                            </div>
-                                            <p v-if="selectedWorkshopMapMetrics.nearest" :class="{ danger: selectedWorkshopMapMetrics.nearest.overlaps }">
-                                                {{ selectedWorkshopMapMetrics.nearest.overlaps ? '与' : '最近' }}「{{ selectedWorkshopMapMetrics.nearest.line.name }}」
-                                                {{ selectedWorkshopMapMetrics.nearest.overlaps ? '发生占地重叠' : `间隔约 ${selectedWorkshopMapMetrics.nearest.distance} 米` }}
-                                            </p>
-                                            <p v-else>当前车间只有这一条产线。</p>
-                                        </div>
-                                        <button type="button" class="btn workshop-line-detail-button" @click="openSelectedWorkshopLineEditor">编辑这条产线的轨道与设备</button>
-                                    </template>
-                                    <div v-else class="workshop-map-inspector-empty">选择一条产线后可精确调整。</div>
-                                </aside>
-                            </div>
-                        </section>
-                    </template>
                     <div v-else class="workshop-loading-state">正在加载车间空间与产线布局...</div>
-                </div>
-
-                <!-- ======== 产线管理 ======== -->
-                <div v-if="activeTab === 'lines'" class="tab-content line-planner-tab">
-                    <div class="line-planner-shell">
-                        <div class="line-planner-header">
-                            <div>
-                                <h2>产线结构管理</h2>
-                                <p class="desc">拖动设备线、导轨和设备时会实时改变 Unity 场景；保存后固化到数据库。</p>
-                            </div>
-                            <div class="line-native-actions">
-                                <button type="button" class="btn" :disabled="!lineLayoutDirty || lineLayoutSaving" @click="resetSelectedLineLayout">放弃画布修改</button>
-                                <button class="btn btn-primary" @click="saveSelectedLineLayout" :disabled="lineLayoutSaving || !selectedLineEditor" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                    {{ lineLayoutSaving ? '保存中...' : '保存产线结构' }}
-                                </button>
-                            </div>
-                        </div>
-
-                        <div class="line-planner-guidance">
-                            <div v-if="lineLayoutDirty" class="canvas-save-reminder line-canvas-save-reminder" role="status">
-                                <span class="canvas-save-reminder-dot"></span>
-                                <div>
-                                    <strong>产线结构尚未保存</strong>
-                                    <span>轨道、设备线或设备位置已经改变；实时预览不等于写入数据库。</span>
-                                </div>
-                                <div class="canvas-save-reminder-actions">
-                                    <button type="button" class="btn btn-sm" :disabled="lineLayoutSaving" @click="resetSelectedLineLayout">放弃修改</button>
-                                    <button type="button" class="btn btn-primary btn-sm" :disabled="lineLayoutSaving" @click="saveSelectedLineLayout" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                        {{ lineLayoutSaving ? '保存中...' : '立即保存产线' }}
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="line-planner-layout">
-                            <LinePlannerControls ref="linePlannerControlsRef"
-                                :lines="lines" :workshops="workshops" :selected-id="selectedLineEditorId" :layout="selectedLineLayout"
-                                :saved-snapshot="savedLineLayoutSnapshots[selectedLineEditorId] || ''"
-                                :draft="newLine" :busy="lineDeviceLayoutBusy" :creating="lineCreating"
-                                :layout-dirty="lineLayoutDirty" :layout-saving="lineLayoutSaving"
-                                :device-count="selectedLineEditorDevices.length" :total-devices="selectedLineTotalDeviceCount"
-                                @select="selectLineEditor" @delete="deleteLine" @create="createLine" @edit="editLineDetails"
-                                @add-item="addLineLayoutItem" @remove-item="removeLineLayoutItem" @change-item="changeLineLayoutItem" @change-rail-spacing="changeLineRailSpacing" @choose-placement-template="chooseLinePlacementTemplate" @save-layout="saveSelectedLineLayout" @focus-item="focusLineStructure"
-                            />
-
-                            <section class="line-planner-preview">
-                                <div v-if="selectedLineLayout.placementTemplate" class="line-adjustment-notice" role="status" aria-live="polite">
-                                    <span v-if="lineAdjustmentPending">正在按当前模型检查微调范围；设备位置不变…</span>
-                                    <span v-else-if="lineAdjustmentError">微调范围未就绪：{{ lineAdjustmentError }}</span>
-                                    <span v-else-if="lineAdjustmentDisplayBand && !lineAdjustmentDisplayBand.currentInside">当前布局超出建议微调范围。请重新选择模板，核对预览后应用；不会自动挪设备。</span>
-                                    <span v-else>红色虚线框内可微调设备线，拖到边界即停止。第二条线由系统约束定位；这是显示布局范围，不是机械行程。</span>
-                                    <button type="button" class="btn btn-sm" :disabled="lineAdjustmentPending || lineDeviceLayoutBusy" @click="recheckLineAdjustmentBand">重新检查范围</button>
-                                </div>
-                                <div v-if="selectedLineEditor" class="line-selection-toolbar" role="toolbar" aria-label="设备多选与间距">
-                                    <span class="line-selection-hint">Ctrl / Shift 多选</span>
-                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="仅调整前后位置；选择范围、核对预览后应用" @click="openLineLoadingAlignment('faces')" v-permission="{ page: 'lines', action: 'edit' }">进料面前后对齐</button>
-                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy" title="仅调整整体高度；选择基准设备、核对预览后应用" @click="openLineLoadingAlignment('heights')" v-permission="{ page: 'lines', action: 'edit' }">送料高度对齐</button>
-                                    <span v-if="selectedLineDeviceIds.length">已选 {{ selectedLineDeviceIds.length }} 台</span>
-                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget || selectedLineDeviceIds.length < 3" title="固定两端，平均分配所选设备的中心间距" @click="applyLineDeviceSpacing()" v-permission="{ page: 'lines', action: 'edit' }">等间距</button>
-                                    <label>中心距(m) <input v-model.number="lineDeviceGap" aria-label="设备中心间距（米）" type="number" min="0.01" step="0.5" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" /></label>
-                                    <button type="button" class="btn btn-sm" :disabled="lineDeviceLayoutBusy || !lineSelectionSameTarget" @click="applyLineDeviceSpacing(true)" v-permission="{ page: 'lines', action: 'edit' }">应用间距</button>
-                                    <button v-if="selectedLineDeviceIds.length" type="button" :disabled="lineDeviceLayoutBusy" @click="clearLineDeviceSelection">取消选择</button>
-                                    <span role="status" aria-live="polite">{{ lineSelectionFeedback }}</span>
-                                </div>
-                                <div ref="linePreviewStageRef" class="line-preview-stage" v-if="selectedLineEditor" @pointerdown.self="clearLineDeviceSelection">
-                                    <div class="line-preview-legend">
-                                        <span><i class="legend-lane"></i>设备线</span>
-                                        <span><i class="legend-rail"></i>小车导轨</span>
-                                        <span><i class="legend-device"></i>设备</span>
-                                        <span><i class="legend-cart"></i>小车</span>
-                                        <span v-if="lineAdjustmentDisplayBand"><i class="legend-adjustment"></i>可微调范围</span>
-                                    </div>
-                                    <div class="line-preview-axis axis-x">X 方向</div>
-                                    <div class="line-preview-axis axis-z">Z 偏移</div>
-                                    <LineAdjustmentOverlay v-if="lineAdjustmentDisplayBand"
-                                        :band="lineAdjustmentDisplayBand" :bounds="linePreviewBounds(selectedLineEditor)"
-                                        :length="selectedLineLayout.lanes.find(row => row.id === lineAdjustmentDisplayBand.laneId)?.length || 60" />
-                                    <div
-                                        v-if="lineDeviceDrag.active && lineDeviceDrag.alignActive"
-                                        class="line-align-guide"
-                                        :style="lineAlignmentGuideStyle()"
-                                    ></div>
-                                    <div
-                                        v-for="lane in selectedLineLayout.lanes"
-                                        :key="lane.id"
-                                        class="line-map-item line-map-lane"
-                                        :class="linePreviewItemClass('lane', lane)"
-                                        :style="[linePreviewItemStyle(lane), { cursor: canMoveLineStructure(selectedLineLayout, 'lane', lane.id) ? 'grab' : 'default' }]"
-                                        data-line-target-type="lane"
-                                        :data-line-target-id="lane.id"
-                                        tabindex="-1" role="group" :aria-label="lane.name"
-                                        :title="canMoveLineStructure(selectedLineLayout, 'lane', lane.id) ? '拖动摆放第一条设备线，不能进入小车通道' : '第二条设备线在导轨对侧跟随，不能独立拖动'"
-                                        @pointerdown="startLinePreviewDrag('lane', lane.id, 'move', $event)"
-                                    >
-                                        <span>{{ lane.name }}</span>
-                                        <i
-                                            v-if="selectedLineLayout.flowDirection !== 'none'"
-                                            class="line-map-flow-arrow"
-                                            :class="lineFlowDirectionClass()"
-                                        ></i>
-                                        <i class="line-map-handle handle-left" @pointerdown.stop="startLinePreviewDrag('lane', lane.id, 'resize-left', $event)"></i>
-                                        <i class="line-map-handle handle-right" @pointerdown.stop="startLinePreviewDrag('lane', lane.id, 'resize-right', $event)"></i>
-                                        <span class="line-map-flow-settings" @pointerdown.stop @click.stop>
-                                            <button
-                                                type="button"
-                                                class="line-map-flow-settings-trigger"
-                                                :class="{ active: lineFlowMenuLaneId === lane.id }"
-                                                :aria-expanded="lineFlowMenuLaneId === lane.id"
-                                                title="设置产线方向"
-                                                @click.stop="toggleLineFlowMenu(lane.id)"
-                                            >
-                                                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>
-                                            </button>
-                                            <span v-if="lineFlowMenuLaneId === lane.id" class="line-map-flow-menu" role="menu">
-                                                <button
-                                                    v-for="option in lineFlowDirectionOptions"
-                                                    :key="option.value"
-                                                    type="button"
-                                                    role="menuitem"
-                                                    :class="{ active: selectedLineLayout.flowDirection === option.value }"
-                                                    @click.stop="setLineFlowDirectionFromCanvas(option.value)"
-                                                >
-                                                    {{ option.label }}
-                                                </button>
-                                            </span>
-                                        </span>
-                                    </div>
-                                    <div
-                                        v-for="rail in selectedLineLayout.rails"
-                                        :key="rail.id"
-                                        class="line-map-item line-map-rail"
-                                        :class="linePreviewItemClass('rail', rail)"
-                                        :style="[linePreviewItemStyle(rail), { cursor: 'default' }]"
-                                        data-line-target-type="rail"
-                                        :data-line-target-id="rail.id"
-                                        tabindex="-1" role="group" :aria-label="rail.name"
-                                        title="小车导轨位置固定；左右把手可调整显示长度"
-                                        @pointerdown.stop="selectedLineStructure = { type: 'rail', id: rail.id }"
-                                    >
-                                        <span>{{ rail.name }}</span>
-                                        <i class="line-map-handle handle-left" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-left', $event)"></i>
-                                        <i class="line-map-handle handle-right" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-right', $event)"></i>
-                                    </div>
-                                    <div
-                                        v-for="device in selectedLineEditorDevices"
-                                        :key="device.id"
-                                        class="line-map-device"
-                                        :class="{ saving: lineDeviceSavingId === device.id || (lineGroupSaving && selectedLineDeviceIds.includes(device.id)), selected: selectedLineDeviceIds.includes(device.id), 'group-dragging': lineDeviceDrag.active && selectedLineDeviceIds.includes(device.id), 'is-station-editing': lineStationEditingDeviceId === device.id }"
-                                        :style="linePreviewDeviceStyle(device)"
-                                        role="button" tabindex="0" :aria-label="device.name" :aria-pressed="selectedLineDeviceIds.includes(device.id)" :data-device-id="device.id"
-                                        @keydown="selectLineDeviceWithKeyboard(device.id, $event)"
-                                        :title="`${device.name} · ${formatModelName(device.model_type)} · X ${Number(device.pos_x||0).toFixed(2)} m；Ctrl / Shift 点击多选`"
-                                        @pointerdown="startLineDeviceDrag(device.id, $event)"
-                                    >
-                                        <span class="line-map-station-bubble" @pointerdown.stop @click.stop>
-                                            <template v-if="lineStationEditingDeviceId === device.id">
-                                                <span class="line-map-station-label">工位</span>
-                                                <input
-                                                    v-model="lineStationDraft"
-                                                    class="line-map-station-input"
-                                                    type="number"
-                                                    min="1"
-                                                    step="1"
-                                                    aria-label="工位编号"
-                                                    @keydown.enter.prevent.stop="saveLineStationNumber(device)"
-                                                    @keydown.esc.prevent.stop="cancelLineStationEdit"
-                                                 v-permission="{ page: controlPermissionPage, action: 'edit' }"/>
-                                                <button type="button" class="line-map-station-action" title="保存编号" @click.stop="saveLineStationNumber(device)" v-permission="{ page: controlPermissionPage, action: 'edit' }">✓</button>
-                                                <button type="button" class="line-map-station-action cancel" title="取消修改" @click.stop="cancelLineStationEdit">×</button>
-                                            </template>
-                                            <button v-else type="button" class="line-map-station-trigger" @click.stop="startLineStationEdit(device)">
-                                                <span>工位 {{ lineStationNumber(device) }}</span>
-                                                <small>悬停后点击修改</small>
-                                            </button>
-                                        </span>
-                                        <strong>{{ device.name }}</strong>
-                                        <small>{{ formatModelName(device.model_type) }}</small>
-                                        <button
-                                            type="button"
-                                            class="line-map-remove"
-                                            title="从画布移出，回到设备池"
-                                            @pointerdown.stop
-                                            @click.stop="removeDeviceFromLineCanvas(device)"
-                                         v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                            移出
-                                        </button>
-                                    </div>
-                                    <div
-                                        v-for="cart in selectedLineEditorCarts"
-                                        :key="cart.id"
-                                        class="line-map-device line-map-cart"
-                                        :class="{ saving: lineDeviceSavingId === cart.id || (lineGroupSaving && selectedLineDeviceIds.includes(cart.id)), selected: selectedLineDeviceIds.includes(cart.id), 'group-dragging': lineDeviceDrag.active && selectedLineDeviceIds.includes(cart.id) }"
-                                        :style="linePreviewDeviceStyle(cart)"
-                                        role="button" tabindex="0" :aria-label="cart.name" :aria-pressed="selectedLineDeviceIds.includes(cart.id)" :data-device-id="cart.id"
-                                        @keydown="selectLineDeviceWithKeyboard(cart.id, $event)"
-                                        :title="`${cart.name} · ${formatModelName(cart.model_type)} · X ${Number(cart.pos_x||0).toFixed(2)} m；Ctrl / Shift 点击多选`"
-                                        @pointerdown="startLineDeviceDrag(cart.id, $event)"
-                                    >
-                                        <strong>{{ cart.name }}</strong>
-                                        <small>{{ formatModelName(cart.model_type) }}</small>
-                                        <button
-                                            type="button"
-                                            class="line-map-remove"
-                                            title="从画布移出，回到设备池"
-                                            @pointerdown.stop
-                                            @click.stop="removeDeviceFromLineCanvas(cart)"
-                                         v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                            移出
-                                        </button>
-                                    </div>
-                                    <div v-for="ghost in lineDeviceGhosts" :key="`ghost-${ghost.id}`"
-                                        class="line-map-device line-device-ghost" aria-hidden="true"
-                                        :class="{ 'line-map-cart': isAuxiliaryDeviceConfig(getLineDeviceById(ghost.id) || {}) }"
-                                        :style="lineDeviceGroupGhostStyle(ghost)">
-                                        <strong>{{ getLineDeviceById(ghost.id)?.name || '设备' }}</strong>
-                                        <small>{{ lineDeviceDrag.message }}</small>
-                                    </div>
-                                    <div v-if="!selectedLineEditorDevices.length && !selectedLineEditorCarts.length" class="line-preview-empty-state">
-                                        当前产线还没有设备，保存结构后到现场编排器摆放设备
-                                    </div>
-                                </div>
-                                <div v-else class="line-preview-stage line-preview-empty">请先创建或选择一条产线</div>
-                                <div
-                                    class="line-device-pool-dock"
-                                    v-if="selectedLineEditor && selectedLineDevicePool.length"
-                                    :class="{ collapsed: isLineDevicePoolCollapsed }"
-                                    :style="lineDevicePoolDockStyle()"
-                                >
-                                    <button
-                                        v-if="isLineDevicePoolCollapsed"
-                                        type="button"
-                                        class="line-device-pool-tab"
-                                        @pointerdown="startLineDevicePoolMove"
-                                        @click="handleLineDevicePoolTabClick"
-                                    >
-                                        <span class="line-device-pool-grip" aria-hidden="true"></span>
-                                        设备池 {{ selectedLineDevicePool.length }}
-                                    </button>
-                                    <div v-else class="line-device-pool">
-                                        <div class="line-device-pool-title" @pointerdown="startLineDevicePoolMove">
-                                            <span class="line-device-pool-grip" aria-hidden="true"></span>
-                                            <strong>车间设备池</strong>
-                                            <span>拖到设备线或小车导轨</span>
-                                        </div>
-                                        <button
-                                        v-for="device in selectedLineDevicePool"
-                                        :key="device.id"
-                                        type="button"
-                                        draggable="false"
-                                        class="line-device-pool-chip"
-                                            :class="{ cart: isAuxiliaryDeviceConfig(device), saving: lineDeviceSavingId === device.id }"
-                                            @pointerdown="startLineDeviceDrag(device.id, $event)"
-                                        >
-                                            <strong>{{ device.name }}</strong>
-                                            <span>{{ formatModelName(device.model_type) }}</span>
-                                        </button>
-                                        <button
-                                            type="button"
-                                            class="line-device-pool-close"
-                                            title="收起设备池"
-                                            @click="toggleLineDevicePool"
-                                        >
-                                            收起
-                                        </button>
-                                    </div>
-                                </div>
-                            </section>
-                        </div>
-                    </div>
                 </div>
 
                 <LoadingAlignmentDialog v-if="lineAlignmentMode && selectedLineEditor" :key="lineAlignmentMode + selectedLineEditor.id"
@@ -8509,14 +8659,15 @@ async function openAdminSetupStep(step) {
                             <button type="button" :class="{ active: motionWorkspaceMode === 'parts' }" :aria-pressed="motionWorkspaceMode === 'parts'" @click="changeMotionWorkspace('parts')">部件动作</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'transfer' }" :aria-pressed="motionWorkspaceMode === 'transfer'" @click="changeMotionWorkspace('transfer')">设备联动</button>
                         </nav>
-                        <ModelAssetTransfer :models="models" :selected-id="motionWorkspaceMode === 'parts' ? selectedPreviewModelId : ''" @imported="loadModels" />
                         </div>
                         <p v-if="!motionModelOptions.length" class="desc">请先在“模型管理”中导入设备 GLB / GLTF 模型。</p>
                     </template>
                     <template v-else>
                         <ModelPlacementMenu ref="modelPlacementMenuRef" :busy="modelPlacementSaving || modelNameSaving || modelUploading" @change="saveModelPlacement" />
-                        <h2>3D 模型库</h2>
-                        <p class="desc">管理模型与进出料口。</p>
+                        <div class="model-assets-page-heading">
+                            <h2>模型管理</h2>
+                            <ModelAssetTransfer :models="models" :selected-id="selectedPreviewModelId" :dirty="modelAssetTransferDirty" :disabled="modelUploading || modelBindingSaving || modelNameSaving || manualDisassemblySaving || !!modelLoadingPortRef?.busy" @raw-file="importRawModelAsset" @imported="refreshImportedModelAsset" @busy-change="modelAssetLocked = $event" />
+                        </div>
                         <label v-if="modelLibraryStep === 'ports'" class="loading-port-model-picker">选择模型
                             <select :value="selectedPreviewModelId" aria-label="选择进出料口模型" :disabled="modelLoadingPortRef?.busy" @change="changeLoadingPortModel">
                                 <option v-for="model in loadingPortModelOptions" :key="model.id" :value="model.id">{{ formatModelSetupOption(model, 'ports') }}</option>
@@ -8560,7 +8711,7 @@ async function openAdminSetupStep(step) {
                                     <div class="model-asset-heading-actions">
                                         <span v-if="modelPlacementFeedback" role="status">{{ modelPlacementFeedback }}</span>
                                         <span>{{ visibleModels.length }} / {{ models.length }} 个模型</span>
-                                        <button type="button" class="btn btn-primary" :disabled="modelUploading || modelBindingSaving || modelNameSaving" @click="modelFileInputRef?.click()" v-permission="{ page: 'models', action: 'edit' }">导入模型</button>
+
                                     </div>
                                 </div>
                                 <input ref="modelFileInputRef" type="file" aria-label="选择模型文件" accept=".glb,.gltf" :disabled="modelUploading || modelBindingSaving || modelNameSaving" @change="selectModelFile" hidden v-permission="{ page: 'models', action: 'edit' }" />
@@ -8577,10 +8728,10 @@ async function openAdminSetupStep(step) {
                                         <label>默认缩放<input v-model.number="modelImportForm.default_scale" type="number" min="0.01" step="0.05" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <label class="model-metadata-field">元数据 JSON<textarea v-model="modelImportForm.metadata" class="input model-metadata" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea></label>
                                         <div class="model-import-actions">
-                                            <button class="btn btn-primary" type="button" @click="uploadModel" :disabled="modelUploading" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                {{ modelUploading ? '上传中...' : '上传并入库' }}
+                                            <button class="model-asset-icon-button primary" type="button" aria-label="确认导入模型文件" title="确认导入模型文件" @click="uploadModel" :disabled="modelUploading" v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
                                             </button>
-                                            <button class="btn" type="button" @click="clearSelectedModelFile" :disabled="modelUploading">取消</button>
+                                            <button class="model-asset-icon-button" type="button" aria-label="取消导入模型文件" title="取消导入模型文件" @click="clearSelectedModelFile" :disabled="modelUploading"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
                                         </div>
                                     </div>
                                 </div>
@@ -9074,10 +9225,10 @@ async function openAdminSetupStep(step) {
                                 <div v-if="pointsPageSize > 0 && totalPointPages > 1" class="pagination-nav-btns">
                                     <button @click="pointsCurrentPage = 1" :disabled="pointsCurrentPage === 1" class="btn btn-sm pagination-btn" title="首页">«</button>
                                     <button @click="pointsCurrentPage--" :disabled="pointsCurrentPage <= 1" class="btn btn-sm pagination-btn" title="上一页">‹</button>
-                                    
-                                    <button v-for="page in displayedPageNumbers" :key="page" 
-                                            @click="pointsCurrentPage = page" 
-                                            class="btn btn-sm pagination-btn page-num-btn" 
+
+                                    <button v-for="page in displayedPageNumbers" :key="page"
+                                            @click="pointsCurrentPage = page"
+                                            class="btn btn-sm pagination-btn page-num-btn"
                                             :class="{ active: pointsCurrentPage === page }">
                                         {{ page }}
                                     </button>
@@ -9341,10 +9492,10 @@ async function openAdminSetupStep(step) {
                             <div v-if="monitorPageSize > 0 && totalMonitorPages > 1" class="pagination-nav-btns">
                                 <button @click="monitorCurrentPage = 1" :disabled="monitorCurrentPage === 1" class="btn btn-sm pagination-btn" title="首页">«</button>
                                 <button @click="monitorCurrentPage--" :disabled="monitorCurrentPage <= 1" class="btn btn-sm pagination-btn" title="上一页">‹</button>
-                                
-                                <button v-for="page in displayedMonitorPageNumbers" :key="page" 
-                                        @click="monitorCurrentPage = page" 
-                                        class="btn btn-sm pagination-btn page-num-btn" 
+
+                                <button v-for="page in displayedMonitorPageNumbers" :key="page"
+                                        @click="monitorCurrentPage = page"
+                                        class="btn btn-sm pagination-btn page-num-btn"
                                         :class="{ active: monitorCurrentPage === page }">
                                     {{ page }}
                                 </button>
@@ -10763,6 +10914,7 @@ async function openAdminSetupStep(step) {
     justify-content: flex-end;
     gap: 8px;
     max-width: 520px;
+    pointer-events: none;
 }
 .line-preview-legend span {
     display: inline-flex;
@@ -10854,6 +11006,7 @@ async function openAdminSetupStep(step) {
     background: rgba(117, 154, 176, 0.22);
     border: 1px solid rgba(70, 113, 139, 0.35);
 }
+.line-map-lane.has-settings-open { z-index: 20; }
 .line-map-item.is-selected { outline: 3px solid #3287df; outline-offset: 4px; box-shadow: 0 0 0 7px #3287df22; }
 .line-map-rail.is-selected { outline-color: #b57a21; box-shadow: 0 0 0 7px #d49a3226; }
 .line-map-item.drop-compatible {
@@ -11007,13 +11160,17 @@ async function openAdminSetupStep(step) {
     z-index: 12;
     display: grid;
     gap: 3px;
-    min-width: 82px;
+    min-width: 176px;
     padding: 5px;
     background: rgba(255,255,255,.98);
     border: 1px solid rgba(25, 33, 38, 0.12);
     border-radius: 9px;
     box-shadow: 0 10px 24px rgba(25, 33, 38, 0.2);
 }
+.line-length-field{display:flex;align-items:center;gap:8px;padding:5px 7px;color:#52687b;font-size:11px;white-space:nowrap}
+.line-length-field input{width:83px;min-width:0;padding:5px 7px;border:1px solid #d2dce6;border-radius:6px;background:#fff;color:#344b60;font:inherit;font-variant-numeric:tabular-nums}
+.line-rail-length-hint{display:block;padding:0 7px 6px;color:#8192a2;font-size:10px;border-bottom:1px solid #edf1f5}
+.line-map-rail-follow{position:absolute;z-index:2;right:7px;bottom:7px;padding:1px 5px;border-radius:4px;background:#fff4da;color:#966d2c;font-size:10px;font-weight:500;line-height:14px;pointer-events:none}
 .line-map-flow-menu button {
     min-height: 27px;
     padding: 4px 8px;
@@ -14149,4 +14306,10 @@ button:enabled:active {
 
 <style scoped>
 .points-table .point-col-history{width:calc(220px * var(--point-column-scale))}.points-table.points-table-history{min-width:calc(1020px * var(--point-column-scale))}.points-table.points-table-all.points-table-history{min-width:calc(1120px * var(--point-column-scale))}.points-table.points-table-advanced.points-table-history{min-width:calc(1230px * var(--point-column-scale))}.points-table.points-table-all.points-table-advanced.points-table-history{min-width:calc(1330px * var(--point-column-scale))}.point-history-load-error{color:#b33c35;font-size:13px}
+</style>
+
+<style scoped src="./admin/styles/workshop-arrangement.css"></style>
+
+<style scoped>
+.model-assets-page-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.model-assets-page-heading h2{margin:0}.model-assets-page-heading :deep(.motion-package-actions){margin-left:auto}.model-asset-icon-button{display:inline-grid;place-items:center;width:32px;height:32px;padding:6px;border:1px solid #dce5f0;border-radius:8px;background:#fff;color:#647d9c;cursor:pointer}.model-asset-icon-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.model-asset-icon-button.primary{background:#eef5ff;border-color:#c9defa;color:#386ca8}.model-asset-icon-button:focus-visible{outline:2px solid #6388b9;outline-offset:2px}.model-asset-icon-button:disabled{opacity:.45;cursor:default}
 </style>

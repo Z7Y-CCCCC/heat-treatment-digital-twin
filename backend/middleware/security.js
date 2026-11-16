@@ -81,6 +81,13 @@ function adminWebSocketCookieName() {
     return `${adminSessionCookieName()}_ws`;
 }
 
+function displaySessionCookieName() { return `${adminSessionCookieName()}_display`; }
+function suppliedDisplaySession(req) { return requestCookies(req).get(displaySessionCookieName()) || ''; }
+function suppliedReadSession(req, service = getAdminAuth()) {
+    const token = suppliedAdminSession(req);
+    return service.status(token).displayAuthenticated ? token : suppliedDisplaySession(req) || token;
+}
+
 function adminAccountCookieName(slotId) {
     if (!/^[a-f0-9]{24}$/.test(String(slotId || ''))) return '';
     return `${adminSessionCookieName()}_account_${slotId}`;
@@ -263,7 +270,7 @@ function protectManagementWrites(req, res, next) {
             }
             // Polling and background previews must never keep an idle engineer
             // session alive. Only the explicit user-activity endpoint does that.
-            getAdminAuth().requireSession(suppliedAdminSession(req), req.get('x-csrf-token'), {
+            getAdminAuth().requireSession(suppliedReadSession(req), req.get('x-csrf-token'), {
                 checkCsrf: writing, permission: apiPermission(apiPath, req.method, req.body)
             });
         } catch (error) {
@@ -309,6 +316,9 @@ function createOperationRateLimiter(options = {}) {
 }
 
 module.exports = {
+    displaySessionCookieName,
+    suppliedDisplaySession,
+    suppliedReadSession,
     activeAdminAccountSlot,
     adminAccountCookieName,
     adminActiveAccountCookieName,

@@ -44,6 +44,9 @@ function preserveExtensions(raw, normalized) {
 }
 function normalizeMetadata(model, motion, options = {}) {
     const metadata = normalizeModelMetadata(model.metadata, { name: model.name });
+    // Private rollback pointers are operational bookkeeping, not portable
+    // model identity; exporting/reimporting a versioned asset must still reuse.
+    delete metadata.assetVersionHistory;
     const raw = parse(model.metadata);
     for (const key of ['acceptance', 'release', 'optimization', 'inspection']) if (raw[key]) metadata[key] = preserveExtensions(raw[key], metadata[key]);
     if (options.ignoreLoadingPorts) delete metadata.loadingPorts;

@@ -4,6 +4,49 @@ import 'vue'
 import { deferred, installBrowser, json, settle } from './helpers.mjs'
 
 let moduleId = 0
+const displaySession = { configured: false, authenticated: false, displayAuthenticated: true, displayOnly: true,
+    user: { id: 'local-display', role: 'display', displayName: '实时大屏' }, csrfToken: 'display-csrf',
+    permissions: { view: true, launch: true, edit: false, manageUsers: false, cast: false, backup: false } }
+
+test('fresh display accepts a read-only machine identity without creating or unlocking an engineer account', async t => {
+    const f = await fixture(t), calls = []
+    t.mock.method(f.browser, 'fetch', async (url, options) => {
+        calls.push({url: String(url), options})
+        return json(String(url).endsWith('/native-display-ticket') ? {ticket:'display-ticket'} : displaySession)
+    })
+    await f.refreshAdminSession()
+    assert.equal(f.adminSession.ready, true); assert.equal(f.adminSession.authenticated, false)
+    assert.equal(f.adminSession.displayOnly, true); assert.equal(f.adminSession.displayAuthenticated, true)
+    assert.equal(f.canOpenAdmin(), false); assert.equal(f.canAdminApi('/api/settings','PUT',{}), false)
+    assert.equal(await f.issueNativeSessionTicket(),'display-ticket')
+    assert.ok(calls.at(-1).url.endsWith('/native-display-ticket'))
+    assert.equal(calls.some(call=>/\/(login|setup)$/.test(call.url)),false)
+})
+
+test('display marker cannot smuggle privileged access into an unconfigured installation', async t => {
+    for (const bad of [{...displaySession,authenticated:true},{...displaySession,user:{id:'owner',role:'owner'}},
+        {...displaySession,permissions:{...displaySession.permissions,edit:true}}]) {
+        const f=await fixture(t);t.mock.method(f.browser,'fetch',async()=>json(bad));await f.refreshAdminSession()
+        assert.equal(f.adminSession.authenticated,false);assert.equal(f.adminSession.displayAuthenticated,false)
+    }
+})
+
+test('simultaneous startup consumers share one bootstrap instead of racing display cookies', async t => {
+    const f=await fixture(t), pending=deferred();let calls=0
+    t.mock.method(f.browser,'fetch',async()=>{calls++;return pending.promise})
+    const a=f.bootstrapDisplayAccess(),b=f.bootstrapDisplayAccess()
+    pending.resolve(json({success:true,displayOnly:true}));await Promise.all([a,b]);assert.equal(calls,1)
+})
+
+test('old running service keeps its original ticket path until its separately approved update', async t => {
+    const f=await fixture(t),calls=[]
+    t.mock.method(f.browser,'fetch',async url=>{
+        calls.push(String(url))
+        return String(url).endsWith('/display-bootstrap')?json({code:'NOT_FOUND',error:'old service'},404):json({ticket:'legacy-ticket'})
+    })
+    await assert.rejects(f.bootstrapDisplayAccess());assert.equal(f.adminSession.displayStartupSupported,false)
+    assert.equal(await f.issueNativeSessionTicket(),'legacy-ticket');assert.ok(calls.at(-1).endsWith('/native-ticket'))
+})
 
 test('remembered usernames remain listed after their session is revoked without becoming authenticated', async t => {
     const session = await fixture(t)

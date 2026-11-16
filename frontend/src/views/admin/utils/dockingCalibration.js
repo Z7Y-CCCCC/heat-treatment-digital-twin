@@ -49,8 +49,7 @@ export async function prepareDockingCalibration({ line, deviceResult, cartResult
       const rootPoint = new T.Vector3(...cartRow.portPosition).applyMatrix4(inverse), rootDirection = new T.Vector3(...cartRow.portDirection).transformDirection(inverse)
       const desired = new T.Vector3(...deviceRow.portDirection).negate().transformDirection(inverse), rootInverse = root.matrixWorld.clone().invert()
       let pivot, parentMatrix = new T.Matrix4()
-      if (transfer.presentation === 'simple') pivot = new T.Box3().setFromObject(root).getCenter(new T.Vector3()).applyMatrix4(rootInverse).setY(rootPoint.y)
-      else {
+      {
         const anchors=[];root.traverse(node=>{if(node.name===transfer.turntableNodeName)anchors.push(node)})
         const anchor=anchors[0]
         if (anchors.length !== 1 || !anchor || anchor === root) throw Error('小车上转台节点不可用或不唯一，请先检查机构配置')
@@ -70,14 +69,29 @@ export async function prepareDockingCalibration({ line, deviceResult, cartResult
     return row.portPosition.map((n, i) => n + p[['x', 'y', 'z'][i]])
   }
   const devicePort = world(deviceRow), cartPort = world(cartRow)
+  const issues = []
+  const perpendicular = Math.abs(deviceRow.portDirection[1]) <= .001 && Math.abs(deviceRow.portDirection[2]) >= .999
+      && Math.abs(cartRow.portDirection[1]) <= .001 && Math.abs(cartRow.portDirection[2]) >= .999
+  const opposed = perpendicular && deviceRow.portDirection[2] * cartRow.portDirection[2] <= -.999
+  const depth = cartPort[2] - devicePort[2]
+  const deviceTowardCart = perpendicular && deviceRow.portDirection[2] * depth >= -1e-6
+  const cartTowardDevice = perpendicular && cartRow.portDirection[2] * -depth >= -1e-6
+  const report = (code, message) => {
+    // Read-only inspection must show the actual geometry that explains a
+    // mismatch, not a blank canvas. Editing/saving retains strict validation.
+    if (!options.inspectionOnly) throw Error(message)
+    issues.push({ code, message })
+  }
   if (Math.abs(deviceRow.portDirection[1]) > .001 || Math.abs(deviceRow.portDirection[2]) < .999
-      || Math.abs(cartRow.portDirection[1]) > .001 || Math.abs(cartRow.portDirection[2]) < .999) throw Error('料口方向必须垂直导轨，请先在料口选点页核对方向')
-  if (deviceRow.portDirection[2] * cartRow.portDirection[2] > -.999) throw Error('两个料口没有相向，请切换小车料口或修正真实朝向')
+      || Math.abs(cartRow.portDirection[1]) > .001 || Math.abs(cartRow.portDirection[2]) < .999) report('PORTS_NOT_PERPENDICULAR', '料口已读取，但方向未垂直导轨；请按真实模型核对料口方向与整车朝向。')
+  else if (!opposed) report('PORTS_NOT_FACING', '两个料口均已配置，但当前朝向没有相向；下面保留真实模型与方向，不自动翻转小车或料口。')
+  else if (!deviceTowardCart || !cartTowardDevice) report('PORTS_POINT_AWAY', '两个料口方向相反，但朝向各自外侧，没有面对对方；下面按真实位置显示，未改变模型或料口。')
   // Stop at the selected station using the same handedness-reflected port X.
   // This is an ephemeral parked-cart pose, never a persisted cart transform.
   const cartPreviewX = cartResult.device.pos_x - (devicePort[0] - cartPort[0])
   cartPort[0] = devicePort[0]
   return { line, deviceResult, cartResult, deviceKind, cartKind, rows, devicePort, cartPort, cartPreviewX, cartTurn,
+    issues, orientation: { perpendicular, opposed, deviceTowardCart, cartTowardDevice },
     position: { x: deviceResult.device.pos_x, y: deviceResult.device.pos_y },
     unitsPerMeter: lineSceneUnitsPerMeter(normalizeLineLayout(line.layout_json || line.layout)) }
 }
@@ -87,10 +101,12 @@ export function dockingPreview(plan, position = plan.position) {
   devicePort[0] -= position.x - plan.position.x
   devicePort[1] += position.y - plan.position.y
   const delta = devicePort.map((n, i) => n - plan.cartPort[i])
+  const positionAligned = Math.abs(delta[0]) <= plan.unitsPerMeter * .002 && Math.abs(delta[1]) <= plan.unitsPerMeter * .002
   return { devicePort, cartPort: [...plan.cartPort], delta, millimeters: delta.map(n => n / plan.unitsPerMeter * 1000),
-    aligned: Math.abs(delta[0]) <= plan.unitsPerMeter * .002 && Math.abs(delta[1]) <= plan.unitsPerMeter * .002 }
+    positionAligned, aligned: positionAligned && !plan.issues?.length }
 }
 export function dockingSavePayload(plan, position) {
+  if (plan.issues?.length) throw Error('当前仅为朝向异常的只读检查，不能提交对接校准；未改变设备或料口。')
   dockingPreview(plan, position)
   for (const axis of ['x', 'y']) if (position[axis] !== plan.position[axis] && Math.fround(position[axis]) === Math.fround(plan.position[axis])) throw Error('当前场景比例与坐标精度不足，Unity 无法区分该位移；请增大步长或校准产线单位')
   return { deviceId: plan.deviceResult.device.id, cartId: plan.cartResult.device.id,

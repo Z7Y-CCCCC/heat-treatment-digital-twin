@@ -2,11 +2,120 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { LoadingPortPreview, LoadingPortPointerGesture, LoadingPortLabelLayer, projectLoadingPortLabel, loadingPortCameraDistance, loadingPortSurfacePoint, loadingPortHeightLabel, stopLoadingPortOrbitDamping, collectLoadingPortNodes, nodeBoundsInLoadingRoot } from '../src/three/LoadingPortPreview.js'
+import { LoadingPortPreview, LoadingPortPointerGesture, LoadingPortLabelLayer, projectLoadingPortLabel, loadingPortCameraDistance, loadingPortSurfacePoint, loadingPortHeightLabel, stopLoadingPortOrbitDamping, configureLoadingPortPreviewControls, collectLoadingPortNodes, nodeBoundsInLoadingRoot } from '../src/three/LoadingPortPreview.js'
 
 const closeVector = (actual, expected) => actual.forEach((value, axis) => assert.ok(Math.abs(value - expected[axis]) < 1e-8, `${actual} != ${expected}`))
 const pointer = (values = {}) => ({ pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons: 1, clientX: 30, clientY: 40, ...values })
 const up = (values = {}) => pointer({ buttons: 0, ...values })
+
+test('default preview browsing matches disassembly left rotation, right pan and wheel/middle zoom', () => {
+  const document = { addEventListener() {}, removeEventListener() {} }
+  const element = { style: {}, ownerDocument: document, addEventListener() {}, removeEventListener() {}, getRootNode: () => document }
+  const camera = new THREE.PerspectiveCamera(); camera.position.set(5, 4, 6)
+  const controls = configureLoadingPortPreviewControls(new OrbitControls(camera, element))
+  assert.equal(controls.mouseButtons.LEFT, THREE.MOUSE.ROTATE)
+  assert.equal(controls.mouseButtons.RIGHT, THREE.MOUSE.PAN)
+  assert.equal(controls.mouseButtons.MIDDLE, THREE.MOUSE.DOLLY)
+  assert.equal(controls.touches.ONE, THREE.TOUCH.ROTATE)
+  assert.equal(controls.touches.TWO, THREE.TOUCH.DOLLY_PAN)
+  assert.equal(controls.enableDamping, true); assert.equal(controls.dampingFactor, .12)
+  assert.equal(controls.enableRotate, true); assert.equal(controls.enablePan, true); assert.equal(controls.enableZoom, true)
+  controls.dispose()
+})
+
+test('disarming the explicit region tool releases capture and resumes browse controls without changing stored ports', () => {
+  const released = [], states = [], ports = { inlet: { position: [1, 2, 3] } }
+  const gesture = new LoadingPortPointerGesture(); gesture.begin(pointer(), true)
+  const canvas = { style: { cursor: 'crosshair' }, hasPointerCapture: id => id === 7, releasePointerCapture: id => released.push(id) }
+  const preview = Object.assign(Object.create(LoadingPortPreview.prototype), {
+    picking: true, regionMode: true, regionStart: { position: [1, 2, 3] }, regionDrag: { id: 7 }, regionWaiting: false,
+    controls: { enabled: false }, renderer: { domElement: canvas }, gesture, onRegionState: state => states.push(state), storedPorts: ports
+  })
+  preview.setPicking(false); preview.setRegionMode(false)
+  assert.deepEqual(released, [7]); assert.equal(preview.regionStart, null); assert.equal(preview.regionDrag, null)
+  assert.equal(preview.regionWaiting, false); assert.equal(gesture.pendingClick, false)
+  assert.equal(preview.picking, false); assert.equal(preview.regionMode, false); assert.equal(preview.controls.enabled, true)
+  assert.equal(canvas.style.cursor, 'grab'); assert.ok(states.every(state => state === false))
+  assert.deepEqual(ports, { inlet: { position: [1, 2, 3] } })
+})
+
+test('region mode is inert until picking is explicitly armed and a cancelled two-corner gesture cannot leak into browsing', () => {
+  const canvas = { style: { cursor: 'grab' } }
+  const preview = Object.assign(Object.create(LoadingPortPreview.prototype), {
+    picking: false, regionMode: false, controls: { enabled: true }, renderer: { domElement: canvas }, gesture: new LoadingPortPointerGesture()
+  })
+  preview.setRegionMode(true); assert.equal(canvas.style.cursor, 'grab'); assert.equal(preview.picking, false)
+  preview.setPicking(true); assert.equal(canvas.style.cursor, 'crosshair')
+  preview.regionStart = { position: [0, 0, 0] }; preview.regionWaiting = true
+  preview.setRegionMode(false); preview.setPicking(false)
+  assert.equal(preview.regionStart, null); assert.equal(preview.regionWaiting, false); assert.equal(canvas.style.cursor, 'grab')
+})
+
+test('hiding the model canvas pauses rendering and picking, reports cancellation only, and preserves camera and saved markers', () => {
+  const loops = [], events = [], states = [], camera = new THREE.PerspectiveCamera(), markers = new THREE.Group()
+  camera.position.set(5, 4, 6)
+  const before = { position: camera.position.toArray(), quaternion: camera.quaternion.toArray(), markerId: markers.uuid }
+  const preview = Object.assign(Object.create(LoadingPortPreview.prototype), {
+    active: true, picking: true, regionMode: true, disposed: false, regionStart: { position: [1, 2, 3] }, regionWaiting: true,
+    controls: { enabled: true, target: new THREE.Vector3(), update() {} }, renderer: { domElement: { style: { cursor: 'crosshair' } }, setAnimationLoop: loop => loops.push(loop) },
+    camera, markers, gesture: new LoadingPortPointerGesture(), onRegionState: state => states.push(state),
+    resize: () => events.push('resize'), renderFrame: () => events.push('render')
+  })
+  preview.setActive(false)
+  assert.equal(preview.active, false); assert.equal(preview.controls.enabled, false); assert.deepEqual(loops, [null])
+  assert.equal(preview.picking, false); assert.equal(preview.regionMode, false); assert.equal(preview.regionWaiting, false)
+  assert.equal(preview.regionStart, null); assert.deepEqual(states, [false]); assert.deepEqual(events, [])
+  preview.setPicking(true); preview.setRegionMode(true)
+  assert.equal(preview.picking, false); assert.equal(preview.regionMode, false); assert.equal(preview.controls.enabled, false)
+  assert.deepEqual(states, [false]); assert.equal(preview.renderer.domElement.style.cursor, 'grab')
+  assert.deepEqual({ position: camera.position.toArray(), quaternion: camera.quaternion.toArray(), markerId: markers.uuid }, before)
+  preview.setActive(true)
+  assert.equal(preview.controls.enabled, true); assert.deepEqual(events, ['resize', 'render'])
+  assert.equal(loops[1], preview.renderFrame); assert.equal(preview.picking, false); assert.equal(preview.regionMode, false)
+  assert.deepEqual({ position: camera.position.toArray(), quaternion: camera.quaternion.toArray(), markerId: markers.uuid }, before)
+  preview.setActive(true); assert.equal(loops.length, 2, 'repeated activation must not stack render loops')
+  preview.disposed=true; preview.setActive(false); assert.equal(preview.active, true, 'disposed previews are inert')
+})
+
+test('switching away drains real OrbitControls inertia without moving the visible camera and returns to a stationary view', () => {
+  const document={addEventListener(){},removeEventListener(){}}
+  const element={style:{},ownerDocument:document,addEventListener(){},removeEventListener(){},getRootNode:()=>document}
+  const camera=new THREE.PerspectiveCamera(42,1,.01,10000);camera.position.set(5,4,6)
+  const controls=configureLoadingPortPreviewControls(new OrbitControls(camera,element)),loops=[]
+  controls.target.set(1,2,3);controls.update()
+  controls._sphericalDelta.theta=.4;controls._sphericalDelta.phi=.1;controls._panOffset.set(.2,.1,.3);controls._scale=.7
+  const before={position:camera.position.toArray(),quaternion:camera.quaternion.toArray(),target:controls.target.toArray(),zoom:camera.zoom}
+  const preview=Object.assign(Object.create(LoadingPortPreview.prototype),{
+    active:true,disposed:false,camera,controls,gesture:new LoadingPortPointerGesture(),renderer:{domElement:element,setAnimationLoop:loop=>loops.push(loop)},
+    resize(){},renderFrame:()=>controls.update()
+  })
+  preview.setActive(false)
+  assert.deepEqual({position:camera.position.toArray(),quaternion:camera.quaternion.toArray(),target:controls.target.toArray(),zoom:camera.zoom},before)
+  assert.equal(controls._sphericalDelta.theta,0);assert.equal(controls._sphericalDelta.phi,0);assert.equal(controls._panOffset.lengthSq(),0);assert.equal(controls._scale,1)
+  assert.equal(controls.enableDamping,true);assert.equal(controls.dampingFactor,.12);assert.equal(controls.enabled,false);assert.deepEqual(loops,[null])
+  preview.setActive(true)
+  for(let frame=0;frame<20;frame++)controls.update()
+  closeVector(camera.position.toArray(),before.position);closeVector(camera.quaternion.toArray(),before.quaternion);closeVector(controls.target.toArray(),before.target)
+  assert.equal(camera.zoom,before.zoom);assert.equal(controls.enabled,true);assert.equal(loops[1],preview.renderFrame);controls.dispose()
+})
+
+test('Escape exits the armed drawing tool before either corner and reports one UI mode exit without creating a port', () => {
+  for (const partial of [null, { position: [1, 2, 3] }]) {
+    let exits=0, completed=0
+    const states=[]
+    const preview = Object.assign(Object.create(LoadingPortPreview.prototype), {
+      active:true, picking:true, regionMode:true, regionStart:partial, regionWaiting:!!partial,
+      controls:{enabled:!partial}, renderer:{domElement:{style:{cursor:'crosshair'}}}, gesture:new LoadingPortPointerGesture(),
+      onRegionState:state=>states.push(state), onDrawingExit:()=>exits++, onRegion:()=>completed++
+    })
+    assert.equal(preview.exitDrawing(),true)
+    assert.equal(preview.regionMode,false);assert.equal(preview.picking,false);assert.equal(preview.controls.enabled,true)
+    assert.equal(preview.renderer.domElement.style.cursor,'grab');assert.equal(preview.regionStart,null)
+    assert.deepEqual(states,[false]);assert.equal(exits,1);assert.equal(completed,0)
+    assert.equal(preview.exitDrawing(),false);assert.equal(exits,1)
+    preview.active=false;preview.regionMode=true;assert.equal(preview.exitDrawing(),false);assert.equal(exits,1)
+  }
+})
 
 test('node bounds and center/bottom coordinates include authored hierarchy but exclude owner root transforms', () => {
   const root = new THREE.Group(); root.position.set(100, 40, -70); root.scale.set(2, 3, 4); root.rotation.y = .5
