@@ -1,6 +1,6 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
-const { createTreeManifest, verifyFileManifest, sha256 } = require('./runtime-cache.cjs');
+const { createTreeManifest, sha256 } = require('./runtime-cache.cjs');
 const { prepareResourceDirectory } = require('./resource-preparation.cjs');
 function inputFingerprint(frontend, env) {
   const hash = crypto.createHash('sha256');
@@ -28,8 +28,13 @@ async function buildReleaseFrontend(frontend, destination, build, { force = fals
   const fingerprint = inputFingerprint(frontend, env);
   let proof;
   try { proof = JSON.parse(fs.readFileSync(marker)); } catch { }
-  if (!force && proof?.fingerprint === fingerprint && verifyFileManifest(destination, proof.files)
-      && JSON.stringify(createTreeManifest(destination)) === JSON.stringify(proof.files)) return { reused: true };
+  if (!force && proof?.fingerprint === fingerprint && Array.isArray(proof.files) && proof.files.length) {
+    // The complete manifest comparison already hashes every output. A separate
+    // verifyFileManifest pass used to read the entire frontend twice per hit.
+    try {
+      if (JSON.stringify(createTreeManifest(destination)) === JSON.stringify(proof.files)) return { reused: true };
+    } catch { /* Missing, corrupt or linked output: replace the complete tree. */ }
+  }
   await prepareResourceDirectory(destination, async staging => {
     await build(staging);
     if (inputFingerprint(frontend, env) !== fingerprint) throw new Error('Frontend inputs changed during release build');

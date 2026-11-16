@@ -3,7 +3,8 @@ const fs=require('node:fs'),path=require('node:path'),{execFileSync}=require('no
 const {version}=require('../package.json');
 const scenario=process.argv.find(value=>value.startsWith('--scenario='))?.split('=')[1] || 'normal';
 if(!['normal','reboot','failure','cancel'].includes(scenario))throw Error('Unknown preview scenario');
-const root=path.resolve(__dirname,'../..'),output=path.join(root,'output','installer-preview',scenario);
+const root=path.resolve(__dirname,'../..'),output=process.env.INSTALLER_PREVIEW_DIR
+  ? path.resolve(process.env.INSTALLER_PREVIEW_DIR,scenario) : path.join(root,'output','installer-preview',scenario);
 fs.mkdirSync(output,{recursive:true});
 const source=`Unicode true
 Name "热处理数字孪生大屏"
