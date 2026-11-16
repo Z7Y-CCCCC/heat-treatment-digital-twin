@@ -10,6 +10,7 @@ param(
     [switch]$RefreshDependencies,
     [switch]$ForceUnityBuild,
     [switch]$FullBuild,
+    [switch]$FastPack,
     [switch]$ResumeCandidate,
     [string]$ReleaseDirectory,
     [string]$BuildOutputRoot,

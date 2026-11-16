@@ -14,6 +14,8 @@ test('cached releases bind uncommitted Chinese sources and the complete file set
   const original=sourceSnapshot(root);assert.equal(verifySource(root,original).sha256,original.sha256);
   fs.mkdirSync(path.join(root,'desktop/assets'),{recursive:true});fs.writeFileSync(path.join(root,'desktop/assets/installer-art.bmp'),'new installer art');
   assert.equal(verifySource(root,original).sha256,original.sha256,'UI-only changes reuse the actual dirty-source build');
+  fs.writeFileSync(path.join(root,'desktop/assets/installer-hero.png'),'new supplied hero image');
+  assert.equal(verifySource(root,original).sha256,original.sha256,'installer-only PNG changes do not rebuild the application');
   fs.writeFileSync(path.join(root,'desktop/THIRD_PARTY_NOTICES.txt'),'generated dependency notices\n');
   assert.equal(verifySource(root,original).sha256,original.sha256,'generated notices use their separate installed-payload check');
   const localEnv=path.join(root,'frontend/.env.local');fs.writeFileSync(localEnv,'VITE_MODE=changed');

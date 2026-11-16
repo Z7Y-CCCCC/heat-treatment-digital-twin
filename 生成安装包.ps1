@@ -10,6 +10,7 @@ param(
     [switch]$RefreshDependencies,
     [switch]$ForceUnityBuild,
     [switch]$FullBuild,
+    [switch]$FastPack,
     [switch]$StarterTemplate = $true,
     [switch]$SkipSmokeTest,
     [string]$ReleaseDirectory,
@@ -208,9 +209,16 @@ function Assert-ApplicationIsClosed {
 # including local uncommitted changes. Runs before Unity/SDK/dependency setup.
 if (-not ($FullBuild -or $ForceUnityBuild -or $RefreshDependencies -or $SkipSmokeTest -or $ReleaseDirectory)) {
     $reuseNode = Resolve-RequiredCommand -Names @('node.exe', 'node') -InstallHint '请先安装 Node.js。'
-    & $reuseNode (Join-Path $projectDirectory 'tools/installer-repack.cjs') '--try-reuse'
-    if ($LASTEXITCODE -eq 0) { if (-not $NoPause) { [void](Read-Host '打包完成，按回车关闭') }; return }
-    if ($LASTEXITCODE -ne 10) { throw '快速打包失败，请查看上面的具体原因。' }
+    $reuseCompression = [Environment]::GetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', 'Process')
+    try {
+        if ($FastPack) { $env:ELECTRON_BUILDER_COMPRESSION_LEVEL = '0' }
+        & $reuseNode (Join-Path $projectDirectory 'tools/installer-repack.cjs') '--try-reuse'
+        $reuseExitCode = $LASTEXITCODE
+    } finally {
+        [Environment]::SetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', $reuseCompression, 'Process')
+    }
+    if ($reuseExitCode -eq 0) { if (-not $NoPause) { [void](Read-Host '打包完成，按回车关闭') }; return }
+    if ($reuseExitCode -ne 10) { throw '快速打包失败，请查看上面的具体原因。' }
 }
 
 function Get-ReleaseSha256([string]$File) {
@@ -381,8 +389,17 @@ try {
     Invoke-CheckedCommand -Label '记录程序源码内容（包含本地未提交修改）' -Executable $node -ArgumentList @(
         (Join-Path $projectDirectory 'tools/release-source-snapshot.cjs'), 'record', $projectDirectory, $sourceSnapshot
     )
-    foreach ($buildStep in @('build:frontend', 'build:admin-host', 'build:collector-service', 'build:collector-center', 'prepare:resources')) {
-        Invoke-CheckedCommand -Label $buildStep -Executable $npm -ArgumentList @('--prefix', $desktopDirectory, 'run', $buildStep)
+    $componentReport = Join-Path $outputDirectory 'component-build-timings.json'
+    try {
+        Invoke-CheckedCommand -Label '并行构建前端和独立宿主组件（最多两个任务）' -Executable $node -ArgumentList @(
+            (Join-Path $desktopDirectory 'scripts/parallel-build.cjs'), $componentReport
+        )
+    } finally {
+        # Preserve the original per-component evidence used by ResumeCandidate.
+        if (Test-Path -LiteralPath $componentReport) {
+            $components = Get-Content -LiteralPath $componentReport -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($stage in $components.stages) { $script:buildStages.Add($stage) }
+        }
     }
     $builderCli = Join-Path $desktopDirectory 'node_modules/electron-builder/out/cli/cli.js'
     $candidateConfig = Join-Path $outputDirectory 'candidate-builder.json'
@@ -492,20 +509,17 @@ Invoke-CheckedCommand -Label '验证运行测试未改写安装资源' -Executab
 )
 
 $previousCompressionLevel = [Environment]::GetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', 'Process')
-$effectiveCompressionLevel = if ([string]::IsNullOrWhiteSpace($previousCompressionLevel)) { '1' } else { $previousCompressionLevel }
+$effectiveCompressionLevel = if ($FastPack) { '0' } elseif ([string]::IsNullOrWhiteSpace($previousCompressionLevel)) { '1' } else { $previousCompressionLevel }
 if ($effectiveCompressionLevel -notmatch '^[0-9]$') {
     throw 'ELECTRON_BUILDER_COMPRESSION_LEVEL 必须为 0 到 9 的单个数字。'
 }
 try {
     $env:ELECTRON_BUILDER_COMPRESSION_LEVEL = $effectiveCompressionLevel
+    if ($FastPack) { Write-Host '极速打包：程序 ZIP 使用存储模式，减少压缩耗时；安装包体积会增大，全部运行及完整性检查仍执行。' -ForegroundColor Yellow }
     Write-Host "ZIP 压缩级别：$effectiveCompressionLevel（默认 1，可通过 ELECTRON_BUILDER_COMPRESSION_LEVEL 覆盖）"
     Invoke-CheckedCommand -Label '压缩已验证的程序并生成 NSIS 安装包' -Executable $node -ArgumentList @(
-        $builderCli,
-        '--projectDir', $desktopDirectory,
-        '--prepackaged', (Join-Path $outputDirectory 'win-unpacked'),
-        '--win', 'nsis', '--x64',
-        "--config.directories.output=$outputDirectory",
-        '--config.compression=normal'
+        (Join-Path $projectDirectory 'tools/package-installer.cjs'),
+        (Join-Path $outputDirectory 'win-unpacked'), $outputDirectory, $effectiveCompressionLevel
     )
 } finally {
     [Environment]::SetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', $previousCompressionLevel, 'Process')

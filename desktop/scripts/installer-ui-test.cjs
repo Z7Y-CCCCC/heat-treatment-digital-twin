@@ -7,8 +7,8 @@ const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'display-installer-ui.nsh'), 'utf8');
 const hooks = fs.readFileSync(path.join(root, 'display-installer.nsh'), 'utf8');
 const pkg = require('../package.json');
-test('custom installer illustration and stock uninstaller sidebar use their own required dimensions', () => {
-  for (const [name, width, height] of [['installer-art.bmp',600,1100],['installer-sidebar.bmp',164,314]]) {
+test('wide installer hero and stock uninstaller sidebar use their own required dimensions', () => {
+  for (const [name, width, height] of [['installer-art.bmp',1024,625],['installer-sidebar.bmp',164,314]]) {
     const data=fs.readFileSync(path.join(root,'assets',name));
     assert.equal(data.readInt32LE(18),width); assert.equal(data.readInt32LE(22),height);
   }
@@ -46,9 +46,10 @@ test('all native controls fit the client area at 100%, 125%, 150% and 200% scale
     assert.ok(Math.round((c.y + c.h) * scale) <= Math.round(d.h * scale), `vertical overflow: ${d.id}/${c.id}`);
   }
   const d = layout.dialogs.find(d => d.id === 105);
-  const page = d.controls.find(c => c.id === 1018), action = d.controls.find(c => c.id === 1);
-  assert.ok(page.y + page.h < action.y, 'page content must not overlap the main action');
-  assert.ok(d.w <= 460 && d.h <= 275, 'keep the illustrated wizard bounded');
+  const page = d.controls.find(c => c.id === 1018), action = d.controls.find(c => c.id === 1), hero = d.controls.find(c => c.id === 1036);
+  assert.ok(hero.y + hero.h < action.y && action.y + action.h < page.y, 'hero, central primary action and optional path settings must not overlap');
+  assert.equal(action.x + action.w / 2, d.w / 2, 'the quick-install action is centered');
+  assert.ok(d.w <= 460 && d.h <= 360, 'keep the compact illustrated wizard bounded');
 });
 test('primary action stays a native default pushbutton with keyboard and accessible text', () => {
   const next = layout.dialogs[0].controls.find(c => c.id === 1);

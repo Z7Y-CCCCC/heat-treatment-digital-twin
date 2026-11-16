@@ -65,8 +65,26 @@ function bitmap(width, height) {
   for(let i=0;i<5;i++){const x=width*(.12+(i*37%75)/100),y=height*(.36+(i*13%48)/100);dot(x,y,[70,177,201],.55);dot(x+1,y,[70,177,201],.55);}
   const data = Buffer.alloc(54 + pixels.length); data.write('BM'); data.writeUInt32LE(data.length,2);data.writeUInt32LE(54,10);data.writeUInt32LE(40,14);data.writeInt32LE(width,18);data.writeInt32LE(height,22);data.writeUInt16LE(1,26);data.writeUInt16LE(24,28); pixels.copy(data,54); return data;
 }
+// User-supplied artwork contains its own branding. Crop only the empty white
+// lower panel; keep all of the illustration and title at the original aspect.
+function heroBitmap() {
+  const {execFileSync}=require('node:child_process');
+  const input=path.resolve(__dirname,'../assets/installer-hero.png').replace(/'/g,"''");
+  const script=`Add-Type -AssemblyName System.Drawing
+$source=[System.Drawing.Bitmap]::FromFile('${input}')
+$target=New-Object System.Drawing.Bitmap(1024,625,[System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+$graphics=[System.Drawing.Graphics]::FromImage($target)
+$stream=New-Object System.IO.MemoryStream
+try {
+  $graphics.DrawImage($source,[System.Drawing.Rectangle]::new(0,0,1024,625),0,0,1024,625,[System.Drawing.GraphicsUnit]::Pixel)
+  $target.Save($stream,[System.Drawing.Imaging.ImageFormat]::Bmp)
+  [Console]::Write([Convert]::ToBase64String($stream.ToArray()))
+} finally { $stream.Dispose(); $graphics.Dispose(); $target.Dispose(); $source.Dispose() }
+`;
+  return Buffer.from(execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{windowsHide:true,encoding:'utf8',maxBuffer:8*1024*1024}).trim(),'base64');
+}
 if (require.main === module) {
-  fs.writeFileSync(path.resolve(__dirname,'../assets/installer-art.bmp'),bitmap(600,1100));
+  fs.writeFileSync(path.resolve(__dirname,'../assets/installer-art.bmp'),heroBitmap());
   fs.writeFileSync(path.resolve(__dirname,'../assets/installer-sidebar.bmp'),bitmap(164,314));
 }
-module.exports = { bitmap };
+module.exports = { bitmap, heroBitmap };
