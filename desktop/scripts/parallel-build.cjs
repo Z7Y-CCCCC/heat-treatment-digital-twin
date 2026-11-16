@@ -16,7 +16,7 @@ function buildTasks(project) {
 }
 
 async function runBuildTasks(tasks, { directory, concurrency = 2, env = process.env,
-  createLogStream = file => fs.createWriteStream(file), spawnProcess = spawn } = {}) {
+  createLogStream = file => fs.createWriteStream(file), spawnProcess = spawn, logger = console } = {}) {
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw Error('Build concurrency must be 1-4');
   fs.mkdirSync(directory, { recursive: true });
   const stages = [], started = performance.now();
@@ -25,7 +25,7 @@ async function runBuildTasks(tasks, { directory, concurrency = 2, env = process.
   if (names.size !== tasks.length || tasks.some(task => (task.dependsOn || []).some(name => !names.has(name)))) throw Error('Invalid component dependency graph');
   async function run(task, index) {
     const logFile = path.join(directory, `${index}-${task.name.replace(/[^a-z0-9-]/gi, '-')}.log`);
-    console.log(`开始 ${task.name}；日志：${logFile}`);
+    logger.log(`开始 ${task.name}；日志：${logFile}`);
     const start = performance.now();
     return new Promise(resolve => {
       let log, child, launchError, logError, finishing = false;
@@ -38,8 +38,8 @@ async function runBuildTasks(tasks, { directory, concurrency = 2, env = process.
             exitCode: launchError || logError ? -1 : code ?? -1, signal, error: launchError || logError, logFile };
           stages[index] = result;
           if (result.exitCode !== 0) failed = true;
-          console.log(`结束 ${task.name}：${result.seconds} 秒，退出码 ${result.exitCode}`);
-          if (result.exitCode !== 0) console.error(launchError || logError || `构建失败，详见 ${logFile}`);
+          logger.log(`结束 ${task.name}：${result.seconds} 秒，退出码 ${result.exitCode}`);
+          if (result.exitCode !== 0) logger.error(launchError || logError || `构建失败，详见 ${logFile}`);
           resolve(result);
         };
         // end/finish does not wait for the file descriptor's asynchronous

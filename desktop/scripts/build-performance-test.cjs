@@ -3,7 +3,30 @@ const { test } = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { fingerprintInputs, buildCachedNative } = require('./native-build-cache.cjs');
 const { buildTasks, runBuildTasks } = require('./parallel-build.cjs');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
+
+async function runCapturedBuildTasks(tasks, options) {
+  // Raw console output can share a pipe read with node:test's V8 frames on
+  // Windows. Capture the helper's status messages locally, not by patching
+  // global console or discarding logs, and assert all production evidence.
+  const messages = [];
+  const report = await runBuildTasks(tasks, { ...options, logger: {
+    log: message => messages.push({ level: 'log', message }),
+    error: message => messages.push({ level: 'error', message })
+  } });
+  assert.equal(messages.filter(item => item.level === 'log').length, report.stages.length * 2);
+  assert.equal(messages.filter(item => item.level === 'error').length,
+    report.stages.filter(stage => stage.exitCode !== 0).length);
+  for (const stage of report.stages) {
+    for (const message of [`开始 ${stage.name}；日志：${stage.logFile}`,
+      `结束 ${stage.name}：${stage.seconds} 秒，退出码 ${stage.exitCode}`]) {
+      assert.equal(messages.filter(item => item.level === 'log' && item.message === message).length, 1);
+    }
+    if (stage.exitCode !== 0) assert.equal(messages.filter(item => item.level === 'error' &&
+      item.message === (stage.error || `构建失败，详见 ${stage.logFile}`)).length, 1);
+  }
+  return report;
+}
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pack-build-test-'));
@@ -57,7 +80,12 @@ test('parallel component builds overlap, retain per-stage logs and forward envir
         clearInterval(timer); fs.writeFileSync(path.join(dir,n+'.done'),''); console.log('完成 '+n);
       } else if(Date.now()>deadline){clearInterval(timer);process.exitCode=4;}
     },10);`, events, String(n)] });
-  const result = await runBuildTasks([task(1), task(2), task(3)], { directory: path.join(root, 'logs'), concurrency: 2, env: { ...process.env, PACK_BUILD_TEST: 'forwarded' } });
+  const env = { ...process.env, PACK_BUILD_TEST: 'forwarded' };
+  const result = await runCapturedBuildTasks([task(1), task(2), task(3)], { directory: path.join(root, 'logs'), concurrency: 2, env,
+    spawnProcess: (command, args, options) => {
+      assert.equal(options.env, env, 'the exact supplied environment still reaches every child');
+      return spawn(command, args, options);
+    } });
   assert.equal(result.success, true); assert.equal(result.stages.length, 3);
   for (const stage of result.stages) { assert.equal(stage.exitCode, 0); assert.match(fs.readFileSync(stage.logFile, 'utf8'), /完成/); }
   const plan = buildTasks(root);
@@ -72,10 +100,10 @@ test('failed parallel build stops queued tasks, waits for running tasks and reco
     { name: 'running', command: process.execPath, args: ['-e', `setTimeout(()=>require('node:fs').writeFileSync(process.argv[1],'done'),200)`, completed] },
     { name: 'queued', command: process.execPath, args: ['-e', 'process.exit(0)'] }
   ];
-  const result = await runBuildTasks(tasks, { directory: path.join(root, 'logs'), concurrency: 2 });
+  const result = await runCapturedBuildTasks(tasks, { directory: path.join(root, 'logs'), concurrency: 2 });
   assert.equal(result.success, false); assert.equal(result.stages.length, 2);
   assert.equal(result.stages[0].exitCode, 7); assert.equal(fs.readFileSync(completed, 'utf8'), 'done');
-  const missing = await runBuildTasks([{ name: 'missing', command: path.join(root, 'missing.exe'), args: [] }], { directory: path.join(root, 'missing-logs') });
+  const missing = await runCapturedBuildTasks([{ name: 'missing', command: path.join(root, 'missing.exe'), args: [] }], { directory: path.join(root, 'missing-logs') });
   assert.equal(missing.success, false); assert.equal(missing.stages[0].exitCode, -1);
 });
 
@@ -83,9 +111,9 @@ test('resource-like dependent tasks wait for their producer and never run after 
   const root = fixture(t), ready = path.join(root, 'ready');
   const producer = { name: 'host', command: process.execPath, args: ['-e', "require('node:fs').writeFileSync(process.argv[1],'ready')", ready] };
   const consumer = { name: 'resources', dependsOn: ['host'], command: process.execPath, args: ['-e', "if(!require('node:fs').existsSync(process.argv[1]))process.exit(8)", ready] };
-  const result = await runBuildTasks([consumer, producer], { directory: path.join(root, 'ordered'), concurrency: 2 });
+  const result = await runCapturedBuildTasks([consumer, producer], { directory: path.join(root, 'ordered'), concurrency: 2 });
   assert.equal(result.success, true);
-  const failed = await runBuildTasks([consumer, { ...producer, args: ['-e', 'process.exit(7)'] }], { directory: path.join(root, 'failed'), concurrency: 2 });
+  const failed = await runCapturedBuildTasks([consumer, { ...producer, args: ['-e', 'process.exit(7)'] }], { directory: path.join(root, 'failed'), concurrency: 2 });
   assert.equal(failed.success, false); assert.deepEqual(failed.stages.map(stage => stage.name), ['host']);
 });
 
@@ -94,7 +122,7 @@ test('a log open failure records failure without launching the compiler or queue
   fs.mkdirSync(path.join(directory, '0-blocked.log'), { recursive: true });
   let launches = 0;
   const tasks = ['blocked', 'queued'].map(name => ({ name, command: process.execPath, args: ['-e', 'process.exit(0)'] }));
-  const result = await runBuildTasks(tasks, { directory, concurrency: 1,
+  const result = await runCapturedBuildTasks(tasks, { directory, concurrency: 1,
     spawnProcess: (...args) => { launches++; return spawn(...args); } });
   assert.equal(launches, 0);
   assert.equal(result.success, false);
@@ -113,7 +141,7 @@ test('a mid-stream log write failure drains verbose stdout and stderr and stops 
       fs.writeSync(1, data); fs.writeSync(2, data);`] },
     { name: 'queued', command: process.execPath, args: ['-e', 'process.exit(0)'] }
   ];
-  const pending = runBuildTasks(tasks, { directory: path.join(root, 'logs'), concurrency: 1,
+  const pending = runCapturedBuildTasks(tasks, { directory: path.join(root, 'logs'), concurrency: 1,
     spawnProcess: (...args) => { child = spawn(...args); return child; },
     createLogStream: file => {
       const log = fs.createWriteStream(file);
@@ -143,7 +171,7 @@ test('a final log flush failure cannot mark a completed compiler successful or l
   let logClosed;
   const tasks = ['flush', 'queued'].map(name => ({ name, command: process.execPath,
     args: ['-e', "process.stdout.write('finished\\n')"] }));
-  const result = await runBuildTasks(tasks, { directory: path.join(root, 'logs'), concurrency: 1,
+  const result = await runCapturedBuildTasks(tasks, { directory: path.join(root, 'logs'), concurrency: 1,
     createLogStream: file => {
       const log = fs.createWriteStream(file);
       logClosed = new Promise(resolve => log.once('close', resolve));
@@ -165,7 +193,7 @@ test('a delayed log file close error fails the stage before queued work or the r
   let closeCompleted = false;
   const tasks = ['close', 'queued'].map(name => ({ name, command: process.execPath,
     args: ['-e', "process.stdout.write('finished\\n')"] }));
-  const result = await runBuildTasks(tasks, { directory: path.join(root, 'logs'), concurrency: 1,
+  const result = await runCapturedBuildTasks(tasks, { directory: path.join(root, 'logs'), concurrency: 1,
     createLogStream: file => fs.createWriteStream(file, { fs: {
       ...fs,
       close: (descriptor, callback) => fs.close(descriptor, error => {
@@ -181,4 +209,59 @@ test('a delayed log file close error fails the stage before queued work or the r
   assert.equal(result.stages.length, 1);
   assert.equal(result.stages[0].exitCode, -1);
   assert.match(result.stages[0].error, /delayed log close failure/);
+});
+
+test('the default logger retains Chinese status and failure output outside the test reporter pipe', t => {
+  const root = fixture(t);
+  const modulePath = require.resolve('./parallel-build.cjs');
+  const script = `
+    const { runBuildTasks } = require(process.argv[1]);
+    runBuildTasks([{ name: '成功', command: process.execPath, args: ['-e', "console.log('child stdout');console.error('child stderr')"] },
+      { name: '失败', command: process.execPath, args: ['-e', 'process.exit(7)'] }],
+      { directory: process.argv[2], concurrency: 1 })
+      .then(report => { if(report.success || report.stages.length !== 2)process.exitCode = 8; })
+      .catch(error => { console.error(error); process.exitCode = 9; });`;
+  const result = spawnSync(process.execPath, ['-e', script, modulePath, path.join(root, 'logs')],
+    { windowsHide: true, encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /开始 成功；日志：/);
+  assert.match(result.stdout, /结束 成功：[^\n]+退出码 0/);
+  assert.match(result.stdout, /开始 失败；日志：/);
+  assert.match(result.stdout, /结束 失败：[^\n]+退出码 7/);
+  assert.match(result.stderr, /构建失败，详见 /);
+  const logDirectory = path.join(root, 'logs');
+  const childLog = fs.readFileSync(path.join(logDirectory,
+    fs.readdirSync(logDirectory).find(name => name.startsWith('0-'))), 'utf8');
+  assert.match(childLog, /child stdout\n/);
+  assert.match(childLog, /child stderr\n/);
+});
+
+test('captured build messages cannot corrupt coalesced Node test reporter frames', t => {
+  const root = fixture(t), probe = path.join(root, 'coalesced-reporter.cjs');
+  fs.writeFileSync(probe, `
+    const { test } = require('node:test'), assert = require('node:assert/strict');
+    const fs = require('node:fs'), path = require('node:path');
+    const { runBuildTasks } = require(${JSON.stringify(require.resolve('./parallel-build.cjs'))});
+    // Force reporter events into one pipe write. Raw Chinese console messages
+    // between these frames reproduce Node 22's Windows parser failure.
+    process.stdout.cork(); setTimeout(() => process.stdout.uncork(), 100);
+    test('capture status and error evidence while reporter output is corked', async () => {
+      const directory = path.join(__dirname, 'logs'), messages = [];
+      fs.mkdirSync(path.join(directory, '0-blocked.log'), { recursive: true });
+      const report = await runBuildTasks([{ name: 'blocked', command: process.execPath, args: [] }],
+        { directory, logger: { log: message => messages.push(message), error: message => messages.push(message) } });
+      assert.equal(report.success, false);
+      assert.equal(report.stages[0].exitCode, -1);
+      assert.equal(messages.length, 3);
+      assert.match(messages[0], /开始 blocked/);
+      assert.match(messages[1], /结束 blocked/);
+      assert.match(messages[2], /EISDIR|EACCES|EPERM/);
+    });`);
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT; // This fixture launches its own reporter root.
+  const result = spawnSync(process.execPath, ['--test', probe],
+    { env, windowsHide: true, encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /# pass 1/);
+  assert.doesNotMatch(result.stdout + result.stderr, /Unable to deserialize cloned data/);
 });
