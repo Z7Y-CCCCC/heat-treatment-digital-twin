@@ -26,7 +26,7 @@ onMounted(() => dialog.value?.querySelector('button')?.focus())
 <template>
   <Teleport to="body"><div class="arrangement-proposal-backdrop" @keydown="keydown"><section ref="dialog" class="arrangement-proposal" role="dialog" aria-modal="true" aria-labelledby="arrangement-proposal-title">
     <header><div><span>推荐方案 · 尚未应用</span><h3 id="arrangement-proposal-title">{{ proposal.lineName }} · 自动排布预览</h3></div><button type="button" aria-label="取消自动排布" @click="emit('resolve', false)">×</button></header>
-    <div class="proposal-summary"><strong>{{ proposal.layout.lanes.length === 2 ? '双侧排布' : '单侧排布' }}</strong><span>{{ moved }} 台设备对接间距将调整</span><span v-if="proposal.autoAligned">{{ proposal.orientations.length }} 台朝向将纠正</span><span>左右位置不变 · 由你手动排布</span></div>
+    <div class="proposal-summary"><strong>{{ proposal.layout.lanes.length === 2 ? '双侧排布' : '单侧排布' }}</strong><span>{{ moved }} 台设备对接间距将调整</span><span v-if="proposal.autoAligned">{{ proposal.orientations.length }} 台朝向将纠正</span><span>左右位置不变 · 由你手动排布</span><span v-if="proposal.layout.lanes.length === 2">两侧间距独立计算</span></div>
     <div v-if="proposal.orientations?.length" class="proposal-turns" aria-label="自动纠正朝向的设备"><span v-for="change in proposal.orientations" :key="change.id">{{ change.name }} · 转 {{ change.degrees }}°</span></div>
     <svg viewBox="0 0 1000 430" role="img" aria-label="自动排布前后对比，虚线为原位置，实色为推荐位置">
       <defs><marker id="proposal-mouth-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#28a8b5" /></marker></defs>

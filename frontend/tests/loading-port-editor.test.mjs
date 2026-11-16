@@ -611,3 +611,22 @@ test('rotation uses the selected model node; legacy simple flags restore single 
   assert.equal(Object.hasOwn(f.calls.deviceSaves[0].body, 'movement'), false); assert.equal(f.calls.modelSaves.length, 0)
   f.vm.cartMode = 'single'; await nextTick(); f.exposed.discardPending(); assert.equal(f.vm.cartMode, 'model')
 })
+
+test('retired simple-cart cannot replace CAD; rotation requires an explicit selected-model turntable', async t => {
+  const initial = { version: 1, kind: 'single', presentation: 'model', turntableNodeName: '' }
+  const f = await fixture(t, { props: { device: device() },
+    loadDevice: () => Promise.resolve({ ...deviceResult('d'), cartSupported: true, cartTransfer: initial }),
+    saveDevice: (id, body) => Promise.resolve({ ...deviceResult(id, body.overrides), cartSupported: true, cartTransfer: body.cartTransfer, signals: body.signals }) })
+  assert.equal(f.vm.cartMode, 'single'); assert.equal(f.calls.deviceSaves.length, 0)
+  f.vm.cartMode = 'simple'; await nextTick()
+  assert.equal(f.vm.cartMode, 'single'); assert.equal(f.vm.dirty, false)
+  f.vm.cartMode = 'model'; await nextTick(); assert.match(f.vm.saveProblem, /上转台节点/)
+  assert.equal(await f.vm.save(), false); assert.equal(f.calls.deviceSaves.length, 0)
+  f.vm.cartDraft.turntableNodeName = 'SelectedUpper'; await nextTick()
+  assert.equal(f.vm.dirty, true); assert.equal(await f.vm.save(), true)
+  assert.deepEqual(f.calls.deviceSaves[0].body.cartTransfer, { version: 1, kind: 'rotating', presentation: 'model', turntableNodeName: 'SelectedUpper' })
+  assert.equal(Object.hasOwn(f.calls.deviceSaves[0].body, 'movement'), false)
+  assert.equal(f.calls.modelSaves.length, 0)
+  f.vm.cartMode = 'single'; await nextTick(); f.exposed.discardPending()
+  assert.equal(f.vm.cartMode, 'model'); assert.equal(f.vm.cartDraft.turntableNodeName, 'SelectedUpper')
+})

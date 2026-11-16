@@ -154,4 +154,3 @@ internal sealed class RecoveryForm : Form
         finally { watchdog.Stop(); view.Dispose(); Close(); }
     }
 }
-
