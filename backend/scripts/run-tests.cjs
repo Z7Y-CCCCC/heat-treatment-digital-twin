@@ -4,14 +4,15 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { BACKEND_DIR, createRunDirectory } = require('./integration-test-utils.cjs');
+const { createSuiteTestEnvironment } = require('./test-suite-environment.cjs');
 
 const scripts = [
     'startup-services.test.cjs', 'simulation-points-test.cjs', 'display-connection-health-test.cjs', 'admin-connection-status-test.cjs', 'point-history-test.cjs', 'point-history-ack-test.cjs', 'history-policy-test.cjs',
     'independent-arrival.test.cjs', 'simple-station-motion-test.cjs', 'loading-port-signals-test.cjs', 'rotating-cart-config-test.cjs', 'schema-ddl-budget-test.cjs', 'bidirectional-transfer-test.cjs',
     'endurance-continuity.test.cjs', 'endurance-memory.test.cjs', 'endurance-mysql-memory.test.cjs', 'endurance-mysql-cleanup.test.cjs', 'endurance-report-io.test.cjs',
-    'test-isolation-test.cjs', 'display-only-runtime-test.cjs', 'collector-process-test.cjs', 'collector-process-integration-test.cjs', 'collector-mode-persistence-test.cjs', 'simulation-connection-status-test.cjs', 'database-readiness-test.cjs', 'bounded-process-log-test.cjs', 'history-retention-test.cjs', 'map-surface-schema-test.cjs',
+    'test-isolation-test.cjs', 'test-suite-environment-test.cjs', 'display-only-runtime-test.cjs', 'collector-process-test.cjs', 'collector-process-integration-test.cjs', 'collector-mode-persistence-test.cjs', 'simulation-connection-status-test.cjs', 'database-readiness-test.cjs', 'bounded-process-log-test.cjs', 'history-retention-test.cjs', 'map-surface-schema-test.cjs',
     'global-view-navigation-test.cjs', 'group-portal-settings-test.cjs', 'appearance-assets-test.cjs',
-    'admin-auth-test.cjs', 'native-connection-confirm-test.cjs', 'admin-session-persistence-test.cjs', 'admin-login-history-test.cjs', 'page-permissions-test.cjs', 'page-permissions-integration-test.cjs', 'license-test.cjs', 'offline-activation-test.cjs', 'release-package-test.cjs', 'package-resource-isolation-test.cjs',
+    'admin-auth-test.cjs', 'display-bootstrap-test.cjs', 'native-connection-confirm-test.cjs', 'admin-session-persistence-test.cjs', 'admin-login-history-test.cjs', 'page-permissions-test.cjs', 'page-permissions-integration-test.cjs', 'license-test.cjs', 'offline-activation-test.cjs', 'release-package-test.cjs', 'package-resource-isolation-test.cjs',
     'math-expression-test.cjs', 'business-data-test.cjs', 'data-source-test.cjs', 'data-set-test.cjs', 'data-center-test.cjs', 'data-record-time-test.cjs', 'data-center-browse-test.cjs', 'data-center-http-test.cjs', 'trend-point-source-test.cjs',
     'data-source-http-regression-test.cjs', 'data-source-designer-test.cjs', 'widget-binding-workflow-test.cjs', 'dashboard-widget-identity-test.cjs', 'dashboard-draft-incomplete-test.cjs', 'dashboard-stale-bindings-test.cjs', 'excel-data-file-test.cjs',
     'spatial-hierarchy-test.cjs', 'workshop-arrangement-test.cjs', 'spatial-bootstrap-idempotency-test.cjs', 'industrial-ground-test.cjs', 'loading-ports-test.cjs', 'docking-calibration-test.cjs', 'cast-discovery-test.cjs', 'cast-history-test.cjs',
@@ -21,7 +22,7 @@ const scripts = [
     'data-point-sync-test.cjs', 'deletion-safety-test.cjs', 'dashboard-device-deletion-test.cjs',
     'native-dashboard-config-test.cjs', 'device-return-navigation-test.cjs', 'inspection-hover-test.cjs', 'device-hover-test.cjs', 'dashboard-designer-test.cjs', 'tooltip-template-integration-test.cjs', 'tooltip-dynamic-binding-test.cjs', 'mcp-platform-integration-test.cjs', 'plc-protocol-test.cjs',
     'plc-value-precision-test.cjs', 's7-read-safety-test.cjs', 'collector-isolation-test.cjs', 'plc-empty-connectivity-test.cjs',
-    'inspection-platform-test.cjs', 'device-inspection-layout-test.cjs', 'model-inspection-layout-test.cjs', 'tempering-inspection-defaults-test.cjs', 'model-asset-collection-test.cjs', 'model-duplicates-test.cjs', 'model-action-package-update-test.cjs', 'model-name-test.cjs', 'ultrasonic-cleaner-profile.test.cjs', 'device-animation-regressions-test.cjs', 'device-animations-test.cjs', 'realtime-transfer-link-test.cjs', 'motion-data-center-test.cjs', 'boolean-endpoints-test.cjs', 'retired-motion-bindings-test.cjs', 'motion-authoring-test.cjs',
+    'inspection-platform-test.cjs', 'device-inspection-layout-test.cjs', 'model-inspection-layout-test.cjs', 'tempering-inspection-defaults-test.cjs', 'model-asset-collection-test.cjs', 'model-duplicates-test.cjs', 'model-action-package-update-test.cjs', 'model-asset-updates-test.cjs', 'model-name-test.cjs', 'ultrasonic-cleaner-profile.test.cjs', 'device-animation-regressions-test.cjs', 'device-animations-test.cjs', 'realtime-transfer-link-test.cjs', 'motion-data-center-test.cjs', 'boolean-endpoints-test.cjs', 'retired-motion-bindings-test.cjs', 'motion-authoring-test.cjs',
     'device-line-units-test.cjs', 'movement-validation-boundary-test.cjs', 'existing-model-motion-catalog-test.cjs', 'line-spacing-precision-test.cjs', 'motion-device-context-test.cjs', 'database-retention-test.cjs', 'database-backup-ties-test.cjs', 'site-backup-test.cjs', 'site-backup-retention-test.cjs', 'backup-storage-test.cjs', 'project-bundle-test.cjs',
     'power-recovery-lifetime.test.cjs', 'power-recovery-test.cjs', 'runtime-display-test.cjs', 'http-integrity-test.cjs'
 ];
@@ -50,9 +51,7 @@ async function run(script) {
     const started = Date.now();
     const logPath = path.join(directory, script.replace(/\.cjs$/, '.log'));
     const log = fs.createWriteStream(logPath);
-    const env = { ...process.env };
-    delete env.TEST_BASE_URL;
-    for (const name of ['ADMIN_API_TOKEN', 'MCP_API_TOKEN', 'DB_TYPE', 'SQLITE_FILE', 'MYSQL_HOST', 'MYSQL_PORT', 'MYSQL_USER', 'MYSQL_PASSWORD', 'MYSQL_DATABASE', 'DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'APP_DATA_DIR', 'UPLOADS_DIR', 'DB_BACKUP_DIR', 'DB_RECOVERY_DIR', 'SITE_BACKUP_DIR', 'SITE_IMPORT_DIR', 'SITE_BACKUP_MIRROR_DIR', 'DATA_SOURCE_BACKUP_DIR', 'LICENSE_FILE', 'LICENSE_PUBLIC_KEY', 'LICENSE_PUBLIC_KEY_FILE', 'SQLITE_RECOVERY_TEMPLATE', 'SQLITE_UPGRADE_TEMPLATE']) delete env[name];
+    const env = createSuiteTestEnvironment(directory, script);
     let timedOut = false;
     let spawnError;
     const child = spawn(process.execPath, [path.join(__dirname, script)], {

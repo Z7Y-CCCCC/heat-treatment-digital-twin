@@ -14,13 +14,35 @@ const errors = [], checks = [], pass = text => { checks.push(text); console.log(
   });
   await waitUntil(() => { assert.equal(server.exitCode, null); return fs.existsSync(infoFile); }, 60000, 'owned arrangement fixture');
   const info = JSON.parse(fs.readFileSync(infoFile)); db = new Database(info.database);
+  // This editor fixture uses a real single-direction CAD cart, not a Z-facing
+  // placeholder port on an X-axis push/pull mechanism. Calibrate its actual bed.
+  const {pathToFileURL}=require('node:url');
+  const {GLTFLoader}=await import(pathToFileURL(path.join(root,'frontend/node_modules/three/examples/jsm/loaders/GLTFLoader.js')));
+  const {inferLoadingPort}=await import(pathToFileURL(path.join(root,'frontend/src/three/lineLoadingAlignment.js')));
+  const cad=require('../backend/services/builtinModels').getBuiltinModels().find(m=>m.id==='cad_transfer_cart_101300');
+  const bytes=fs.readFileSync(path.join(root,'backend',cad.file_path));
+  const cadRoot=(await new Promise((yes,no)=>new GLTFLoader().parse(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength),'',yes,no))).scene;
+  const actualPort=inferLoadingPort(cadRoot,{model_type:cad.id},cad,'inlet');assert.ok(actualPort);
+  const cartMetadata=JSON.parse(db.prepare('SELECT metadata FROM models WHERE id=?').get('docking_cart').metadata);
+  cartMetadata.loadingPorts={version:1,inlet:actualPort,outlet:actualPort};
+  db.prepare('UPDATE models SET metadata=? WHERE id=?').run(JSON.stringify(cartMetadata),'docking_cart');
   const line = db.prepare('SELECT * FROM lines WHERE id=?').get('line_a');
+  if(process.env.WORKSHOP_RAIL_LENGTH_ONLY==='1'){
+    const draft=JSON.parse(line.layout_json);draft.lanes.push({id:'empty_opposite',name:'空设备线 2',offsetZ:8,length:120});
+    db.prepare('UPDATE lines SET layout_json=? WHERE id=?').run(JSON.stringify(draft),'line_a');
+  }
   for (const d of db.prepare("SELECT * FROM devices WHERE line_id='line_a' AND id NOT IN (?,?)").all(info.deviceId, info.cartId)) {
     const config=JSON.parse(d.instance_config||'{}');for(const key of ['laneLineId','railLineId'])if(config[key]==='line_a')config[key]='line_b';
     db.prepare('UPDATE devices SET line_id=?,instance_config=? WHERE id=?').run('line_b',JSON.stringify(config),d.id);
   } // owned fixture only
   for (let i = 1; i <= 8; i++) db.prepare(`INSERT INTO devices (id,name,model_type,line_id,coordinate_space,pos_x,pos_y,pos_z,rotation_y,scale,instance_config,plc_enabled)
     SELECT ?,?,model_type,line_id,coordinate_space,?,?,?,rotation_y,scale,?,0 FROM devices WHERE id=?`).run(`unplaced_${i}`, `待摆设备 ${i}`, i * 3, 0, 12, JSON.stringify({ preserve: { pool: i } }), info.deviceId);
+  if(process.env.WORKSHOP_AUTO_ONLY==='1'){
+    const original=db.prepare('SELECT * FROM devices WHERE id=?').get(info.deviceId);
+    db.prepare(`INSERT INTO devices (id,name,model_type,line_id,coordinate_space,pos_x,pos_y,pos_z,rotation_y,scale,instance_config,plc_enabled)
+      SELECT ?,?,model_type,line_id,coordinate_space,?,pos_y,pos_z,?,scale,instance_config,0 FROM devices WHERE id=?`).run('automatic_backwards','自动反向工位',-15,Math.PI,info.deviceId);
+    assert.equal(db.prepare('SELECT instance_config FROM devices WHERE id=?').get('automatic_backwards').instance_config,original.instance_config);
+  }
 
   const oldDevices = db.prepare('SELECT * FROM devices ORDER BY id').all();
   browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
@@ -51,6 +73,61 @@ const errors = [], checks = [], pass = text => { checks.push(text); console.log(
   await page.screenshot({ path: path.join(directory, '01-workshop-overview.png'), fullPage: true });
   const bounds = await workbench.boundingBox(); assert.ok(bounds.y + bounds.height <= 1002, 'workbench stays inside viewport');
   pass('one workshop-arrangement menu and a bounded overview, no old editor destinations');
+  if(process.env.WORKSHOP_LINE_TREE_ONLY==='1') {
+    const mutations = [], originalLines = db.prepare('SELECT * FROM lines ORDER BY id').all();
+    page.on('request', request => {
+      if (/^\/api\/(lines|devices|workshop-arrangement)(\/|$)/.test(new URL(request.url()).pathname) && ['POST','PUT','DELETE'].includes(request.method())) mutations.push(request.method() + ' ' + new URL(request.url()).pathname);
+    });
+    const tree = workbench.locator('.arrangement-tree'), title = tree.locator('.arrangement-lines-title'), add = title.getByRole('button',{name:'新增产线',exact:true});
+    assert.equal(await tree.locator('.arrangement-tree-title button').count(),0);
+    assert.equal(await add.locator('svg[aria-hidden="true"]').count(),1);
+    assert.equal((await add.innerText()).trim(),''); assert.equal(await add.getAttribute('title'),'新增产线');
+    const workshopBox=await tree.locator('.arrangement-workshop-row').boundingBox(),addBox=await add.boundingBox();
+    assert.ok(addBox.y >= workshopBox.y+workshopBox.height,'add belongs below the workshop, in the production-line section');
+    await add.click();const create=page.getByRole('dialog',{name:'新增产线',exact:true});await create.waitFor();
+    assert.equal(await create.locator('select').inputValue(),line.workshop_id);
+    await create.getByRole('button',{name:'关闭产线弹窗',exact:true}).click();await create.waitFor({state:'hidden'});
+    pass('SVG add icon lives in the production-line section and opens creation for the current workshop without submitting');
+    await workbench.locator('.arrangement-line-row').first().click();
+    const selected=tree.locator('.arrangement-line-header.selected'), edit=selected.getByRole('button',{name:`编辑产线 ${line.name}`,exact:true}), remove=selected.getByRole('button',{name:`删除产线 ${line.name}`,exact:true});
+    async function assertInline() {
+      const row=await selected.locator('.arrangement-line-row').boundingBox(), actions=await selected.locator('.arrangement-line-actions').boundingBox();
+      assert.ok(Math.abs(row.y+row.height/2-actions.y-actions.height/2)<2,'actions remain on the same line as the name');
+      assert.ok(actions.x >= row.x+row.width-1,'icons follow the production-line name');
+      for(const button of [edit,remove]) { assert.equal((await button.innerText()).trim(),'');assert.equal(await button.locator('svg[aria-hidden="true"]').count(),1);assert.equal(await button.locator('button').count(),0);assert.equal(await button.getAttribute('aria-label'),await button.getAttribute('title')); }
+      assert.equal(await tree.evaluate(el=>el.scrollWidth<=el.clientWidth+1),true,'tree never overflows horizontally');
+    }
+    await assertInline();await edit.focus();await page.keyboard.press('Enter');
+    const editing=page.getByRole('dialog',{name:'编辑产线资料',exact:true});await editing.waitFor();
+    assert.equal(await editing.getByRole('textbox',{name:'产线名称',exact:true}).inputValue(),line.name);
+    await editing.getByRole('button',{name:'关闭产线弹窗',exact:true}).click();await editing.waitFor({state:'hidden'});
+    await remove.click();await page.getByRole('heading',{name:`永久删除产线「${line.name}」`,exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'永久删除',exact:true}).isDisabled(),true);
+    await page.getByRole('button',{name:'取消',exact:true}).click();
+    await page.screenshot({path:path.join(directory,'02-inline-line-icons.png'),fullPage:true});
+    pass('inline pencil/trash icons retain keyboard editing and the protected delete confirmation; cancel sends no mutation');
+    for(const viewport of [{width:1280,height:820},{width:1000,height:750},{width:720,height:820}]) {
+      await page.setViewportSize(viewport);
+      if(viewport.width<=760) await workbench.getByRole('button',{name:'对象列表',exact:true}).click();
+      await assertInline(); assert.equal(await add.isVisible(),true);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+    }
+    await page.screenshot({path:path.join(directory,'03-narrow-line-icons.png'),fullPage:true});
+    pass('name/actions stay on one row at desktop, narrow-sidebar and mobile-drawer widths');
+    await page.setViewportSize({width:1000,height:750});
+    const longName='这是一条用于验证长名称省略后编辑和删除图标仍然可见的产线';
+    db.prepare('UPDATE lines SET name=? WHERE id=?').run(longName,line.id);
+    await page.reload();await workbench.waitFor();await workbench.locator('.arrangement-line-row').first().click();
+    const longHeader=tree.locator('.arrangement-line-header.selected');
+    for(const action of ['编辑','删除'])assert.equal(await longHeader.getByRole('button',{name:`${action}产线 ${longName}`,exact:true}).isVisible(),true);
+    assert.equal(await longHeader.locator('.arrangement-line-row span[title]').getAttribute('title'),longName);
+    assert.equal(await tree.evaluate(el=>el.scrollWidth<=el.clientWidth+1),true);
+    await page.screenshot({path:path.join(directory,'04-long-name-line-icons.png'),fullPage:true});
+    db.prepare('UPDATE lines SET name=? WHERE id=?').run(line.name,line.id);
+    assert.deepEqual(db.prepare('SELECT * FROM lines ORDER BY id').all(),originalLines);assert.deepEqual(db.prepare('SELECT * FROM devices ORDER BY id').all(),oldDevices);assert.deepEqual(mutations,[]);assert.deepEqual(errors,[]);
+    pass('long names truncate without hiding the icons; all create/edit/delete cancellations preserve line and device records');
+    fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({success:true,checks,errors,directory},null,2));console.log(JSON.stringify({success:true,checks:checks.length,directory}));return;
+  }
   if(process.env.WORKSHOP_NAV_ONLY==='1') { fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({success:true,checks,errors,directory},null,2));console.log(JSON.stringify({success:true,checks:checks.length,directory}));return; }
   await page.getByRole('button', { name: '车间管理', exact: true }).click(); await workbench.waitFor({ state: 'hidden' });
   assert.equal(await page.getByRole('button', { name: /03.*产线布局/ }).count(), 0);
@@ -95,11 +172,42 @@ const errors = [], checks = [], pass = text => { checks.push(text); console.log(
   assert.equal(await workbench.locator('.line-adjustment-overlay:visible').count(), 0);
   await page.screenshot({ path: path.join(directory, '02-line-plan.png'), fullPage: true });
   pass('object selection focuses the existing internal line editor without an old page or red calibration overlay');
+  if(process.env.WORKSHOP_RAIL_LENGTH_ONLY==='1'){
+    const lane=workbench.locator('.line-map-lane').first(),rail=workbench.locator('.line-map-rail').first();
+    const equal=async()=>assert.equal(await rail.evaluate(el=>el.style.width),await lane.evaluate(el=>el.style.width));
+    await lane.getByRole('button',{name:'设备线 1 设置',exact:true}).click();
+    const length=page.getByRole('spinbutton',{name:'设备线 1 长度（米）',exact:true});await length.fill('82.5');await length.press('Tab');
+    await equal();assert.deepEqual(db.prepare('SELECT * FROM devices ORDER BY id').all(),oldDevices);
+    assert.match(await rail.getAttribute('title'),/长度自动跟随/);assert.equal(await rail.locator('.line-map-handle').count(),0);
+    await page.screenshot({path:path.join(directory,'02g-dependent-rail-length.png'),fullPage:true});await lane.getByRole('button',{name:'设备线 1 设置',exact:true}).click();
+    const handle=await lane.locator('.handle-right').boundingBox();await page.mouse.move(handle.x+handle.width/2,handle.y+handle.height/2);await page.mouse.down();
+    for(const dx of [25,50,75]){await page.mouse.move(handle.x+dx,handle.y+handle.height/2,{steps:3});await equal();}
+    await page.mouse.up();await equal();
+    const snapshot=JSON.stringify(db.prepare('SELECT * FROM devices ORDER BY id').all());
+    await workbench.getByRole('button',{name:'保存布局',exact:true}).click();await page.getByRole('button',{name:'确定',exact:true}).click();
+    const saved=JSON.parse(db.prepare('SELECT layout_json FROM lines WHERE id=?').get('line_a').layout_json);
+    assert.equal(saved.rails[0].length,saved.lanes[0].length);assert.notEqual(saved.rails[0].length,120);assert.equal(saved.lanes[1].length,120);
+    assert.equal(JSON.stringify(db.prepare('SELECT * FROM devices ORDER BY id').all()),snapshot,'visual resizing cannot rewrite any device/PLC/movement record');
+    pass('typing and every pointer-move synchronize rail length to the occupied row, ignore a longer empty row, and preserve all device and movement data');
+    await page.reload();await workbench.waitFor();await workbench.locator('.arrangement-line-row').first().click();await equal();
+    await lane.getByRole('button',{name:'设备线 1 设置',exact:true}).click();const shrink=page.getByRole('spinbutton',{name:'设备线 1 长度（米）',exact:true});
+    await shrink.fill('4');assert.equal(await page.locator('.app-dialog-overlay').count(),0,'intermediate numeric typing must not open a blocking modal');await shrink.press('Tab');
+    await page.getByRole('button',{name:'确定',exact:true}).waitFor();assert.match(await page.locator('.app-dialog-body p').textContent(),/校准工位设备.*超出/);
+    await page.getByRole('button',{name:'确定',exact:true}).click();await lane.getByRole('button',{name:'设备线 1 设置',exact:true}).click();await equal();
+    assert.equal(db.prepare('SELECT layout_json FROM lines WHERE id=?').get('line_a').layout_json,JSON.stringify(saved));
+    await workbench.getByRole('button',{name:'三维效果',exact:true}).click();
+    await waitUntil(async()=>(await workbench.locator('.composer-preview-footer').textContent()).includes('预览已同步'),60000,'3D preview uses persisted synchronized rail length');
+    await page.screenshot({path:path.join(directory,'02h-synchronized-rail-three.png'),fullPage:true});assert.deepEqual(errors,[]);
+    pass('synchronized length survives save/reopen and renders in 3D; invalid shrink names the excluded station and preserves the entire saved layout');
+    fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({success:true,checks,errors,directory},null,2));console.log(JSON.stringify({success:true,checks:checks.length,directory}));return;
+  }
   if(process.env.WORKSHOP_GIZMO_ONLY!=='1') {
   const originalLayout = db.prepare('SELECT layout_json FROM lines WHERE id=?').get('line_a').layout_json;
   const deviceLeft = await workbench.locator('.line-map-device:not(.line-device-ghost)').evaluateAll(els => els.map(el => el.style.left));
   await workbench.getByRole('button',{name:'预览自动排布',exact:true}).click();
   const proposal = page.getByRole('dialog',{name:/自动排布预览/}); await proposal.waitFor({timeout:60000});
+  assert.ok(await proposal.locator('.proposal-turns span').count()>0,'known port normals produce an actual whole-model yaw recommendation');
+  assert.ok(await proposal.locator('line[marker-end]').count()>=2,'preview shows real calibrated mouth arrows');
   assert.equal(db.prepare('SELECT layout_json FROM lines WHERE id=?').get('line_a').layout_json,originalLayout);
   await page.screenshot({path:path.join(directory,'02b-automatic-layout-preview.png'),fullPage:true});
   await proposal.getByRole('button',{name:'保留原布局',exact:true}).click(); await proposal.waitFor({state:'hidden'});
@@ -111,6 +219,32 @@ const errors = [], checks = [], pass = text => { checks.push(text); console.log(
   assert.equal(db.prepare('SELECT layout_json FROM lines WHERE id=?').get('line_a').layout_json,originalLayout);
   assert.deepEqual(db.prepare('SELECT * FROM devices ORDER BY id').all(),oldDevices);
   pass('actual measured-model proposal can cancel, apply to draft and undo without persisting any layout or bindings');
+  if(process.env.WORKSHOP_AUTO_ONLY==='1'){
+    await workbench.getByRole('button',{name:'预览自动排布',exact:true}).click();await proposal.waitFor({timeout:60000});
+    await proposal.getByRole('button',{name:'应用到草稿',exact:true}).click();await proposal.waitFor({state:'hidden'});
+    await workbench.getByRole('button',{name:'保存布局',exact:true}).click();await page.getByRole('button',{name:'确定',exact:true}).click();
+    const saved=db.prepare('SELECT * FROM devices ORDER BY id').all();
+    assert.ok(saved.some(d=>d.rotation_y!==oldDevices.find(o=>o.id===d.id).rotation_y),'confirmed yaw corrections persist');
+    for(const device of saved){const old=oldDevices.find(o=>o.id===device.id);for(const key of Object.keys(old))if(!['pos_z','rotation_y','instance_config'].includes(key))assert.deepEqual(device[key],old[key],key);assert.deepEqual(JSON.parse(device.instance_config||'{}'),JSON.parse(old.instance_config||'{}'));}
+    assert.equal(JSON.parse(db.prepare('SELECT layout_json FROM lines WHERE id=?').get('line_a').layout_json).placementTemplate.mouthAligned,true);
+    pass('confirmed automatic yaw and mouth-depth alignment saves atomically without changing X/Y, movement, model, ports or PLC identity');
+    await page.reload();await workbench.waitFor();await workbench.locator('.arrangement-line-row').first().click();
+    await workbench.getByRole('button',{name:'预览自动排布',exact:true}).click();await proposal.waitFor({timeout:60000});
+    assert.equal(await proposal.locator('.proposal-turns span').count(),0,'reopened saved layout needs no repeated rotation');
+    await proposal.getByRole('button',{name:'保留原布局',exact:true}).click();
+    const modelRow=db.prepare('SELECT metadata FROM models WHERE id=?').get('docking_fixed'),missing=JSON.parse(modelRow.metadata);missing.loadingPorts.inlet=null;
+    db.prepare('UPDATE models SET metadata=? WHERE id=?').run(JSON.stringify(missing),'docking_fixed');
+    await page.reload();await workbench.waitFor();await workbench.locator('.arrangement-line-row').first().click();
+    await workbench.getByRole('button',{name:'预览自动排布',exact:true}).click();
+    const manual=page.getByRole('button',{name:'到三维调整',exact:true});await manual.waitFor({timeout:60000});
+    assert.match(await page.locator('.app-dialog-body p').textContent(),/校准工位设备.*已校准/);
+    await manual.click();const canvas=workbench.locator('.composer-preview-stage:visible canvas');await canvas.waitFor({timeout:60000});
+    await waitUntil(()=>canvas.evaluate(el=>el.dataset.workshopSelection==='docking_ui_target'),60000,'named failure opens the affected real model in 3D');
+    assert.deepEqual(db.prepare('SELECT * FROM devices ORDER BY id').all(),saved,'failed recommendation never changes saved data');
+    await page.screenshot({path:path.join(directory,'02f-automatic-manual-handoff.png'),fullPage:true});
+    assert.deepEqual(errors,[]);pass('saved yaw is stable after reopen; exceptional missing calibration names the device and opens its 3D editor without changes');
+    fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify({success:true,checks,errors,directory},null,2));console.log(JSON.stringify({success:true,checks:checks.length,directory}));return;
+  }
   await workbench.getByRole('button',{name:'对接预览',exact:true}).click();const docking=page.getByRole('dialog',{name:'产线对接预览',exact:true});await docking.waitFor();
   await docking.locator('.docking-viewport canvas').waitFor({timeout:60000});assert.equal(await docking.getByRole('button',{name:'保存设备位置',exact:true}).count(),0);
   await waitUntil(()=>docking.getByRole('button',{name:'俯视',exact:true}).isEnabled(),60000,'finished readonly CAD preview, not just an empty WebGL canvas');

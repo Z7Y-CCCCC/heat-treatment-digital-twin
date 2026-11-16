@@ -50,6 +50,15 @@ export function normalizeLoadingPortRegion(input, path = 'loadingPort.region') {
   return { version:1, corners, surfaceNormal:n, ...(own(value,'nodeName')?{nodeName:value.nodeName}:{}) }
 }
 export function loadingPortRegionDatum(region) { return region.corners[0].map((v,i)=>(v+region.corners[1][i])/2) }
+// An authored rectangle is an absolute glTF root-local measurement. Its lower
+// edge and real outward normal are the geometry, not a visualization to be
+// moved again by an older point calibration.
+export function loadingPortFromRegion(input, fallbackNodeName = '') {
+  const region = normalizeLoadingPortRegion(input)
+  const [x, , z] = region.surfaceNormal, length = Math.hypot(x, z)
+  return { position: loadingPortRegionDatum(region), direction: [x / length, 0, z / length],
+    nodeName: region.nodeName ?? fallbackNodeName, region }
+}
 function checkRegionDatum(region, position, direction, path) {
   const datum=loadingPortRegionDatum(region),scale=Math.max(1,...region.corners.flat().map(Math.abs))
   if (position.some((v,i)=>Math.abs(v-datum[i])>scale*1e-6)) fail(path, '送料基准点必须是区域下沿中点，而不是区域中心')
@@ -102,38 +111,41 @@ function validate(normalizer, input) {
 export const validateLoadingPorts = input => validate(normalizeLoadingPorts, input)
 export const validateLoadingPortOverrides = input => validate(normalizeLoadingPortOverrides, input)
 
-// No transfer-datum/bounds/front-back fallback: an explicitly null model port
-// remains null, even when an instance contains an old override for that port.
-export function resolveLoadingPort(model, device, kind = 'inlet') {
+function loadingPortConfiguration(model, device, kind) {
   if (!LOADING_PORT_KINDS.includes(kind)) fail('kind', '必须为 inlet 或 outlet')
   const metadata = parse(model?.metadata, '模型元数据', true)
   const instance = parse(device?.instance_config, '设备实例配置', true)
   const base = normalizeLoadingPorts(metadata.loadingPorts)[kind]
   const override = normalizeLoadingPortOverrides(instance.loadingPortOverrides)[kind]
+  return { base, override }
+}
+// Keep consumers' provenance labels consistent with the same geometry priority.
+// A stored legacy override is not the source when a real model region exists.
+export function resolveLoadingPortSource(model, device, kind = 'inlet') {
+  const { base, override } = loadingPortConfiguration(model, device, kind)
+  if (!base) return 'none'
+  if (override?.region) return 'instance-region'
+  if (base.region) return 'model-region'
+  return override ? 'instance-point' : 'model-point'
+}
+
+// No transfer-datum/bounds/front-back fallback: an explicitly null model port
+// remains null, even when an instance contains an authored region for that port.
+export function resolveLoadingPort(model, device, kind = 'inlet') {
+  const { base, override } = loadingPortConfiguration(model, device, kind)
   if (!base) return null
-  if (!override) return { position: [...base.position], direction: [...base.direction], nodeName: base.nodeName, ...(base.region?{region:normalizeLoadingPortRegion(base.region)}:{}) }
+  if (override?.region) return loadingPortFromRegion(override.region, base.nodeName)
+  // Saving a real model selection establishes the actual port. Legacy offset/
+  // yaw documents stay stored and validated, but cannot shift or flip it.
+  if (base.region) return loadingPortFromRegion(base.region, base.nodeName)
+  if (!override) return { position: [...base.position], direction: [...base.direction], nodeName: base.nodeName }
+  // Only point-only legacy documents retain their original relative contract.
   const radians = (override.yawDegrees % 360) * Math.PI / 180
   const c = Math.cos(radians), s = Math.sin(radians), [x, , z] = base.direction
   const position = base.position.map((component, axis) => component + override.offset[axis])
   if (position.some(component => !Number.isFinite(component))) fail('loadingPortOverrides.offset', '有效位置超出有限数值范围')
-  const direction=[x * c + z * s, 0, -x * s + z * c]
-  let region=override.region
-  if (!region && base.region) {
-    const rotate=p=>{const [px,py,pz]=p.map((v,i)=>v-base.position[i]);return [base.position[0]+px*c+pz*s+override.offset[0],base.position[1]+py+override.offset[1],base.position[2]-px*s+pz*c+override.offset[2]]}
-    const [nx,ny,nz]=base.region.surfaceNormal
-    region=normalizeLoadingPortRegion({version:1,corners:base.region.corners.map(rotate),surfaceNormal:[nx*c+nz*s,ny,-nx*s+nz*c]})
-  }
-  if (region) {
-    region=normalizeLoadingPortRegion(region)
-    // Instance authoring has always been relative to today's model datum.
-    // Preserve that existing offset/yaw contract when the default is edited;
-    // transform only the effective display region, never rewrite stored data.
-    const datum=loadingPortRegionDatum(region),[nx,ny,nz]=region.surfaceNormal
-    const angle=Math.atan2(nz*direction[0]-nx*direction[2],nx*direction[0]+nz*direction[2]),rc=Math.cos(angle),rs=Math.sin(angle)
-    const rotate=p=>{const [px,py,pz]=p.map((v,i)=>v-datum[i]);return [position[0]+px*rc+pz*rs,position[1]+py,position[2]-px*rs+pz*rc]}
-    region=normalizeLoadingPortRegion({...region,corners:region.corners.map(rotate),surfaceNormal:[nx*rc+nz*rs,ny,-nx*rs+nz*rc]})
-  }
-  return { position, direction, nodeName: region?.nodeName ?? base.nodeName, ...(region?{region}:{}) }
+  return { position, direction: [x * c + z * s, 0, -x * s + z * c], nodeName: base.nodeName }
 }
 
-export default { normalizeLoadingPorts, validateLoadingPorts, normalizeLoadingPortOverrides, validateLoadingPortOverrides, resolveLoadingPort }
+export default { normalizeLoadingPorts, validateLoadingPorts, normalizeLoadingPortOverrides, validateLoadingPortOverrides,
+  loadingPortFromRegion, resolveLoadingPort, resolveLoadingPortSource }

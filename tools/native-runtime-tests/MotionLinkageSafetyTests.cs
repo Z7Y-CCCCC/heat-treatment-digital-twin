@@ -420,6 +420,53 @@ internal static partial class Program
         LinkageCheck(!LoadingPortPolicy.TryResolve(bad, instance, "inlet", out _, out _), "A vertical loading normal was silently flattened.");
         var overrideOnly = JObject.Parse("{loadingPortOverrides:{version:1,inlet:null,outlet:{offset:[1,2,3],yawDegrees:0}}}");
         LinkageCheck(!LoadingPortPolicy.TryResolve(metadata, overrideOnly, "outlet", out _, out _), "An instance override resurrected a missing model port.");
+
+        var selected = JObject.Parse("{loadingPorts:{version:1,inlet:{position:[-1,1,0],direction:[-1,0,0],nodeName:'mouth',region:{version:1,corners:[[-1,1,-2],[-1,1,2],[-1,4,2],[-1,4,-2]],surfaceNormal:[-1,0,0],nodeName:'mouth'}},outlet:null}}");
+        var stale = JObject.Parse("{loadingPortOverrides:{version:1,inlet:{offset:[50,60,70],yawDegrees:-180},outlet:null}}");
+        var selectedBefore = selected.ToString(); var staleBefore = stale.ToString();
+        LinkageCheck(LoadingPortPolicy.TryResolve(selected, stale, "inlet", out var actualRegion, out _)
+            && actualRegion.Position.SequenceEqual(new[] { -1d, 1, 0 }) && actualRegion.Direction.SequenceEqual(new[] { -1d, 0, 0 }),
+            "A saved model rectangle was moved/flipped by the old point-only -180 degree correction.");
+        LinkageCheck(selected.ToString() == selectedBefore && stale.ToString() == staleBefore, "Reading actual region geometry rewrote the model or migrated stored corrections.");
+        var tolerantDatum = (JObject)selected.DeepClone(); tolerantDatum["loadingPorts"]["inlet"]["position"][2] = 1e-7;
+        tolerantDatum["loadingPorts"]["inlet"]["direction"][2] = 1e-6;
+        LinkageCheck(LoadingPortPolicy.TryResolve(tolerantDatum, stale, "inlet", out actualRegion, out _)
+            && actualRegion.Position.SequenceEqual(new[] { -1d, 1, 0 }) && actualRegion.Direction.SequenceEqual(new[] { -1d, 0, 0 }),
+            "Scalar values within region validation tolerance became a second native geometry source.");
+
+        var deviceSelection = JObject.Parse("{version:1,corners:[[4,2,5],[8,2,5],[8,6,5],[4,6,5]],surfaceNormal:[0,0,1],nodeName:'device-mouth'}");
+        var authored = (JObject)stale.DeepClone(); authored["loadingPortOverrides"]["inlet"]["region"] = deviceSelection;
+        var authoredBefore = authored.ToString();
+        LinkageCheck(LoadingPortPolicy.TryResolve(selected, authored, "inlet", out actualRegion, out _)
+            && actualRegion.Position.SequenceEqual(new[] { 6d, 2, 5 }) && actualRegion.Direction.SequenceEqual(new[] { 0d, 0, 1 }),
+            "Device region lower-edge datum/normal were derived from historical offsets instead of the saved absolute corners.");
+        var movedModel = (JObject)selected.DeepClone();
+        movedModel["loadingPorts"]["inlet"] = JObject.Parse("{position:[9,10,0],direction:[1,0,0],nodeName:'new-mouth',region:{version:1,corners:[[9,10,-2],[9,10,2],[9,14,2],[9,14,-2]],surfaceNormal:[1,0,0]}}");
+        LinkageCheck(LoadingPortPolicy.TryResolve(movedModel, authored, "inlet", out actualRegion, out _)
+            && actualRegion.Position.SequenceEqual(new[] { 6d, 2, 5 }) && actualRegion.Direction.SequenceEqual(new[] { 0d, 0, 1 }),
+            "Later model edits shifted or turned an explicitly saved device rectangle.");
+        LinkageCheck(authored.ToString() == authoredBefore && selected.ToString() == selectedBefore, "Absolute region reads mutated saved documents.");
+        LinkageCheck(LoadingPortPolicy.TryResolve(metadata, authored, "inlet", out actualRegion, out _)
+            && actualRegion.Position.SequenceEqual(new[] { 6d, 2, 5 }), "A device region failed to take priority over a valid point-only model.");
+        var absentRegion = JObject.Parse("{loadingPortOverrides:{version:1,inlet:null,outlet:{offset:[0,0,0],yawDegrees:0}}}");
+        absentRegion["loadingPortOverrides"]["outlet"]["region"] = deviceSelection.DeepClone();
+        LinkageCheck(!LoadingPortPolicy.TryResolve(selected, absentRegion, "outlet", out _, out _), "An authored device rectangle created an explicitly absent model mouth.");
+
+        var malformedRegion = (JObject)authored.DeepClone(); malformedRegion["loadingPortOverrides"]["inlet"]["region"]["corners"][2][0] = 9;
+        LinkageCheck(!LoadingPortPolicy.TryResolve(selected, malformedRegion, "inlet", out _, out _), "A nonrectangle silently fell back to point calibration.");
+        malformedRegion = (JObject)authored.DeepClone(); malformedRegion["loadingPortOverrides"]["inlet"]["region"]["surfaceNormal"] = new JArray(0, 1, 0);
+        LinkageCheck(!LoadingPortPolicy.TryResolve(selected, malformedRegion, "inlet", out _, out _), "A top/ground region became a fabricated vertical mouth.");
+        malformedRegion = (JObject)authored.DeepClone(); malformedRegion["loadingPortOverrides"]["inlet"]["yawDegrees"] = "0";
+        LinkageCheck(!LoadingPortPolicy.TryResolve(selected, malformedRegion, "inlet", out _, out _), "Ignored scalar calibration fields bypassed strict numeric validation.");
+        malformedRegion = (JObject)selected.DeepClone(); malformedRegion["loadingPorts"]["inlet"]["position"][1] = 2;
+        LinkageCheck(!LoadingPortPolicy.TryResolve(malformedRegion, authored, "inlet", out _, out _), "A model region's center was accepted as its lower transfer datum.");
+        malformedRegion = (JObject)selected.DeepClone(); malformedRegion["loadingPorts"]["inlet"]["direction"][0] = 1;
+        LinkageCheck(!LoadingPortPolicy.TryResolve(malformedRegion, authored, "inlet", out _, out _), "A reversed model region outward direction was accepted.");
+        var tilted = (JObject)authored.DeepClone();
+        tilted["loadingPortOverrides"]["inlet"]["region"] = JObject.Parse("{version:1,corners:[[-1,1,3],[1,1,3],[1,5,4],[-1,5,4]],surfaceNormal:[0,-1,4]}");
+        LinkageCheck(LoadingPortPolicy.TryResolve(selected, tilted, "inlet", out actualRegion, out _)
+            && actualRegion.Position.SequenceEqual(new[] { 0d, 1, 3 }) && actualRegion.Direction.SequenceEqual(new[] { 0d, 0, 1 }),
+            "Region normal's horizontal projection differed from shared root-local authoring geometry.");
         return Task.CompletedTask;
     }
     private static Task RailProjectionPreservesStationCalibration()

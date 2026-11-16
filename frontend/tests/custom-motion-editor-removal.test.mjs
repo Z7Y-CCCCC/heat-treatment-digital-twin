@@ -100,7 +100,7 @@ test('built-in cleaner processes and CAD inline previews remain in the part-acti
 test('motion package transfer and persisted backend compatibility remain without custom editing requests', async () => {
   assert.match(panel, /import ModelAssetTransfer from '\.\/admin\/components\/ModelAssetTransfer\.vue'/)
   assert.equal((template.match(/<ModelAssetTransfer\b/g) || []).length, 1)
-  assert.match(template, /<ModelAssetTransfer[^>]*:models="models"[^>]*@imported="loadModels"/)
+  assert.match(template, /<ModelAssetTransfer[^>]*:models="models"[^>]*@imported="refreshImportedModelAsset"/)
   const api = await readFile(new URL('../src/config/factoryConfig.js', import.meta.url), 'utf8')
   assert.doesNotMatch(panel, /motion-authoring|getMotionActions|saveMotionActions|motion-actions/)
   assert.doesNotMatch(api, /getMotionActions|saveMotionActions|motion-actions/)

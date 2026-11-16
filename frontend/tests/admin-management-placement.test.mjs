@@ -164,7 +164,7 @@ test('model importing is an asset-toolbar action, with no duplicate lower naviga
   const steps = panel.slice(panel.indexOf('const MODEL_LIBRARY_STEPS = ['), panel.indexOf('const modelLibraryStep = ref('))
   assert.doesNotMatch(steps, /key: 'import'/)
   assert.doesNotMatch(panel, /modelLibraryStep === 'import'|modelLibraryStep\.value = 'import'/)
-  assert.match(panel, /class="model-asset-heading-actions"[\s\S]*?modelFileInputRef\?\.click\(\)[\s\S]*?>导入模型<\/button>/)
+  assert.match(panel, /class="model-assets-page-heading"[\s\S]*?<h2>模型管理<\/h2>[\s\S]*?<ModelAssetTransfer[^>]*@raw-file="importRawModelAsset"/)
   assert.match(panel, /<ModelNameEditor :model="m"[\s\S]*?@renamed="applyModelName"/)
   assert.doesNotMatch(panel, /class="model-selection-actions"/)
   assert.match(panel, /@contextmenu="openModelPlacementMenu\(m, \$event\)"/)
@@ -246,7 +246,8 @@ test('factory display switch has no default/runtime restriction and acquisition 
 test('layout selection lists library models rather than site instances and hides the read-only prose banner', async () => {
   const panel = await source('../src/views/AdminPanel.vue')
   assert.match(panel, /useManualDisassemblyPage\(\{ models, api: adminApi, scope: 'model'/)
-  const layout = panel.slice(panel.indexOf('data-testid="manual-disassembly-page"'), panel.indexOf('<h2>3D 模型库</h2>'))
+  const layoutStart = panel.indexOf('data-testid="manual-disassembly-page"')
+  const layout = panel.slice(layoutStart, panel.indexOf('</section>', layoutStart))
   assert.match(layout, /aria-label="选择拆解布局模型"/)
   assert.match(layout, /formatModelSetupOption\(item, 'disassembly'\)/)
   assert.doesNotMatch(layout, /deviceHierarchyLabel|manualDisassemblyDevice|本设备独立布局/)

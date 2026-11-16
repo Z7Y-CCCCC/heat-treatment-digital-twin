@@ -2,7 +2,7 @@
 import DashboardAccountDock from './views/DashboardAccountDock.vue'
 import { computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { adminSession, issueNativeSessionTicket, logoutCurrentAdminAccount, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking } from './runtime/adminSession.js'
+import { adminSession, bootstrapDisplayAccess, issueNativeSessionTicket, logoutCurrentAdminAccount, refreshAdminSession, startAdminSessionTracking, stopAdminSessionTracking } from './runtime/adminSession.js'
 import { isNativeOverlaySurface } from './runtime/nativeSurfaceBridge.js'
 import { openCustomerOperations } from './runtime/nativeAdminNavigation.js'
 import { reconnectActiveDashboardChannels } from './runtime/DataStore.js'
@@ -132,7 +132,24 @@ async function handleServiceChannelReconnect(event) {
     } finally { channelReconnectBusy = false }
 }
 onMounted(() => {
-    startAdminSessionTracking(); void refreshAdminSession()
+    startAdminSessionTracking()
+    void (async () => {
+        let supported = true
+        if (isNativeAdminSurfaceRoute.value) {
+            try { await bootstrapDisplayAccess() }
+            catch { supported = false }
+        }
+        await refreshAdminSession()
+        // Workspace UI can be newer than the still-running collector. Keep the
+        // old sign-in entrance usable until the operator approves its update;
+        // never strand that mixed-version combination behind a 0% scene cover.
+        if (!rootDisposed && isNativeAdminSurfaceRoute.value && adminSession.displayStartupSupported === false)
+            window.chrome?.webview?.postMessage({ type: 'host_action', action: 'show_admin', returnToDashboard: true })
+        if (!rootDisposed && isNativeAdminSurfaceRoute.value) window.chrome?.webview?.postMessage({
+            type: 'display_access_ready', success: supported && adminSession.displayAuthenticated
+                && adminSession.permissions.view === true && adminSession.permissions.launch === true
+        })
+    })()
     window.chrome?.webview?.addEventListener?.('message', handleServiceChannelReconnect)
 })
 onUnmounted(() => {

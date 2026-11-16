@@ -8,7 +8,7 @@ import { deferred, installBrowser, settle } from './helpers.mjs'
 
 const session=reactive({ready:true,authenticated:true,displayAuthenticated:true,serviceUnavailable:false,accountSlotId:'main',user:{id:'owner'},permissions:{view:true,launch:true}})
 let issueTicket=async()=> 'owned-ticket',tracking=0
-test.mock.module('../src/runtime/adminSession.js',{namedExports:{adminSession:session,issueNativeSessionTicket:(...args)=>issueTicket(...args),logoutCurrentAdminAccount:async()=>{},refreshAdminSession:async()=>{},startAdminSessionTracking:()=>{tracking++},stopAdminSessionTracking:()=>{tracking--}}})
+test.mock.module('../src/runtime/adminSession.js',{namedExports:{adminSession:session,bootstrapDisplayAccess:async()=>({success:true,displayOnly:true}),issueNativeSessionTicket:(...args)=>issueTicket(...args),logoutCurrentAdminAccount:async()=>{},refreshAdminSession:async()=>{},startAdminSessionTracking:()=>{tracking++},stopAdminSessionTracking:()=>{tracking--}}})
 // This suite tests account handoff, not the service channel implementation.
 test.mock.module('../src/runtime/DataStore.js',{namedExports:{reconnectActiveDashboardChannels:async()=>({success:true,channels:1})}})
 const file=new URL('../src/RootApp.vue',import.meta.url),{descriptor}=parse(await readFile(file,'utf8'))
@@ -22,7 +22,7 @@ async function fixture(t,issue,initial={},surface='admin'){
     window.chrome={webview:{postMessage:message=>messages.push(message)}}
     // Handoff retries use short logical delays, not an OS window or real clock.
     t.mock.method(window,'setTimeout',callback=>{queueMicrotask(callback);return {}})
-    Object.assign(session,{ready:true,authenticated:true,displayAuthenticated:true,serviceUnavailable:false,sessionRevision:0,accountSlotId:'main',user:{id:'owner'},permissions:{view:true,launch:true}},initial)
+    Object.assign(session,{ready:true,authenticated:true,displayAuthenticated:true,displayOnly:false,displayStartupSupported:null,serviceUnavailable:false,sessionRevision:0,accountSlotId:'main',user:{id:'owner'},permissions:{view:true,launch:true}},initial)
     issueTicket=issue;tracking=0
     const route=reactive({path:surface==='overlay'?'/overlay':'/admin',fullPath:`/admin?embedded=unity&surface=${surface}`,query:{embedded:'unity',surface}})
     const renderer=createRenderer({createElement:()=>({}),createText:()=>({}),createComment:()=>({}),setText(){},setElementText(){},parentNode:()=>null,nextSibling:()=>null,patchProp(){},insert(){},remove(){}})
@@ -97,6 +97,18 @@ test('same-user credential renewal hands off the replacement session exactly onc
     const f=await fixture(t,async()=> `ticket-${++issued}`)
     session.sessionRevision++;await settle();session.permissions={view:true,launch:true};await settle()
     assert.deepEqual(f.messages.filter(m=>m.action==='sync_unity_session').map(m=>m.ticket),['ticket-1','ticket-2'])
+})
+
+test('display-only startup hands off without an authenticated admin and reports the startup barrier',async t=>{
+    const f=await fixture(t,async()=> 'machine-display-ticket',{authenticated:false,displayOnly:true,user:{id:'local-display',role:'display'}})
+    assert.equal(f.messages.filter(m=>m.action==='sync_unity_session').at(-1)?.ticket,'machine-display-ticket')
+    assert.equal(f.messages.some(m=>m.type==='display_access_ready'&&m.success===true),true)
+    assert.equal(f.messages.some(m=>m.action==='clear_unity_session'),false)
+})
+
+test('mixed-version startup explicitly exposes the legacy admin entrance instead of waiting behind a 0 percent cover',async t=>{
+    const f=await fixture(t,async()=> 'legacy-ticket',{displayStartupSupported:false})
+    assert.equal(f.messages.some(m=>m.action==='show_admin'&&m.returnToDashboard===true),true)
 })
 
 test('logout keeps the native surface and factory context on its sign-in return route',async t=>{

@@ -7,6 +7,8 @@ from pathlib import Path
 from collections import defaultdict
 import bpy, bmesh, math, json, hashlib, sys, time
 from mathutils import Vector, Quaternion
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from lift_cylinder_rest_pose import cylinder_rest_pose, three_rest_pose_marker
 
 ROOT=Path(__file__).resolve().parents[1]
 CAD=ROOT/'output/cad-general-20261103'
@@ -177,8 +179,18 @@ def table(a,lifting=False):
         for x in [-.71,.71]:a.box('base_tie',(x,0,.075),(.09,.65,.08))
         for x in [-.72,.72]:
             for y in [-.265,.265]:a.foot(x,y)
-        a.beam('hydraulic_barrel',(.48,0,.16),(.20,0,.59),.08,mat='teal',group='hydraulics')
-        a.beam('hydraulic_piston',(.20,0,.59),(.03,0,.83),.034,mat='stainless',group='hydraulics')
+        cylinder=cylinder_rest_pose((.48,0,.16),(.20,0,.59),(.03,0,.83),(0,0,.545))
+        a.beam('hydraulic_barrel',cylinder['base'],cylinder['barrel_tip'],.08,mat='teal',group='hydraulics')
+        a.beam('hydraulic_piston',cylinder['rod_start'],cylinder['tip'],.034,mat='stainless',group='hydraulics')
+        a.root['liftCylinderRestPose']=three_rest_pose_marker(cylinder)
+        # The centre eye requires a real through-shaft, not two isolated side pins.
+        # Kept in its own export group so lift actions can move the source solid.
+        a.cyl('pivot_crossshaft',(0,0,.545),.018,.78,'metal','Y','crossshaft',24)
+        # The shaft belongs to the existing scissor assembly/disassembly target.
+        # Do not create a new independent root-level inspection component.
+        a.group('crossshaft').parent=a.group('lift')
+        a.root['liftCrossshaft']={'schemaVersion':1,'node':a.id+'_crossshaft_metal',
+            'center':[0,.545,0],'axis':[0,0,1],'radius':.018,'length':.78}
         a.pipe('lift_pressure_hose',[(.5,.02,.23),(.65,.12,.22),(.66,.18,.08),(.30,.18,.08)],.012,'gasket','hydraulics',.035)
         a.box('pump_pack',(.28,0,.13),(.30,.25,.16),'teal','hydraulics')
         # 11.14.00: five paired Ø60 x 136 rollers, centres 320 mm apart.

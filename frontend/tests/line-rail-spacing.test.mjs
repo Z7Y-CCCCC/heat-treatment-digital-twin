@@ -7,6 +7,7 @@ import { parse as parseJavaScript } from '@babel/parser'
 import { ref } from 'vue'
 import * as T from 'three'
 import { editLineRailSpacing, resolveLineRailSpacing, lineRailSpacingDeltas, shiftRailMovement } from '../../shared/lineRailSpacing.mjs'
+import {syncLineRailLength,isLineRailLengthAutomatic} from '../../shared/lineRailLength.mjs'
 import { normalizeLineLayout as normalizeFrontend } from '../src/views/admin/utils/lineLayout.js'
 import { siteDeviceTransform, siteLoadingDatum, siteCarrierPath, siteCarrierInitialPosition, assertSiteTransferDriver, solveSiteTransferPose } from '../src/three/siteTransferAlignment.js'
 const backendRequire = createRequire(new URL('../../backend/package.json', import.meta.url))
@@ -67,7 +68,7 @@ test('the real line-parent field handler applies the delta to carrier origin and
   const functions = names.map(name => { const node = ast.program.body.find(n => n.type === 'FunctionDeclaration' && n.id?.name === name); assert.ok(node); return source.slice(node.start, node.end) }).join('\n')
   const line = ref({ id: 'L', workshop_id: 'W', layout: layout() }), devices = ref([{ id: 'cart', line_id: 'L', coordinate_space: 'line_local', pos_x: -20, pos_z: 2, instance_config: JSON.stringify({ role: 'transfer_cart', railLineId: 'L', railId: 'rail', workshop_id: 'W', movement: movement() }) }])
   const errors = [], dependencies = { selectedLineEditor: line, devices, canAdminPage: () => true, lineDeviceLayoutBusy: ref(false),
-    getLineLayout: row => row.layout, editLineRailSpacing, lineRailSpacingDeltas, shiftRailMovement, normalizeLineLayout: normalizeFrontend,
+    getLineLayout: row => row.layout, editLineRailSpacing, lineRailSpacingDeltas, shiftRailMovement, normalizeLineLayout: normalizeFrontend, syncLineRailLength, isLineRailLengthAutomatic,
     parseInstanceConfig: value => typeof value === 'string' ? JSON.parse(value) : value || {}, numberOrDefault: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback,
     roundLineLayoutValue: value => value, getLineBaseZ: () => 0, getDevicesBoundToLayoutItem: () => devices.value, alert: message => errors.push(message) }
   const handler = new Function(...Object.keys(dependencies), functions + '\nreturn changeLineRailSpacing')(...Object.values(dependencies))
@@ -90,7 +91,7 @@ test('real field/lane edits reject invalid geometry atomically even when a later
     instance_config: JSON.stringify({ railLineId: 'L', railId: id, movement: index ? { ...movement(), start: undefined } : movement() }) })))
   const errors = [], dependencies = { selectedLineEditor: line, devices, canAdminPage: () => true, lineDeviceLayoutBusy: ref(false),
     getLineLayout: row => row.layout, findLineLayoutItem: (type, id) => line.value.layout[type === 'rail' ? 'rails' : 'lanes'].find(item => item.id === id),
-    editLineRailSpacing, normalizeLineLayout: normalizeFrontend, shiftRailMovement, getLineBaseZ: () => 0,
+    editLineRailSpacing, normalizeLineLayout: normalizeFrontend, shiftRailMovement, getLineBaseZ: () => 0, syncLineRailLength, isLineRailLengthAutomatic,
     parseInstanceConfig: value => JSON.parse(value), numberOrDefault: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback,
     getDevicesBoundToLayoutItem: (type, id, _line, source = devices.value) => source.filter(device => JSON.parse(device.instance_config)[type === 'rail' ? 'railId' : 'laneId'] === id),
     alert: message => errors.push(message) }

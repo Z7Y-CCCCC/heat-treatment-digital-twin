@@ -18,6 +18,12 @@ async function fileSha(filename) {
 const object = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const fail = message => { throw Object.assign(new Error(message), { statusCode: 400 }); };
 const parse = v => typeof v === 'string' ? JSON.parse(v || '{}') : v || {};
+function assetCapabilities(asset) {
+    const metadata = asset.manifest.model.metadata, parts = metadata.inspection?.parts || [];
+    const inspection = parts.length > 0 && (metadata.disassemblyLayout?.version === 1 && metadata.disassemblyLayout?.configured === true
+        || parts.some(part => [part.explode_offset, part.explode_rotation].some(vector => Array.isArray(vector) && vector.some(value => typeof value === 'number' && Number.isFinite(value) && value !== 0))));
+    return { model: true, inspection, actions: asset.actions.length > 0 || (metadata.partBindings || []).length > 0 || (metadata.motionAuthoring?.actions || []).length > 0 };
+}
 function validateMotion(data, modelId, source, rig) {
     if (!object(data) || data.schemaVersion !== 1 || data.modelId !== modelId || data.sourceSha256 !== sha(source) || data.rigSha256 !== sha(rig)
         || !Array.isArray(data.nodes) || data.nodes.length > 20000 || !Array.isArray(data.clips) || data.clips.length > 128) fail('动作数据与模型/动作 GLB 不匹配');
@@ -66,6 +72,9 @@ async function writeZip(filename, entries) {
 }
 function buildEntries(model) {
     const metadata = JSON.parse(JSON.stringify(parse(model.metadata))), source = fs.readFileSync(authoring.localFile(model.file_path));
+    // History is installation-private immutable storage, never a portable
+    // asset property pointing at another installation's uploads directory.
+    delete metadata.assetVersionHistory;
     authoring.glb(source);
     const entries = new Map([['model.glb', source]]), motion = model.motion_package || require('./builtinModels').builtinMotionForModel(model);
     if (motion) {
@@ -144,6 +153,8 @@ async function inspectAsset(filename, db = null, factoryId = '') {
         assetType: asset.manifest.model.asset_type, placementLevel: asset.manifest.model.placement_level },
         actions: asset.actions, files: asset.manifest.files,
         partBindingCount: require('./modelAssetMetadata').normalizeModelMetadata(asset.manifest.model.metadata).partBindings.length,
+        hasInspection: assetCapabilities(asset).inspection, contentCapabilities: assetCapabilities(asset),
+        ...(asset.manifest.model.metadata.assetSupplement ? { supplement: asset.manifest.model.metadata.assetSupplement } : {}),
         ...(db ? { importDecision: (await decideImport(db, asset, factoryId)).decision } : {}) };
 }
 async function importAsset(db, filename, factoryId, inspectedSha256, authorize = () => {}, requestId = '', importDecision = null) {
@@ -154,6 +165,7 @@ async function importAsset(db, filename, factoryId, inspectedSha256, authorize =
 }
 async function importValidatedAsset(db, asset, factoryId, inspectedSha256, authorize = () => {}, requestId = '', importDecision = null) {
     const m = asset.manifest.model;
+    if (m.metadata.assetSupplement) fail('这是局部补充包，请先选择已有模型和更新模块，不能作为新模型整包导入');
     if (!await db.get('SELECT id FROM factories WHERE id = ?', [factoryId])) fail('请先创建并选择工厂');
     if (requestId && !/^[a-zA-Z0-9-]{16,80}$/.test(requestId)) fail('导入请求标识无效');
     const token = requestId ? sha(Buffer.from(factoryId + '\0' + requestId)).slice(0, 32) : crypto.randomBytes(16).toString('hex'), id = 'asset_' + token;
@@ -192,6 +204,7 @@ async function importValidatedAsset(db, asset, factoryId, inspectedSha256, autho
     fs.mkdirSync(parent, { recursive: true });
     if (!fs.realpathSync(parent).startsWith(fs.realpathSync(root) + path.sep)) fail('模型导入目录不在上传目录内');
     const base = '/uploads/projects/' + token + '/', metadata = { ...m.metadata };
+    delete metadata.assetVersionHistory;
     metadata.assetImport = { requestId: requestId || token, packageSha256: inspectedSha256, sourceModelId: m.id };
     let motionExtensions = {};
     if (metadata.motionAuthoring) {
@@ -316,4 +329,4 @@ async function cleanupOwnedImport(db, owned, factoryId) {
     } catch { return; } // An uncertain commit is not grounds to delete live assets.
     fs.rmSync(dest, { recursive: true, force: true });
 }
-module.exports = { FORMAT, MAX_BYTES, LIMITS, fileSha, boundedRead, validateAssetEntries, buildEntries, writeZip, exportAsset, inspectAsset, importAsset, importValidatedAsset, readAsset, validateMotion, cleanupOwnedImport };
+module.exports = { FORMAT, MAX_BYTES, LIMITS, fileSha, boundedRead, validateAssetEntries, buildEntries, writeZip, exportAsset, inspectAsset, importAsset, importValidatedAsset, readAsset, validateMotion, cleanupOwnedImport, assetCapabilities };

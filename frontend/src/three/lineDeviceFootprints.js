@@ -3,7 +3,7 @@ import {nativeDeviceTransform} from '../runtime/factorySceneConfig.js'
 import {loadConfiguredGltf,disposeSceneObject} from '../runtime/ConfiguredFactoryScene.js'
 import {resolveBackendAssetUrl} from './ModelFactory.js'
 import {inferLoadingPort} from './lineLoadingAlignment.js'
-import {resolveLoadingPort} from '../../../shared/loadingPorts.mjs'
+import {resolveLoadingPort,normalizeLoadingPortOverrides,resolveLoadingPortSource} from '../../../shared/loadingPorts.mjs'
 import {CART_FEED} from './cartFeedMechanism.js'
 
 // Project the actual model geometry into production-line X, using the same
@@ -23,8 +23,29 @@ export function lineDeviceEnvelope(root,device,model,{parts=false}={}){
             result.collisionBoxes=[]
             root.traverse(n=>{if(!n.isMesh)return;const b=new T.Box3().setFromObject(n,true);if(!b.isEmpty())result.collisionBoxes.push({minX:-b.max.x,maxX:-b.min.x,minY:b.min.y,maxY:b.max.y,minZ:b.min.z,maxZ:b.max.z})})
             const config=typeof device.instance_config==='string'?JSON.parse(device.instance_config||'{}'):device.instance_config||{},link=config.animationBindings?.transferLink
-            const cart=device.model_type==='cad_transfer_cart_101300'||device.model_type==='photo_transfer_cart_v6'
+            const cart=!!config.railId||device.model_type==='cad_transfer_cart_101300'||device.model_type==='photo_transfer_cart_v6'
             const kind=cart?(link?.sourcePort||'outlet'):(link?.targetPort||'inlet')
+            result.rotationY=transform.yaw
+            result.loadingPort=null // Automatic alignment never uses an inferred or mirrored mouth.
+            try {
+                const configured=resolveLoadingPort(model,device,kind)
+                const override=normalizeLoadingPortOverrides(config.loadingPortOverrides)[kind]
+                const source=resolveLoadingPortSource(model,device,kind)
+                if(configured) result.loadingPort={kind,position:wrapper.localToWorld(new T.Vector3(...configured.position)).toArray(),
+                    direction:new T.Vector3(...configured.direction).transformDirection(wrapper.matrixWorld).toArray(),
+                    source:source.startsWith('instance-')?'instance':'model',calibration:configured.region?'region':'point',
+                    overrideYawDegrees:source==='instance-point'?(override?.yawDegrees??0):0}
+                if(cart){
+                    const metadata=typeof model?.metadata==='string'?JSON.parse(model.metadata):model?.metadata||{}
+                    const cad=device.model_type==='cad_transfer_cart_101300'||!!root.getObjectByName('cad_transfer_cart_v1_feed_carriage')
+                    const binding=(metadata.partBindings||[]).find(b=>b.source_key==='cart_feed_extension'&&b.axis==='x')
+                    const stroke=cad?CART_FEED.stroke:Math.abs(Number(binding?.output_max)-Number(binding?.output_min||0))
+                    if(Number.isFinite(stroke)&&stroke>0){
+                        const drive=new T.Vector3(cad?-stroke:stroke,0,0).applyMatrix3(new T.Matrix3().setFromMatrix4(wrapper.matrixWorld))
+                        result.transferStroke=drive.length();result.transferAxis=drive.normalize().toArray()
+                    }
+                }
+            } catch { /* Geometry-only checks remain usable; auto alignment reports the named missing calibration. */ }
             try{
                 const port=resolveLoadingPort(model,device,kind)||inferLoadingPort(root,device,model,kind)
                 if(port){

@@ -18,19 +18,24 @@ internal sealed partial class AdminPanelForm
         if (!ServiceConnectionPolicy.IsRequestId(requestId)) return;
         if (!await _serviceConnectionGate.WaitAsync(0))
         { PostServiceResult(new { type = "service_connection_result", requestId, success = false, error = "已有服务操作正在执行", code = "BUSY" }); return; }
+        var failureCode = "SESSION_CHECK_FAILED";
         try
         {
             var (cookie, session) = await ReadServiceSessionAsync();
+            failureCode = "PERMISSION_DENIED";
             if (!ServiceConnectionPolicy.Allows(session, action)) throw new InvalidOperationException("当前会话未登录或没有此服务操作权限");
             object result;
             if (action == "unity_reconnect")
             {
+                failureCode = "UNITY_PROCESS_UNAVAILABLE";
                 if (_options.ParentProcessId <= 0 || _parentProcess == null || _parentProcess.HasExited)
                     throw new InvalidOperationException("当前本机 Unity 进程不可用，请先启动大屏");
+                failureCode = "UNITY_TICKET_FAILED";
                 var csrf = session.GetProperty("csrfToken").GetString() ?? "";
                 var grant = await CallServiceApiAsync("/api/admin-auth/native-ticket", cookie, csrf, new { });
                 var ticket = grant.GetProperty("ticket").GetString();
                 if (ticket is not { Length: 64 } || !ticket.All(Uri.IsHexDigit)) throw new InvalidOperationException("大屏会话票据未确认");
+                failureCode = "UNITY_PIPE_UNAVAILABLE";
                 await _unityCommandSender.WaitAsync(_pipeCancellation.Token);
                 try
                 {
@@ -41,6 +46,7 @@ internal sealed partial class AdminPanelForm
                         JsonSerializer.Serialize(new { action = "sync_unity_session", ticket }), _pipeCancellation.Token);
                 }
                 finally { _unityCommandSender.Release(); }
+                failureCode = "UNITY_HANDSHAKE_TIMEOUT";
                 var deadline = DateTime.UtcNow.AddSeconds(24);
                 var connected = false;
                 do
@@ -55,12 +61,14 @@ internal sealed partial class AdminPanelForm
             }
             else if (action == "data_reconnect")
             {
+                failureCode = "DATA_HANDSHAKE_UNCONFIRMED";
                 if (_dashboardOverlay == null) throw new InvalidOperationException("当前大屏没有透明数据层");
                 var count = await _dashboardOverlay.ReconnectActiveChannelsAsync(requestId!);
                 result = new { type = "service_connection_result", requestId, success = true, connected = true, channels = count };
             }
             else if (action == "unity_restart")
             {
+                failureCode = "DESKTOP_CONTROL_UNCONFIRMED";
                 if (MessageBox.Show(this, "将重启当前电脑的大屏和后台窗口，不会重启采集服务。请确认所有表单与布局已保存。继续吗？",
                     "重启当前大屏", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
                     throw new InvalidOperationException("已取消大屏重启");
@@ -73,6 +81,7 @@ internal sealed partial class AdminPanelForm
             }
             else if (action == "restart_status")
             {
+                failureCode = "DESKTOP_CONTROL_UNCONFIRMED";
                 var operationId = root.TryGetProperty("operationId", out var operation) ? operation.GetString() : null;
                 if (!ServiceConnectionPolicy.IsOperationId(operationId)) throw new InvalidOperationException("重启确认编号无效");
                 var status = await CallDesktopServiceControlAsync("service/unity-restart/" + operationId, HttpMethod.Get);
@@ -80,18 +89,26 @@ internal sealed partial class AdminPanelForm
             }
             else
             {
-                var center = await CallDesktopServiceControlAsync("service/collector-center");
-                if (!center.TryGetProperty("opened", out var opened) || opened.ValueKind != JsonValueKind.True)
+                failureCode = "CENTER_VIEW_UNCONFIRMED";
+                var view = ServiceConnectionPolicy.CenterView(action) ?? throw new InvalidOperationException("运行中心视角无效");
+                var path = ServiceConnectionPolicy.CenterControlPath(action) ?? throw new InvalidOperationException("运行中心路径无效");
+                var center = await CallDesktopServiceControlAsync(path);
+                if (!center.TryGetProperty("opened", out var opened) || opened.ValueKind != JsonValueKind.True
+                    || !center.TryGetProperty("view", out var selectedView) || selectedView.ValueKind != JsonValueKind.String || selectedView.GetString() != view)
                     throw new InvalidOperationException("运行中心尚未确认打开");
-                result = new { type = "service_connection_result", requestId, success = true, opened = true };
+                result = new { type = "service_connection_result", requestId, success = true, opened = true, view };
             }
             PostServiceResult(result);
         }
-        catch (Exception)
+        catch (Exception error)
         {
+            var httpStatus = error is HttpRequestException httpError && httpError.StatusCode.HasValue
+                ? (int)httpError.StatusCode.Value : (int?)null;
+            var code = ServiceConnectionPolicy.FailureCode(failureCode, httpStatus);
+            try { AdminHostLog.Write($"[ServiceConnection] result=unconfirmed code={code}"); } catch { }
             // Do not forward HTTP/cookie/ticket-bearing exception details to the page or log.
             PostServiceResult(new { type = "service_connection_result", requestId, success = false,
-                error = "服务操作未确认、被拒绝或已取消，请重新检测并检查权限 / 运行日志", code = "SERVICE_ACTION_UNCONFIRMED" });
+                error = "服务操作未确认、被拒绝或已取消，请重新检测并检查权限 / 运行日志", code });
         }
         finally { _serviceConnectionGate.Release(); }
     }

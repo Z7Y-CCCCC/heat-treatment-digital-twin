@@ -8,7 +8,7 @@ fs.mkdirSync(output, { recursive: true });
 const build = spawnSync(process.execPath, [path.join(__dirname, 'build-collector-center.cjs')], { stdio: 'inherit', windowsHide: true });
 if (build.error) throw build.error;
 assert.equal(build.status, 0);
-const executable = path.join(project, 'desktop', '.cache', 'collector-center', 'HeatTreatmentCollectorCenter.exe');
+const executable = path.join(process.env.DIGITAL_TWIN_COLLECTOR_CENTER_BUILD_DIR ? path.resolve(process.env.DIGITAL_TWIN_COLLECTOR_CENTER_BUILD_DIR) : path.join(project, 'desktop', '.cache', 'collector-center'), 'HeatTreatmentCollectorCenter.exe');
 const report = path.join(output, `self-test-${Date.now()}.json`);
 const result = spawnSync(executable, ['--self-test', report], { windowsHide: true, timeout: 30000 });
 if (result.error) throw result.error;

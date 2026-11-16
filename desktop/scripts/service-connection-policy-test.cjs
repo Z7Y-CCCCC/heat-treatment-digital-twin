@@ -16,6 +16,9 @@ Check(ServiceConnectionPolicy.IsAdminSource(app,app));
 foreach(var source in new[]{"http://127.0.0.1:3001/overlay","http://127.0.0.1:3002/admin","http://127.0.0.1.evil/admin","http://user@127.0.0.1:3001/admin","file:///admin"}) Check(!ServiceConnectionPolicy.IsAdminSource(source,app));
 foreach(var id in new[]{"",new string('a',81),"../admin","id\\nvalue","id<script>"}) Check(!ServiceConnectionPolicy.IsRequestId(id));
 Check(ServiceConnectionPolicy.IsRequestId("request_123-id")); Check(ServiceConnectionPolicy.IsOperationId(new string('a',32))); Check(!ServiceConnectionPolicy.IsOperationId("../quit"));
+Check(ServiceConnectionPolicy.CenterView("collector_center_data")=="points"); Check(ServiceConnectionPolicy.CenterView("collector_center_runtime")=="overview");
+Check(ServiceConnectionPolicy.CenterControlPath("collector_center_data")=="service/collector-center/data"); Check(ServiceConnectionPolicy.CenterControlPath("collector_center_runtime")=="service/collector-center/runtime");
+foreach(var invalid in new[]{"points","overview","collector_center_data;cmd","/service/collector-center"}) { Check(ServiceConnectionPolicy.CenterView(invalid)==null); Check(ServiceConnectionPolicy.CenterControlPath(invalid)==null); }
 JsonElement Read(string json)=>JsonDocument.Parse(json).RootElement.Clone();
 var owner=Read("{\\"authenticated\\":true,\\"user\\":{\\"role\\":\\"owner\\"},\\"permissions\\":{\\"launch\\":true,\\"view\\":true}}");
 foreach(var action in new[]{"unity_reconnect","unity_restart","data_reconnect","collector_center_runtime","collector_center_data","restart_status"}) Check(ServiceConnectionPolicy.Allows(owner,action));
@@ -23,6 +26,10 @@ foreach(var action in new[]{"shell","quit","/service/collector-center","unity_re
 var locked=Read("{\\"authenticated\\":false,\\"displayAuthenticated\\":true,\\"user\\":{\\"role\\":\\"owner\\"}}"); Check(!ServiceConnectionPolicy.Allows(locked,"data_reconnect"));
 var data=Read("{\\"authenticated\\":true,\\"pagePermissions\\":{\\"settings.data\\":{\\"view\\":true,\\"edit\\":true}}}"); Check(ServiceConnectionPolicy.Allows(data,"collector_center_data")); Check(!ServiceConnectionPolicy.Allows(data,"unity_restart"));
 var runtime=Read("{\\"authenticated\\":true,\\"pagePermissions\\":{\\"settings.runtime\\":{\\"view\\":true,\\"edit\\":true}}}"); Check(ServiceConnectionPolicy.Allows(runtime,"data_reconnect")); Check(!ServiceConnectionPolicy.Allows(runtime,"unity_restart"));
+foreach(var stage in new[]{"SESSION_CHECK_FAILED","PERMISSION_DENIED","UNITY_PROCESS_UNAVAILABLE","UNITY_TICKET_FAILED","UNITY_PIPE_UNAVAILABLE","UNITY_HANDSHAKE_TIMEOUT","CENTER_VIEW_UNCONFIRMED","DATA_HANDSHAKE_UNCONFIRMED","DESKTOP_CONTROL_UNCONFIRMED"}) Check(ServiceConnectionPolicy.FailureCode(stage)==stage);
+Check(ServiceConnectionPolicy.FailureCode("UNITY_HANDSHAKE_TIMEOUT",401)=="AUTH_REQUIRED");
+Check(ServiceConnectionPolicy.FailureCode("UNITY_TICKET_FAILED",403)=="PERMISSION_DENIED");
+foreach(var unsafeDetail in new[]{"Cookie: secret","http://HOST/?token=SECRET","Unexpected error stack", ""}) Check(ServiceConnectionPolicy.FailureCode(unsafeDetail)=="SERVICE_ACTION_UNCONFIRMED");
 Console.WriteLine(JsonSerializer.Serialize(new{success=true,checks}));`);
 const result = spawnSync('dotnet', ['run', '--project', path.join(output, 'PolicyTest.csproj'), '--configuration', 'Release'],
     { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 120000 });

@@ -19,7 +19,7 @@ import QualityNotice from '../components/QualityNotice.vue'
 import AdminReadingSettings from './admin/components/AdminReadingSettings.vue'
 import AdminConnectionStatus from './admin/components/AdminConnectionStatus.vue'
 import { deviceTransformPayload } from '../../../shared/deviceAuthoring.mjs'
-import { planGuidedLineArrangement } from '../../../shared/lineGuidedArrangement.mjs'
+import { prepareGuidedLineArrangement } from '../../../shared/lineGuidedArrangement.mjs'
 import DockingCalibration from './admin/components/DockingCalibration.vue'
 import LineArrangementProposal from './admin/components/LineArrangementProposal.vue'
 import WorkshopArrangement from './admin/components/WorkshopArrangement.vue'
@@ -71,6 +71,7 @@ import {
 } from './admin/utils/lineLayout.js'
 import { chooseLineDevices, planLineGroupMove, spaceLineDevices } from './admin/utils/lineDeviceSelection.js'
 import { editLineRailSpacing, shiftRailMovement, lineSceneUnitsPerMeter } from '../../../shared/lineRailSpacing.mjs'
+import { isLineRailLengthAutomatic, syncLineRailLength } from '../../../shared/lineRailLength.mjs'
 import { planLinePlacementTemplate, canMoveLineStructure, assertLineTemplateTransition, assertLineTemplateClearance } from '../../../shared/linePlacementTemplate.mjs'
 import { simpleMotionError } from './admin/utils/mobileMotionPolicy.js'
 import { simpleMovementPayload } from './admin/utils/simpleMotionDraft.js'
@@ -195,6 +196,7 @@ const arrangementProposal = ref(null), arrangementUndo = ref(null), arrangementD
 let arrangementProposalResolve = null
 const isArrangementLinePlan = computed(() => activeTab.value === 'composer' && arrangementLayer.value === 'line' && arrangementView.value === 'plan')
 const isModelWorkspace = computed(() => ['models', 'model-animations'].includes(activeTab.value))
+const modelAssetLocked = ref(false)
 const platformSubpage = ref(restoreSubpage(storedAdminUiState.platformSubpage, PLATFORM_SUBPAGES.value, 'designer'))
 const settingsSubpage = ref(restoreSubpage(storedAdminUiState.settingsSubpage, SETTINGS_SUBPAGES.value, 'runtime'))
 const databaseSection = ref('primary')
@@ -307,22 +309,35 @@ const navIconPaths = {
 
 const { appDialog, openAppDialog, closeAppDialog, alert, confirm } = useAppDialog()
 const { connectionState, connectionActions, refresh: refreshServiceConnections,
-    handleConnectionAction, recoverConnectionRestart } = useServiceConnections({ confirm, prepareRestart: prepareConnectionRestart })
-async function prepareConnectionRestart() {
-    // Reconnection never navigates. Restart does, so refuse known live drafts;
+    handleConnectionAction, recoverConnectionRestart } = useServiceConnections({ confirm, prepareRestart: prepareConnectionRestart, unlock: requestConnectionUnlock })
+function hasConnectionNavigationDrafts() {
+    // Reconnection never navigates. Restart/re-lock do, so refuse known drafts;
     // never silently save/discard or invoke a canLeave that discards them.
     const editors = [modelLoadingPortRef.value, deviceLoadingPortRef.value, groundEditorRef.value]
-    if (lineAlignmentMode.value || loadingPortDeviceId.value
+    return Boolean(modelAssetLocked.value || selectedModelFile.value || lineAlignmentMode.value || loadingPortDeviceId.value
         || editors.some(editor => editor?.busy || editor?.dirty) || listFactoryDrafts(getFactoryScope()).length
         || arrangementDirty.value || dirtyLineIds.value.length || modelInspectionDirty.value || manualDisassemblyDirty.value
         || workshopSpatialDirty.value || workshopMapDirty.value || isPointsDirty.value
         || showDeviceForm.value || newWorkshop.id || newWorkshop.name || newLine.id || newLine.name
         || lineDeviceLayoutBusy.value || pointsSaving.value || composerSaving.value || composerBulkSaving.value
-        || dataCenterRef.value?.isBusy || dataCenterSourceRef.value?.isBusy || modelBindingSaving.value) {
+        || dataCenterRef.value?.isBusy || dataCenterSourceRef.value?.isBusy || modelBindingSaving.value)
+}
+async function prepareConnectionRestart() {
+    if (hasConnectionNavigationDrafts()) {
         await alert('当前有未保存的修改、编辑表单或正在执行的操作。请先保存 / 取消编辑，再重启大屏。重连数据通道不需要关闭页面。', { title: '已保留当前草稿' })
         return false
     }
     return true
+}
+async function requestConnectionUnlock() {
+    if (hasConnectionNavigationDrafts()) {
+        await alert('当前有未保存的修改、编辑表单或正在执行的操作。请先保存 / 取消编辑，再重新解锁后台；当前修改已保留。', { title: '已保留当前草稿' })
+        return false
+    }
+    await lockAdmin()
+    // lockAdmin opens the existing password gate. This is not a completed login
+    // and does not stop Unity, the collector, or the Windows service.
+    return !adminSession.authenticated
 }
 const unifiedDesignerRef = ref(null)
 const mapSettingsRef = ref(null), loadingSettingsRef = ref(null), modelPlacementMenuRef = ref(null)
@@ -357,6 +372,7 @@ async function requestMotionFactorySwitch({ factoryId, factoryName }) {
 }
 
 async function requestFactorySwitch({ factoryName }) {
+    if (modelAssetLocked.value || modelUploading.value || modelBindingSaving.value || manualDisassemblySaving.value || manualDisassemblyRef.value?.dragging) return false
     if (activeTab.value === 'composer') stageArrangementDevice()
     if (arrangementSaving.value || arrangementProposal.value) return false
     // Native modal dialogs are top-layer surfaces: finish them before opening
@@ -2073,6 +2089,7 @@ function modelLibraryStepAvailable(step) {
 }
 
 async function selectModelLibraryStep(step) {
+    if (modelAssetLocked.value) return
     if (modelLibraryStep.value === step) return
     if (!modelLibraryStepAvailable(step)) return
     if (modelLoadingPortRef.value && !await modelLoadingPortRef.value.canLeave()) return
@@ -2167,6 +2184,21 @@ function translateModelNodeName(rawName) {
 
 function formatModelNodeType(type) {
     return modelNodeTypeTranslations[type] || type || '节点'
+}
+
+const modelAssetTransferDirty = computed(() => !!selectedModelFile.value || modelInspectionDirty.value || manualDisassemblyDirty.value
+    || Boolean(savedModelEditorSnapshot.value && activePreviewModel.value && modelEditorSnapshot() !== savedModelEditorSnapshot.value))
+async function importRawModelAsset(file) {
+    await selectModelFile({ target: { files: [file], value: '' } })
+}
+async function refreshImportedModelAsset(model) {
+    await loadModels()
+    const selected = models.value.find(item => item.id === model?.id) || activePreviewModel.value
+    if (selected) await previewExistingModel(selected, { afterUpload: true })
+    if (!manualDisassemblyDirty.value && !manualDisassemblySaving.value && !manualDisassemblyRef.value?.dragging && canAdminPage('disassembly-layout')) {
+        if (selected && manualDisassemblyChoices.value.some(item => item.id === selected.id)) await manualDisassemblyPage.selectModel(selected.id)
+        await manualDisassemblyPage.ensureSelection()
+    }
 }
 
 function formatMeshCount(count) {
@@ -3333,6 +3365,7 @@ function resetModelImportForm(file) {
 }
 
 async function selectModelFile(event) {
+    if (modelAssetLocked.value || !await manualDisassemblyPage.canLeave()) { event.target.value = ''; return }
     if (!canAdminPage('models', 'edit') || modelUploading.value || modelNameSaving.value) { event.target.value = ''; return }
     const file = event.target.files[0]
     if (!file) return
@@ -3412,6 +3445,7 @@ async function uploadModel() {
 }
 
 async function previewExistingModel(model, { afterUpload = false } = {}) {
+    if (modelAssetLocked.value && !afterUpload) return
     if (modelBindingSaving.value || modelNameSaving.value || (modelUploading.value && !afterUpload)) { modelBindingStatus.value = '正在保存模型，请等待保存完成再切换。'; return }
     if (model.id !== selectedPreviewModelId.value && modelLoadingPortRef.value && !await modelLoadingPortRef.value.canLeave()) return
     if (activeTab.value === 'model-animations' && model.id !== selectedPreviewModelId.value && activePreviewModel.value) {
@@ -4694,6 +4728,7 @@ async function openDataCenterSection(section) {
 }
 
 async function selectAdminTab(tabKey) {
+    if (modelAssetLocked.value) return
     if (tabKey === 'lines') { arrangementLayer.value = 'line'; arrangementView.value = 'plan'; tabKey = 'composer' }
     let requestedDataSection = ''
     if (['points', 'point-monitor'].includes(tabKey)) {
@@ -5565,11 +5600,13 @@ function syncLineLayout(line, layout) {
     line.layout_json = JSON.stringify(normalized)
 }
 
-function applyLineLayoutDraft(line, candidate) {
+function applyLineLayoutDraft(line, candidate, deviceTransforms = []) {
     if (!line) return
-    const before = getLineLayout(line), normalized = normalizeLineLayout(candidate)
+    const before = getLineLayout(line), sourceDevices = devices.value
+    const occupiedLaneIds = (candidate.lanes || []).filter(lane => getDevicesBoundToLayoutItem('lane', lane.id, line, sourceDevices).length).map(lane => lane.id)
+    const normalized = normalizeLineLayout(syncLineRailLength(candidate, occupiedLaneIds))
     if (normalized.placementTemplate) assertLineTemplateTransition(before, normalized)
-    const sourceDevices = devices.value, patches = new Map()
+    const patches = new Map()
     // Build every affected device/path patch before changing any reactive draft.
     // A bad carrier on a later rail must not leave the lane, first rail or first
     // carrier moved while the user sees a rejection message.
@@ -5579,9 +5616,26 @@ function applyLineLayoutDraft(line, candidate) {
             if (!previous || previous.offsetZ === item.offsetZ && previous.length === item.length && previous.name === item.name) continue
             const deltaZ = numberOrDefault(item.offsetZ, 0) - numberOrDefault(previous.offsetZ, 0)
             for (const device of getDevicesBoundToLayoutItem(type, item.id, line, sourceDevices)) {
-                patches.set(device.id, buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ))
+                const patch = buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ)
+                // A visual length change needs only bounds validation. Do not
+                // rewrite bindings or movement just to resize a drawing.
+                if (previous.offsetZ !== item.offsetZ || previous.name !== item.name) patches.set(device.id, patch)
             }
         }
+    }
+    const ids = new Set()
+    for (const pose of deviceTransforms) {
+        const device = sourceDevices.find(row => row.id === pose.id)
+        const target = device && resolveDeviceLayoutTarget(device, line, { allowFallback: false })
+        if (!device || !target || ids.has(pose.id) || Object.keys(pose).some(key => !['id', 'pos_z', 'rotation_y'].includes(key))
+            || !Number.isFinite(pose.pos_z) || Math.abs(pose.pos_z) > 10000
+            || target.type === 'rail' && Math.abs(pose.pos_z - Number(device.pos_z)) > 1e-6
+            || pose.rotation_y !== undefined && (!Number.isFinite(pose.rotation_y) || Math.abs(pose.rotation_y) > Math.PI + 1e-6)) throw Error('自动对齐设备来源或姿态无效，未应用任何修改')
+        ids.add(pose.id)
+        // These devices already have explicit bindings. Automatic alignment
+        // owns only yaw/depth, not even cosmetic binding-name normalization.
+        patches.set(pose.id, { pos_z: pose.pos_z,
+            ...(pose.rotation_y !== undefined ? { rotation_y: pose.rotation_y } : {}) })
     }
     line.layout = normalized
     line.layout_json = JSON.stringify(normalized, null, 2)
@@ -5601,8 +5655,8 @@ function changeLineRailSpacing({ railId, field, value }) {
     } catch (error) { alert(error.message, { title: '设备线与轨道间距无效', type: 'warning' }) }
 }
 
-async function measureLineLayoutEnvelopes(line) {
-    const source = devices.value.filter(device => {
+async function measureLineLayoutEnvelopes(line, candidates = devices.value) {
+    const source = candidates.filter(device => {
         const config = parseInstanceConfig(device.instance_config)
         const belongs = device.line_id === line.id || config.laneLineId === line.id || config.railLineId === line.id
         // The pool is not part of the placed layout. Leave its devices alone;
@@ -5624,13 +5678,16 @@ async function measureLineLayoutEnvelopes(line) {
         if (points.some(point => !point || !Number.isFinite(point.z))) throw Error(`「${device.name || device.id}」移动路径无效，未把未知位置当作安全通道`)
         const zs = points.map(point => point?.z).filter(Number.isFinite)
         return { ...row, [binding.type === 'rail' ? 'railId' : 'laneId']: binding.item.id,
+            ...(binding.type === 'rail' && getLineLayout(line).placementTemplate?.mouthAligned && row.loadingPort && row.transferStroke > 0 ? {
+                transferReach: { stroke: row.transferStroke * Math.abs(row.transferAxis[2]), positiveFaceZ: row.loadingPort.position[2], negativeFaceZ: row.loadingPort.position[2] }
+            } : {}),
             ...(binding.type === 'rail' && zs.length ? { pathMinZ: Math.min(...zs), pathMaxZ: Math.max(...zs) } : {}) }
     })
 }
 
 function lineAdjustmentRequest() {
     const line = selectedLineEditor.value, layout = line && getLineLayout(line)
-    if (!isArrangementLinePlan.value || !layout?.placementTemplate || layout.placementTemplate.independentSides) return null
+    if (!isArrangementLinePlan.value || !layout?.placementTemplate || layout.placementTemplate.independentSides || layout.placementTemplate.mouthAligned) return null
     const source = devices.value.filter(device => {
         const config = parseInstanceConfig(device.instance_config)
         return device.line_id === line.id || config.laneLineId === line.id || config.railLineId === line.id
@@ -5659,23 +5716,36 @@ async function chooseLinePlacementTemplate(kind) {
     if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value || lineCreating.value) return
     const line = selectedLineEditor.value
     if (!line) return
+    stageArrangementDevice()
     const before = snapshotJson({ layout: getLineLayout(line), devices: devices.value, models: models.value }), scope = getFactoryScope()
+    let manualDeviceId = ''
     lineLoadingMeasuring.value = true
     try {
+        const sourceDevices = JSON.parse(JSON.stringify(devices.value))
         const rows = await measureLineLayoutEnvelopes(line)
-        const plan = planGuidedLineArrangement(getLineLayout(line), kind, rows)
+        const plan = await prepareGuidedLineArrangement(getLineLayout(line), kind, rows, { measure: orientations => {
+            const rotations = new Map(orientations.map(row => [row.id, row.rotation_y]))
+            return measureLineLayoutEnvelopes(line, sourceDevices.map(device => rotations.has(device.id) ? { ...device, rotation_y: rotations.get(device.id) } : device))
+        } })
+        if (plan.orientations.length && !canAdminPage('composer', 'edit')) throw Error('自动纠正朝向需要设备编排编辑权限；原布局未改动')
         const unchanged = () => !adminPanelDisposed && selectedLineEditor.value === line && getFactoryScope() === scope
             && before === snapshotJson({ layout: getLineLayout(line), devices: devices.value, models: models.value })
         if (!unchanged()) throw Error('测量期间产线或模型已改变，请重新选择模板')
         const undo = { lineId: line.id, layout: JSON.parse(JSON.stringify(getLineLayout(line))), devices: devices.value.filter(d => rows.some(r => r.id === d.id)).map(d => JSON.parse(JSON.stringify(d))) }
         if (!await new Promise(resolve => { arrangementProposalResolve = resolve; arrangementProposal.value = { ...plan, lineName: line.name || line.id } })) return
         if (!unchanged()) throw Error('预览期间产线、设备或模型已改变，未覆盖任何修改；请重新生成推荐方案')
-        applyLineLayoutDraft(line, plan.layout)
+        applyLineLayoutDraft(line, plan.layout, plan.deviceTransforms)
+        syncComposerDraftFromSelection()
         undo.applied = snapshotJson({ layout: getLineLayout(line), devices: devices.value.filter(d => undo.devices.some(old => old.id === d.id)) })
         arrangementUndo.value = undo
 
-    } catch (error) { alert(error.message, { title: '布局模板未应用', type: 'warning' }) }
+    } catch (error) {
+        if (error.code === 'LINE_AUTO_ALIGNMENT_REQUIRES_3D' && error.deviceIds?.length && canAdminPage('composer')) {
+            if (await confirm(error.message, { title: error.deviceIds.length === 1 ? '这台设备需三维调整' : '这几台设备需三维调整', type: 'warning', confirmText: '到三维调整', cancelText: '保留原布局' })) manualDeviceId = error.deviceIds[0]
+        } else await alert(error.message, { title: '自动对齐未应用', type: 'warning' })
+    }
     finally { lineLoadingMeasuring.value = false }
+    if (manualDeviceId && !adminPanelDisposed && getFactoryScope() === scope && selectedLineEditor.value === line) await openArrangementDevice(manualDeviceId)
 }
 
 function selectLineEditor(lineId) {
@@ -5694,10 +5764,17 @@ function editLineDetails(draft) {
     selectLineEditor(line.id)
 }
 
-function changeLineLayoutItem({ type, id, field, value }) {
+function changeLineLengthFromCanvas(lane, event, preview = false) {
+    const units = lineSceneUnitsPerMeter(selectedLineLayout.value)
+    changeLineLayoutItem({ type: 'lane', id: lane.id, field: 'length', value: Number(event.target.value) * units, preview })
+    if (!preview) event.target.value = Number((findLineLayoutItem('lane', lane.id).length / units).toFixed(2))
+}
+
+function changeLineLayoutItem({ type, id, field, value, preview = false }) {
     if (!canAdminPage('lines', 'edit') || lineDeviceLayoutBusy.value) return
     const item = findLineLayoutItem(type, id)
     if (!item || !['name', 'offsetZ', 'length'].includes(field)) return
+    if (type === 'rail' && field === 'length' && isLineRailLengthAutomatic(getLineLayout(selectedLineEditor.value))) return
     if (field === 'offsetZ' && (type === 'rail' || getLineLayout(selectedLineEditor.value).lanes.length > 1 && !canMoveLineStructure(getLineLayout(selectedLineEditor.value), type, id))) return
     if (type === 'rail' && field === 'offsetZ' && item.spacing) return
     const next = field === 'name' ? String(value) : Number(value)
@@ -5710,7 +5787,7 @@ function changeLineLayoutItem({ type, id, field, value }) {
     }
     candidate[type === 'rail' ? 'rails' : 'lanes'].find(row => row.id === id)[field] = next
     try { applyLineLayoutDraft(line, candidate) }
-    catch (error) { alert(error.message, { title: '产线结构未修改', type: 'warning' }) }
+    catch (error) { if (!preview) alert(error.message, { title: '产线结构未修改', type: 'warning' }) }
 }
 
 async function focusLineStructure({ type, id }) {
@@ -6014,7 +6091,7 @@ function buildDeviceLayoutBindingPatch(device, type, item, line, deltaZ = 0) {
     // Spacing/name edits and save/reopen must retain sub-metre calibration;
     // only the canvas placement gesture itself should snap to its grid.
     const nextX = numberOrDefault(device.pos_x, 0)
-    if (Math.abs(nextX) > halfLength + .000001) throw new Error('设备位置超出调整后的设备线或导轨，请先调整设备位置再缩短长度')
+    if (Math.abs(nextX) > halfLength + .000001) throw new Error(`「${device.name || device.id}」设备位置超出调整后的${item.name || '设备线或导轨'}，请先调整设备位置再缩短长度`)
     const nextZ = Number((numberOrDefault(device.pos_z, getLineBaseZ(line.id) + numberOrDefault(item.offsetZ, 0)) + deltaZ).toFixed(6))
 
     if (type === 'rail') {
@@ -6375,6 +6452,7 @@ function startLinePreviewDrag(type, itemId, mode, event) {
     const stage = event.currentTarget.closest?.('.line-preview-stage')
     if (!item || !stage) return
     if (mode === 'move' && !canMoveLineStructure(selectedLineLayout.value, type, itemId)) return
+    if (type === 'rail' && mode !== 'move' && isLineRailLengthAutomatic(selectedLineLayout.value)) return
     if (mode === 'move' && selectedLineLayout.value.placementTemplate) {
         const band = lineAdjustmentDisplayBand.value
         if (lineAdjustmentPending.value || !band?.currentInside) return alert('请先检查微调范围；当前设备线在范围外时，重新选择模板并确认预览，不会自动挪动原布局。', { type: 'warning' })
@@ -6431,7 +6509,8 @@ function handleLinePreviewDrag(event) {
 }
 
 function finishLinePreviewDrag() {
-    if (selectedLineEditor.value) touchLineLayout(selectedLineEditor.value)
+    // Pointer moves already apply complete validated drafts. Reapplying here
+    // could retry a rejected shrink or dirty a layout on a click without drag.
     linePreviewDragState = null
     document.body.classList.remove('line-preview-dragging')
     window.removeEventListener('pointermove', handleLinePreviewDrag)
@@ -7417,6 +7496,7 @@ function undoArrangementLayout() {
     if (current !== undo.applied) return alert('自动排布之后已有其他修改，不能覆盖这些修改。可使用“取消修改”恢复已保存布局。', { type: 'warning' })
     syncLineLayout(line, JSON.parse(JSON.stringify(undo.layout)))
     const originals = new Map(undo.devices.map(d => [d.id, d])); devices.value = devices.value.map(d => originals.get(d.id) || d)
+    syncComposerDraftFromSelection()
     arrangementUndo.value = null
 }
 async function createArrangementLine() {
@@ -7942,7 +8022,7 @@ async function openAdminSetupStep(step) {
                                         v-for="lane in selectedLineLayout.lanes"
                                         :key="lane.id"
                                         class="line-map-item line-map-lane"
-                                        :class="linePreviewItemClass('lane', lane)"
+                                        :class="[linePreviewItemClass('lane', lane), { 'has-settings-open': lineFlowMenuLaneId === lane.id }]"
                                         :style="[linePreviewItemStyle(lane), { cursor: 'pointer' }]"
                                         data-line-target-type="lane"
                                         :data-line-target-id="lane.id"
@@ -7964,12 +8044,15 @@ async function openAdminSetupStep(step) {
                                                 class="line-map-flow-settings-trigger"
                                                 :class="{ active: lineFlowMenuLaneId === lane.id }"
                                                 :aria-expanded="lineFlowMenuLaneId === lane.id"
-                                                title="设置产线方向"
+                                                title="设置设备线长度与方向"
+                                                :aria-label="`${lane.name} 设置`"
                                                 @click.stop="toggleLineFlowMenu(lane.id)"
                                             >
                                                 <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/></svg>
                                             </button>
                                             <span v-if="lineFlowMenuLaneId === lane.id" class="line-map-flow-menu" role="menu">
+                                                <label class="line-length-field"><span>长度（米）</span><input :aria-label="`${lane.name} 长度（米）`" type="number" :min="1 / lineSceneUnitsPerMeter(selectedLineLayout)" step="0.5" :value="Number((lane.length / lineSceneUnitsPerMeter(selectedLineLayout)).toFixed(2))" :disabled="lineDeviceLayoutBusy || !canAdminPage('lines', 'edit')" @input="changeLineLengthFromCanvas(lane, $event, true)" @change="changeLineLengthFromCanvas(lane, $event)" /></label>
+                                                <small class="line-rail-length-hint">导轨长度自动跟随</small>
                                                 <button
                                                     v-for="option in lineFlowDirectionOptions"
                                                     :key="option.value"
@@ -7992,12 +8075,13 @@ async function openAdminSetupStep(step) {
                                         data-line-target-type="rail"
                                         :data-line-target-id="rail.id"
                                         tabindex="-1" role="group" :aria-label="rail.name"
-                                        title="小车导轨位置固定；左右把手可调整显示长度"
+                                        :title="isLineRailLengthAutomatic(selectedLineLayout) ? '长度自动跟随有固定设备的设备线；双侧取较长排' : '小车导轨位置固定；左右把手可调整显示长度'"
                                         @pointerdown.stop="selectedLineStructure = { type: 'rail', id: rail.id }"
                                     >
                                         <span>{{ rail.name }}</span>
-                                        <i class="line-map-handle handle-left" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-left', $event)"></i>
-                                        <i class="line-map-handle handle-right" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-right', $event)"></i>
+                                        <small v-if="isLineRailLengthAutomatic(selectedLineLayout)" class="line-map-rail-follow">随设备线</small>
+                                        <i v-if="!isLineRailLengthAutomatic(selectedLineLayout)" class="line-map-handle handle-left" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-left', $event)"></i>
+                                        <i v-if="!isLineRailLengthAutomatic(selectedLineLayout)" class="line-map-handle handle-right" @pointerdown.stop="startLinePreviewDrag('rail', rail.id, 'resize-right', $event)"></i>
                                     </div>
                                     <div
                                         v-for="device in selectedLineEditorDevices"
@@ -8575,14 +8659,15 @@ async function openAdminSetupStep(step) {
                             <button type="button" :class="{ active: motionWorkspaceMode === 'parts' }" :aria-pressed="motionWorkspaceMode === 'parts'" @click="changeMotionWorkspace('parts')">部件动作</button>
                             <button type="button" :class="{ active: motionWorkspaceMode === 'transfer' }" :aria-pressed="motionWorkspaceMode === 'transfer'" @click="changeMotionWorkspace('transfer')">设备联动</button>
                         </nav>
-                        <ModelAssetTransfer :models="models" :selected-id="motionWorkspaceMode === 'parts' ? selectedPreviewModelId : ''" @imported="loadModels" />
                         </div>
                         <p v-if="!motionModelOptions.length" class="desc">请先在“模型管理”中导入设备 GLB / GLTF 模型。</p>
                     </template>
                     <template v-else>
                         <ModelPlacementMenu ref="modelPlacementMenuRef" :busy="modelPlacementSaving || modelNameSaving || modelUploading" @change="saveModelPlacement" />
-                        <h2>3D 模型库</h2>
-                        <p class="desc">管理模型与进出料口。</p>
+                        <div class="model-assets-page-heading">
+                            <h2>模型管理</h2>
+                            <ModelAssetTransfer :models="models" :selected-id="selectedPreviewModelId" :dirty="modelAssetTransferDirty" :disabled="modelUploading || modelBindingSaving || modelNameSaving || manualDisassemblySaving || !!modelLoadingPortRef?.busy" @raw-file="importRawModelAsset" @imported="refreshImportedModelAsset" @busy-change="modelAssetLocked = $event" />
+                        </div>
                         <label v-if="modelLibraryStep === 'ports'" class="loading-port-model-picker">选择模型
                             <select :value="selectedPreviewModelId" aria-label="选择进出料口模型" :disabled="modelLoadingPortRef?.busy" @change="changeLoadingPortModel">
                                 <option v-for="model in loadingPortModelOptions" :key="model.id" :value="model.id">{{ formatModelSetupOption(model, 'ports') }}</option>
@@ -8626,7 +8711,7 @@ async function openAdminSetupStep(step) {
                                     <div class="model-asset-heading-actions">
                                         <span v-if="modelPlacementFeedback" role="status">{{ modelPlacementFeedback }}</span>
                                         <span>{{ visibleModels.length }} / {{ models.length }} 个模型</span>
-                                        <button type="button" class="btn btn-primary" :disabled="modelUploading || modelBindingSaving || modelNameSaving" @click="modelFileInputRef?.click()" v-permission="{ page: 'models', action: 'edit' }">导入模型</button>
+
                                     </div>
                                 </div>
                                 <input ref="modelFileInputRef" type="file" aria-label="选择模型文件" accept=".glb,.gltf" :disabled="modelUploading || modelBindingSaving || modelNameSaving" @change="selectModelFile" hidden v-permission="{ page: 'models', action: 'edit' }" />
@@ -8643,10 +8728,10 @@ async function openAdminSetupStep(step) {
                                         <label>默认缩放<input v-model.number="modelImportForm.default_scale" type="number" min="0.01" step="0.05" class="input"  v-permission="{ page: controlPermissionPage, action: 'edit' }"/></label>
                                         <label class="model-metadata-field">元数据 JSON<textarea v-model="modelImportForm.metadata" class="input model-metadata" v-permission="{ page: controlPermissionPage, action: 'edit' }"></textarea></label>
                                         <div class="model-import-actions">
-                                            <button class="btn btn-primary" type="button" @click="uploadModel" :disabled="modelUploading" v-permission="{ page: controlPermissionPage, action: 'edit' }">
-                                                {{ modelUploading ? '上传中...' : '上传并入库' }}
+                                            <button class="model-asset-icon-button primary" type="button" aria-label="确认导入模型文件" title="确认导入模型文件" @click="uploadModel" :disabled="modelUploading" v-permission="{ page: controlPermissionPage, action: 'edit' }">
+                                                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
                                             </button>
-                                            <button class="btn" type="button" @click="clearSelectedModelFile" :disabled="modelUploading">取消</button>
+                                            <button class="model-asset-icon-button" type="button" aria-label="取消导入模型文件" title="取消导入模型文件" @click="clearSelectedModelFile" :disabled="modelUploading"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
                                         </div>
                                     </div>
                                 </div>
@@ -10829,6 +10914,7 @@ async function openAdminSetupStep(step) {
     justify-content: flex-end;
     gap: 8px;
     max-width: 520px;
+    pointer-events: none;
 }
 .line-preview-legend span {
     display: inline-flex;
@@ -10920,6 +11006,7 @@ async function openAdminSetupStep(step) {
     background: rgba(117, 154, 176, 0.22);
     border: 1px solid rgba(70, 113, 139, 0.35);
 }
+.line-map-lane.has-settings-open { z-index: 20; }
 .line-map-item.is-selected { outline: 3px solid #3287df; outline-offset: 4px; box-shadow: 0 0 0 7px #3287df22; }
 .line-map-rail.is-selected { outline-color: #b57a21; box-shadow: 0 0 0 7px #d49a3226; }
 .line-map-item.drop-compatible {
@@ -11073,13 +11160,17 @@ async function openAdminSetupStep(step) {
     z-index: 12;
     display: grid;
     gap: 3px;
-    min-width: 82px;
+    min-width: 176px;
     padding: 5px;
     background: rgba(255,255,255,.98);
     border: 1px solid rgba(25, 33, 38, 0.12);
     border-radius: 9px;
     box-shadow: 0 10px 24px rgba(25, 33, 38, 0.2);
 }
+.line-length-field{display:flex;align-items:center;gap:8px;padding:5px 7px;color:#52687b;font-size:11px;white-space:nowrap}
+.line-length-field input{width:83px;min-width:0;padding:5px 7px;border:1px solid #d2dce6;border-radius:6px;background:#fff;color:#344b60;font:inherit;font-variant-numeric:tabular-nums}
+.line-rail-length-hint{display:block;padding:0 7px 6px;color:#8192a2;font-size:10px;border-bottom:1px solid #edf1f5}
+.line-map-rail-follow{position:absolute;z-index:2;right:7px;bottom:7px;padding:1px 5px;border-radius:4px;background:#fff4da;color:#966d2c;font-size:10px;font-weight:500;line-height:14px;pointer-events:none}
 .line-map-flow-menu button {
     min-height: 27px;
     padding: 4px 8px;
@@ -14218,3 +14309,7 @@ button:enabled:active {
 </style>
 
 <style scoped src="./admin/styles/workshop-arrangement.css"></style>
+
+<style scoped>
+.model-assets-page-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.model-assets-page-heading h2{margin:0}.model-assets-page-heading :deep(.motion-package-actions){margin-left:auto}.model-asset-icon-button{display:inline-grid;place-items:center;width:32px;height:32px;padding:6px;border:1px solid #dce5f0;border-radius:8px;background:#fff;color:#647d9c;cursor:pointer}.model-asset-icon-button svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.model-asset-icon-button.primary{background:#eef5ff;border-color:#c9defa;color:#386ca8}.model-asset-icon-button:focus-visible{outline:2px solid #6388b9;outline-offset:2px}.model-asset-icon-button:disabled{opacity:.45;cursor:default}
+</style>

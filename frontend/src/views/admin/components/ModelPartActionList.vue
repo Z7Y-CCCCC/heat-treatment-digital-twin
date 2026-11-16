@@ -29,25 +29,24 @@ function changePage(value) {
             <article v-for="entry in entries" :key="entry.process ? `process_${entry.process.id}` : entry.binding.id" class="action-card" :class="{ active: entry.process ? activeProcessId === entry.process.id : !activeProcessId && activeBindingIndex === entry.index }">
                 <button type="button" class="action-select" @click="preview(entry)">
                     <strong>{{ entry.process ? entry.process.label : formatBindingName(entry.binding) }}</strong>
-                    <small>{{ entry.process?.detail || '已有部件动作' }} · 点击预览</small>
                 </button>
-                <button type="button" class="preview-button" :aria-label="`预览${entry.process ? entry.process.label : formatBindingName(entry.binding)}`" @click="preview(entry)">预览</button>
-                <div v-if="isConveyorAction(entry)" class="flow-previews" aria-label="辊筒双向试播"><button type="button" @click="emit('preview-flow',entry,'inlet')">↙ 进料试播</button><button type="button" @click="emit('preview-flow',entry,'outlet')">↗ 出料试播</button></div>
+                <button type="button" class="preview-button" :aria-label="`预览${entry.process ? entry.process.label : formatBindingName(entry.binding)}`" :title="`预览${entry.process ? entry.process.label : formatBindingName(entry.binding)}`" @click="preview(entry)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 4 12 8-12 8V4Z"/></svg></button>
+                <div v-if="isConveyorAction(entry)" class="flow-previews" aria-label="辊筒双向试播"><button type="button" aria-label="进料试播" title="进料试播" @click="emit('preview-flow',entry,'inlet')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15m-6-6 6 6-6 6M4 4v16"/></svg></button><button type="button" aria-label="出料试播" title="出料试播" @click="emit('preview-flow',entry,'outlet')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12H5m6-6-6 6 6 6M20 4v16"/></svg></button></div>
             </article>
             <p v-if="!entries.length" class="action-empty" role="status">{{ search ? '没有匹配的动作' : '暂无动作，请导入动作包' }}</p>
         </div>
         <nav class="action-pagination" aria-label="动作节点分页">
             <span aria-live="polite">{{ total }} 项 · 第 {{ page }} / {{ pageCount }} 页</span>
             <div>
-                <button type="button" :disabled="page <= 1" aria-label="上一页动作节点" @click="changePage(page - 1)">上一页</button>
+                <button type="button" :disabled="page <= 1" aria-label="上一页动作节点" title="上一页动作节点" @click="changePage(page - 1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></button>
                 <select :value="page" aria-label="跳转动作节点页码" @change="changePage($event.target.value)"><option v-for="number in pageCount" :key="number" :value="number">{{ number }}</option></select>
-                <button type="button" :disabled="page >= pageCount" aria-label="下一页动作节点" @click="changePage(page + 1)">下一页</button>
+                <button type="button" :disabled="page >= pageCount" aria-label="下一页动作节点" title="下一页动作节点" @click="changePage(page + 1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>
             </div>
         </nav>
     </section>
 </template>
 <style scoped>
-.action-card{flex-wrap:wrap}.flow-previews{flex-basis:100%;display:flex;gap:8px;padding-top:9px;border-top:1px solid #e8eef4}.flow-previews button{flex:1;border:1px solid #cbdfe9;background:#f0f7fa;border-radius:7px;padding:8px 10px;color:#2e738d;font:inherit;cursor:pointer}.flow-previews button:hover{background:#e0f0f6}.flow-previews button:focus-visible{outline:2px solid #397f9e;outline-offset:2px}
+.action-card{flex-wrap:wrap}.flow-previews{flex-basis:100%;display:flex;gap:8px;padding-top:9px;border-top:1px solid #e8eef4}.flow-previews button{flex:1;border:1px solid #cbdfe9;background:#f0f7fa;border-radius:7px;padding:6px;color:#2e738d;font:inherit;cursor:pointer}.flow-previews button:hover{background:#e0f0f6}.flow-previews button:focus-visible{outline:2px solid #397f9e;outline-offset:2px}.preview-button svg,.flow-previews svg,.action-pagination svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.preview-button,.flow-previews button,.action-pagination button{display:grid;place-items:center;min-width:28px;min-height:28px}button:focus-visible{outline:2px solid #6388b9;outline-offset:2px}
 .imported-action-list{display:flex;flex:1;flex-direction:column;min-height:0;gap:12px;color:#34455d;font-size:calc(12px * var(--admin-font-scale,1))}
 .action-list-heading{padding:11px 12px;border:1px solid #e5ebf6;border-radius:8px;background:#f5f8fd;color:#2463dd;font-weight:600}.action-list-heading span{margin-left:5px;color:#8494ac}
 .action-search{box-sizing:border-box;width:100%;padding:10px 12px;border:1px solid #d6deeb;border-radius:8px;font:inherit}

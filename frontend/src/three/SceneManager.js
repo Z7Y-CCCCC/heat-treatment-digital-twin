@@ -690,7 +690,11 @@ export class SceneManager {
             group.rotation.y = -THREE.MathUtils.degToRad(worldTransform.rotationY);
 
             const zone = makeFloorPlane(width, depth, range.globalLineIndex % 2 === 0 ? 0x4a6f62 : 0x596a70, 0.13);
-            zone.position.set(centerX, -0.052, centerZ);
+            // The industrial floor is at local Y=-.01. The previous negative
+            // offsets were above the legacy floor only, so the new opaque
+            // surface buried every lane/rail marking. Keep marks slightly
+            // above the line's floor datum with normal depth testing intact.
+            zone.position.set(centerX, 0.004, centerZ);
             group.add(zone);
 
             this.addLineLayoutMarks(group, range);
@@ -803,13 +807,13 @@ export class SceneManager {
             const z = baseZ + layoutOffsetToSceneZ(lane.offsetZ);
             const strip = new THREE.Mesh(new THREE.PlaneGeometry(length, 2.2), laneMat.clone());
             strip.rotation.x = -Math.PI / 2;
-            strip.position.set(0, -0.039, z);
+            strip.position.set(0, 0.012, z);
             strip.renderOrder = 4;
             group.add(strip);
 
             const center = new THREE.Mesh(new THREE.PlaneGeometry(length, 0.14), laneCenterMat.clone());
             center.rotation.x = -Math.PI / 2;
-            center.position.set(0, -0.035, z);
+            center.position.set(0, 0.016, z);
             center.renderOrder = 5;
             group.add(center);
 
@@ -820,18 +824,20 @@ export class SceneManager {
                 width: 1.45,
                 color: 0xd7a043,
                 opacity: 0.56,
-                y: -0.028,
+                y: 0.028,
                 renderOrder: 8
             });
         });
 
         layout.rails.forEach((rail) => {
-            const length = Math.max(4, numberOrDefault(rail.length, 60));
+            const length = Math.max(1, numberOrDefault(rail.length, 60));
             const z = baseZ + layoutOffsetToSceneZ(rail.offsetZ);
             [-0.42, 0.42].forEach((offset) => {
                 const railMesh = new THREE.Mesh(new THREE.PlaneGeometry(length, 0.16), railMat.clone());
                 railMesh.rotation.x = -Math.PI / 2;
-                railMesh.position.set(0, -0.032, z + offset);
+                railMesh.name = `layout_rail_${rail.id}`;
+                railMesh.userData.layoutRailId = rail.id;
+                railMesh.position.set(0, 0.024, z + offset);
                 railMesh.renderOrder = 6;
                 group.add(railMesh);
             });
@@ -842,7 +848,7 @@ export class SceneManager {
                 const x = -length / 2 + i * step;
                 const sleeper = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 1.2), sleeperMat.clone());
                 sleeper.rotation.x = -Math.PI / 2;
-                sleeper.position.set(x, -0.034, z);
+                sleeper.position.set(x, 0.020, z);
                 sleeper.renderOrder = 5;
                 group.add(sleeper);
             }

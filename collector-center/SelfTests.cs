@@ -16,6 +16,21 @@ namespace HeatTreatmentCollectorCenter
         internal static int Run(string output)
         {
             try {
+                Check(CenterNavigation.IsView("points") && CenterNavigation.TabIndex("points")==1 && CenterNavigation.Caption("points").Contains("设备采集"),"collector view");
+                Check(CenterNavigation.IsView("overview") && CenterNavigation.TabIndex("overview")==3 && CenterNavigation.Caption("overview").Contains("数据服务"),"dedicated API/database view, not collection overview");
+                foreach(var invalid in new[]{"", "logs", "points;cmd", "../quit", "http://HOST"})Check(!CenterNavigation.IsView(invalid),"view whitelist");
+                var security=CenterNavigation.CurrentUserSecurity();
+                var rules=security.GetAccessRules(true,true,typeof(System.Security.Principal.SecurityIdentifier));
+                Check(security.AreAccessRulesProtected && rules.Count==1 && rules[0].IdentityReference.Equals(System.Security.Principal.WindowsIdentity.GetCurrent().User),"current-user navigation pipe only");
+                Check(CenterNavigation.PipeName().Contains(System.Security.Principal.WindowsIdentity.GetCurrent().User.Value) && CenterNavigation.PipeName()!=CenterNavigation.PipeName(output),"fixture IPC isolated from actual center");
+                string workspaceEnvironment=Environment.GetEnvironmentVariable("DIGITAL_TWIN_WORKSPACE_CENTER");
+                try {
+                    Environment.SetEnvironmentVariable("DIGITAL_TWIN_WORKSPACE_CENTER",null);
+                    string installedPipe=CenterNavigation.PipeName(),installedMutex=CenterNavigation.MutexName();
+                    Environment.SetEnvironmentVariable("DIGITAL_TWIN_WORKSPACE_CENTER","1");
+                    Check(CenterNavigation.PipeName()!=installedPipe && CenterNavigation.MutexName()!=installedMutex,"workspace UI cannot navigate old installed UI");
+                    Check(CenterNavigation.PipeName().Contains("-workspace-") && CenterNavigation.PipeName()!=CenterNavigation.PipeName(output),"workspace and fixture namespaces remain separate");
+                } finally {Environment.SetEnvironmentVariable("DIGITAL_TWIN_WORKSPACE_CENTER",workspaceEnvironment);}
                 // Assemble this synthetic marker so the repository credential scan does not mistake it for a real key.
                 foreach(var text in new[]{"password=SECRET","{\"api_key\":\"SECRET\"}","https://fred:SECRET@host/","Authorization: Basic SECRET","Bearer SECRET","-----BEGIN " + "PRIVATE KEY-----\nSECRET\n-----END PRIVATE KEY-----"}) Check(!Ops.Redact(text).Contains("SECRET"),"redaction: "+text);
                 double now=(DateTime.UtcNow-new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).TotalMilliseconds;
@@ -68,7 +83,7 @@ namespace HeatTreatmentCollectorCenter
                 string diagnostic=output+".json.gz"; Ops.Export(diagnostic,s,logs,"");
                 using(var file=File.OpenRead(diagnostic)) using(var gzip=new GZipStream(file,CompressionMode.Decompress)) using(var reader=new StreamReader(gzip)) { var report=reader.ReadToEnd(); Check(!report.Contains("SECRET"),"diagnostic redaction"); Ops.Parse(report); }
                 Check(Ops.Origin(Ops.Parse("{\"port\":4567,\"backendOrigin\":\"https://evil.test\"}"))=="http://127.0.0.1:4567","fixed local origin");
-                File.WriteAllText(output,Ops.Serialize(new {success=true,tests=new[]{"credentials-redacted","freshness","database","process-health","secondary-factory-health","mixed-mode","unity-optional","simulation-labeled","display-online","display-stale","display-offline","display-legacy-unknown","display-scene-loading","display-unlicensed","display-malformed","display-no-stale-healthy","fixed-log-files","chinese-log-level","literal-log-text","gzip-json-export","fixed-loopback","invalid-port"}}),Encoding.UTF8);
+                File.WriteAllText(output,Ops.Serialize(new {success=true,tests=new[]{"center-views","current-user-navigation-ipc","fixture-ipc-isolation","credentials-redacted","freshness","database","process-health","secondary-factory-health","mixed-mode","unity-optional","simulation-labeled","display-online","display-stale","display-offline","display-legacy-unknown","display-scene-loading","display-unlicensed","display-malformed","display-no-stale-healthy","fixed-log-files","chinese-log-level","literal-log-text","gzip-json-export","fixed-loopback","invalid-port"}}),Encoding.UTF8);
                 return 0;
             } catch(Exception error) { File.WriteAllText(output,Ops.Serialize(new {success=false,error=error.ToString()})); return 1; }
         }

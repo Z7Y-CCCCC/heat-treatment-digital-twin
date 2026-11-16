@@ -44,7 +44,7 @@ test('actual parent has no manual authoring form and retains the canonical packa
  assert.doesNotMatch(panel,/motionEditorPanel|newMotionBinding\(|editModelBinding\(/)
  assert.match(template,/<ModelAssetTransfer/)
  const importer=await readFile(new URL('../src/views/admin/components/ModelAssetTransfer.vue',import.meta.url),'utf8')
- assert.match(importer,/>导入动作包<\/button>/)
+ assert.match(importer,/aria-label="导入模型资产"[^>]*><AssetTransferIcon name="import"/)
  assert.match(importer,/inspectedSha256/)
 })
 test('device binding empty state gives the same package-only instruction while point binding remains present',async()=>{

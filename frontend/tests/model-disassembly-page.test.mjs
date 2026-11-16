@@ -97,3 +97,21 @@ test('a failed model save keeps its draft, revision and cached metadata', async 
   assert.equal(await f.state.save(), false); assert.deepEqual(f.draft(), draft)
   assert.equal(f.models.value[0].metadata, before); assert.equal(f.state.dirty.value, true)
 })
+
+test('explicit asset refresh rereads a clean same-model layout without weakening dirty or drag protections', async () => {
+  const clean = fixture(); await clean.load()
+  const latest = copy(clean.snapshots.get('a')); latest.inspection.parts[0].explode_offset = [2.4, 0, 0]; latest.revision = 'asset-import'
+  clean.snapshots.set('a', latest)
+  await clean.state.selectModel('a')
+  assert.deepEqual(clean.state.inspection.value.parts[0].explode_offset, [0, 1, 0], 'selection alone intentionally retains the current cached layout')
+  assert.equal(await clean.state.reloadSelected(), true)
+  assert.deepEqual(clean.state.inspection.value.parts[0].explode_offset, [2.4, 0, 0]); assert.equal(clean.state.revision.value, 'asset-import')
+  assert.deepEqual(clean.calls.reads, ['a', 'a'])
+
+  const dirty = fixture([false]); await dirty.load(); const draft = dirty.edit()
+  assert.equal(await dirty.state.reloadSelected(), false); assert.deepEqual(dirty.draft(), draft)
+  assert.equal(dirty.state.dirty.value, true); assert.deepEqual(dirty.calls.reads, ['a']); assert.equal(dirty.calls.asks.length, 1)
+
+  const dragging = fixture(); await dragging.load(); dragging.editor.dragging = true
+  assert.equal(await dragging.state.reloadSelected(), false); assert.deepEqual(dragging.calls.reads, ['a']); assert.equal(dragging.calls.asks.length, 0)
+})

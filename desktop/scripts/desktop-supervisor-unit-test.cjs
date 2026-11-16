@@ -89,7 +89,8 @@ class Child extends EventEmitter {
     exit(code = 0, signal = null) { this.exitCode = code; this.signalCode = signal; this.emit('exit', code, signal); }
 }
 
-function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, fileSystem, probeConnection, electron = {} } = {}) {
+function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, fileSystem, probeConnection,
+    startupServiceConfig = null, healthTransport = null, clockDate = Date, electron = {} } = {}) {
     const app = new EventEmitter();
     const timers = [];
     const intervals = [];
@@ -109,6 +110,7 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
         __dirname: desktopDir,
         console,
         URL,
+        Date: clockDate,
         setImmediate,
         setTimeout: (callback, milliseconds) => {
             const timer = { callback, milliseconds, cleared: false, unref() {} };
@@ -121,6 +123,7 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
         require: name => {
             if (name === 'electron') return { app, dialog: { showErrorBox() {} }, ...electron };
             if (name === 'fs' && fileSystem) return fileSystem;
+            if ((name === 'http' || name === 'https') && healthTransport) return healthTransport;
             if (name === 'child_process') return { spawn: (...args) => {
                 spawnCalls += 1;
                 if (spawnProcess) return spawnProcess(...args);
@@ -140,6 +143,9 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
             // mode, contact a commissioned service, or bypass local assertions.
             if (name === './deployment.cjs') return { ...require('../deployment.cjs'),
                 resolveDeployment: () => deploymentConfig || {mode:'local'} };
+            if (name === './collectorStartupPolicy.cjs') return {
+                resolveCollectorStartupPolicy: selected => require('../collectorStartupPolicy.cjs').selectCollectorStartupPolicy(selected,
+                    { platform: 'win32', serviceConfig: startupServiceConfig }) };
             if (name === './connectionHealth.cjs') return {probeCollectorConnection:probeConnection || (()=>{throw Error('unexpected network probe in supervisor test');})};
             // Activation IPC/network has dedicated integration tests. A VM
             // supervision unit must never contact a real local installation.
@@ -446,7 +452,7 @@ test('service-connected Unity startup and exit never own or stop the collector',
         startBackend = () => { throw new Error('client must not collect'); };
         findAvailablePort = () => { throw new Error('client must not allocate backend ports'); };
         startDesktopSettingsSync = () => { throw new Error('client must not supervise server'); };
-        waitForHealth = async url => { remoteHealthUrl = url; };
+        waitForHealth = async (url, timeoutMs, watched, hardBudget) => { remoteHealthUrl = url; remoteHealthBudget = timeoutMs; remoteHardBudget = hardBudget; };
         startNativeClient = async origin => { remoteNativeOrigin = origin; return { ready: Promise.resolve() }; };
         waitForNativeHostReady = async () => {};
         closeStartupWindow = () => {};
@@ -456,11 +462,134 @@ test('service-connected Unity startup and exit never own or stop the collector',
     await desktop.run('launchApplication()');
     assert.equal(desktop.run('remoteNativeOrigin'), desktop.gateway.origin);
     assert.equal(desktop.run('remoteHealthUrl'), desktop.gateway.origin+'/api/health');
+    assert.equal(desktop.run('remoteHealthBudget'), 15000);
+    assert.equal(desktop.run('remoteHardBudget'), false);
     assert.equal(desktop.gateway.options.backendOrigin,'http://127.0.0.1:3901');
     assert.ok(desktop.gateway.options.portFile.endsWith('ui-gateway.json'));
     await desktop.run('stopBackend()');
     await desktop.run('displayGateway.close()');assert.equal(desktop.gateway.closed,true);
     assert.equal(desktop.spawnCalls, 0);
+});
+
+test('installed local collector startup advertises its bounded wait and cannot start Unity before readiness', async () => {
+    const backendOrigin = 'http://127.0.0.1:3001';
+    const desktop = loadDesktop({ deploymentConfig: { mode: 'client', backendOrigin },
+        startupServiceConfig: { version: 1, serviceName: 'HeatTreatmentCollector', port: 3001, backendOrigin } });
+    desktop.run(`
+        createStartupWindow = async () => {};
+        initializeWritableData = () => ({ logsDir: 'unit-test-logs' });
+        guardLogStream = stream => stream;
+        startLogMaintenance = () => {};
+        configureAutoStart = () => {};
+        readStartupAppearance = async () => ({});
+        applyStartupAppearance = async () => {};
+        startDesktopControlServer = async () => {};
+        createTray = () => {};
+        startBackend = () => { throw new Error('client must not start backend/service'); };
+        findAvailablePort = () => { throw new Error('client must not allocate backend ports'); };
+        startDesktopSettingsSync = () => { throw new Error('client must not supervise service'); };
+        waitForHealth = (url, timeoutMs, watched, hardBudget) => {
+            localHealthArguments = [url, timeoutMs, watched, hardBudget];
+            return new Promise(resolve => releaseLocalHealth = resolve);
+        };
+        localNativeStarted = false;
+        startNativeClient = async () => { localNativeStarted = true; return { ready: Promise.resolve() }; };
+        waitForNativeHostReady = async () => {};
+        closeStartupWindow = () => {};
+        scheduleSmokeTimers = () => {};
+    `);
+    const launch = desktop.run('launchApplication()');
+    await tick();
+    assert.equal(desktop.run('localNativeStarted'), false);
+    assert.deepEqual(Array.from(desktop.run('localHealthArguments')), [desktop.gateway.origin + '/api/health', 300000, null, true]);
+    assert.match(desktop.run('startupState.steps.find(step => step.id === "backend-health").title'), /等待本机采集服务就绪/);
+    assert.match(desktop.run('startupState.steps.find(step => step.id === "backend-health").detail'), /最多 5 分钟.*不自动重启服务/);
+    assert.equal(desktop.spawnCalls, 0);
+    desktop.run('releaseLocalHealth()'); await launch;
+    assert.equal(desktop.run('localNativeStarted'), true);
+});
+
+function isolatedHealthWait() {
+    let now = 0;
+    class ClockDate extends Date { static now() { return now; } }
+    const requests = [];
+    const transport = { get(url, callback) {
+        const request = new EventEmitter(); request.url = url; request.destroyed = false;
+        request.setTimeout = milliseconds => { request.inactivityTimeoutMs = milliseconds; };
+        request.destroy = error => { if (!request.destroyed) {
+            request.destroyed = true; request.emit('close'); if (error) request.emit('error', error);
+        } };
+        requests.push({ request, respond(statusCode, health, end = true) {
+            const response = new EventEmitter(); response.statusCode = statusCode;
+            response.setEncoding = () => {}; response.destroy = () => { response.destroyed = true; };
+            callback(response); response.emit('data', JSON.stringify(health)); if (end) response.emit('end');
+            return response;
+        } });
+        return request;
+    } };
+    const desktop = loadDesktop({ healthTransport: transport, clockDate: ClockDate });
+    desktop.run("deployment = { mode:'client' }");
+    return { desktop, requests, advanceTo: value => { now = value; },
+        wait: () => desktop.run("waitForHealth('http://127.0.0.1:34123/api/health', 300000, null, true)") };
+}
+
+const readyCollectorHealth = { status: 'ok', db: { connected: true },
+    runtime: { role: 'collector', owner: 'windows-service', serviceName: 'HeatTreatmentCollector' } };
+
+test('extended local wait still requires HTTP status, database readiness and exact collector ownership', async () => {
+    for (const [status, health] of [[503, readyCollectorHealth], [200, { ...readyCollectorHealth, status: 'starting' }],
+        [200, { ...readyCollectorHealth, db: { connected: false } }]]) {
+        const f = isolatedHealthWait(), waiting = f.wait(); let passed = false;
+        waiting.then(() => { passed = true; }, () => {});
+        f.requests[0].respond(status, health); await tick(); assert.equal(passed, false);
+        f.desktop.timers.find(timer => timer.milliseconds === 300000).callback();
+        await assert.rejects(waiting, /等待本机采集服务就绪超过 5 分钟/);
+    }
+    for (const runtime of [{ ...readyCollectorHealth.runtime, role: 'display' },
+        { ...readyCollectorHealth.runtime, owner: 'desktop' }, { ...readyCollectorHealth.runtime, serviceName: 'OtherService' }]) {
+        const f = isolatedHealthWait(), waiting = f.wait();
+        f.requests[0].respond(200, { ...readyCollectorHealth, runtime });
+        await assert.rejects(waiting, /不是独立采集服务/);
+    }
+    const f = isolatedHealthWait(), waiting = f.wait();
+    f.requests[0].respond(200, readyCollectorHealth); await waiting;
+    assert.ok(f.desktop.timers.find(timer => timer.milliseconds === 300000).cleared);
+});
+
+test('local hard budget destroys hanging requests, clears retries and cannot accept a late healthy response', async () => {
+    const f = isolatedHealthWait(), waiting = f.wait();
+    assert.equal(f.requests[0].request.inactivityTimeoutMs, 1500);
+    f.requests[0].respond(503, {}, true);
+    const retry = f.desktop.timers.find(timer => timer.milliseconds === 300);
+    f.desktop.timers.find(timer => timer.milliseconds === 300000).callback();
+    await assert.rejects(waiting, /未自动重启服务/);
+    assert.equal(f.requests[0].request.destroyed, true); assert.equal(retry.cleared, true);
+    const late = f.requests[0].respond(200, readyCollectorHealth);
+    assert.equal(late.destroyed, true); retry.callback(); assert.equal(f.requests.length, 1);
+    const stalled = isolatedHealthWait(), stalledWait = stalled.wait();
+    stalled.requests[0].respond(200, readyCollectorHealth, false);
+    stalled.desktop.timers.find(timer => timer.milliseconds === 300000).callback();
+    await assert.rejects(stalledWait, /超过 5 分钟/);
+    assert.equal(stalled.requests[0].request.destroyed, true);
+});
+
+test('local budget rejects a healthy response received after the deadline even before the timer callback runs', async () => {
+    const f = isolatedHealthWait(), waiting = f.wait(); f.advanceTo(300001);
+    f.requests[0].respond(200, readyCollectorHealth);
+    await assert.rejects(waiting, /超过 5 分钟/);
+    assert.equal(f.requests[0].request.destroyed, true);
+});
+
+test('paired request/response errors schedule only one local collector retry per HTTP attempt', async () => {
+    const f = isolatedHealthWait(), waiting = f.wait();
+    const response = f.requests[0].respond(200, {}, false);
+    f.requests[0].request.emit('error', new Error('connection reset'));
+    response.emit('error', new Error('response aborted'));
+    response.emit('end');
+    assert.equal(f.desktop.timers.filter(timer => timer.milliseconds === 300).length, 1);
+    f.desktop.timers.find(timer => timer.milliseconds === 300).callback();
+    assert.equal(f.requests.length, 2);
+    f.requests[1].respond(200, readyCollectorHealth); await waiting;
 });
 
 test('a health-timeout recovery reaps the failed attempt before scheduling another', async () => {

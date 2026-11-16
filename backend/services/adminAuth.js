@@ -142,7 +142,7 @@ function createAdminAuth(options = {}) {
         if (!sessionsDirty) return;
         // Only hashes of browser bearer tokens are stored. Native handoffs and
         // single-use tickets are process-local and cannot be replayed on restart.
-        const rows = [...sessions].filter(([, session]) => !session.parentSessionKey);
+        const rows = [...sessions].filter(([, session]) => !session.parentSessionKey && !session.displayOnly);
         const temporary = `${sessionsFilename}.${crypto.randomBytes(8).toString('hex')}.tmp`;
         try {
             fs.mkdirSync(path.dirname(sessionsFilename), { recursive: true });
@@ -208,7 +208,7 @@ function createAdminAuth(options = {}) {
     }
 
     function adminActive(session) {
-        return !!session && !session.adminLocked && now() < sessionExpiry(session);
+        return !!session && !session.displayOnly && !session.adminLocked && now() < sessionExpiry(session);
     }
 
     function prune() {
@@ -250,7 +250,7 @@ function createAdminAuth(options = {}) {
             saveSessions();
             return null;
         }
-        if (session.userId !== 'owner' && !config.users.some(user => user.id === session.userId && user.enabled !== false)) {
+        if (!session.displayOnly && session.userId !== 'owner' && !config.users.some(user => user.id === session.userId && user.enabled !== false)) {
             sessions.delete(key);
             sessionsDirty = true;
             saveSessions();
@@ -261,6 +261,7 @@ function createAdminAuth(options = {}) {
 
     function principal(session) {
         if (!session) return null;
+        if (session.displayOnly) return { id: 'local-display', username: 'local-display', displayName: '实时大屏', role: 'display' };
         if (session.userId === 'owner') return { id: 'owner', username: 'admin', displayName: '系统管理员', role: 'owner' };
         const user = config.users.find(item => item.id === session.userId);
         return user ? { id: user.id, username: user.username, displayName: user.displayName || user.username, role: publicRole(user.role) } : null;
@@ -268,6 +269,7 @@ function createAdminAuth(options = {}) {
 
     function permissionsForSession(session) {
         if (!session) return permissionsForRole('');
+        if (session.displayOnly) return { view: true, launch: true, edit: false, manageUsers: false, cast: false, backup: false };
         if (session.userId === 'owner') return permissionsForRole('owner');
         const user = config.users.find(item => item.id === session.userId);
         return user
@@ -288,6 +290,7 @@ function createAdminAuth(options = {}) {
             configured: !!config.password,
             authenticated,
             displayAuthenticated: !!session,
+            ...(session?.displayOnly ? { displayOnly: true } : {}),
             pagePermissions: activePagePermissions,
             ...(authenticated ? { pageCatalog: getAdminPageCatalog() } : {}),
             canAccessAdmin: authenticated && canAccessAdmin(activePagePermissions),
@@ -324,10 +327,11 @@ function createAdminAuth(options = {}) {
         return { ...session, role, userId: session.userId };
     }
 
-    function issueSession(previousToken, userId = 'owner', parentToken = '') {
+    function issueSession(previousToken, userId = 'owner', parentToken = '', displayOnly = false) {
         prune();
         const previousKey = tokenKey(previousToken);
         const previous = sessions.get(previousKey);
+        if (displayOnly && sessions.size >= 64 && !previous) throw authError(429, 'DISPLAY_SESSION_LIMIT', '本机展示会话过多，请稍后重试', 30);
         sessions.delete(previousKey);
         while (sessions.size >= 64) sessions.delete(sessions.keys().next().value);
         const token = crypto.randomBytes(32).toString('hex');
@@ -335,6 +339,7 @@ function createAdminAuth(options = {}) {
         const issuedAt = now();
         sessions.set(key, {
             userId,
+            ...(displayOnly ? { displayOnly: true, adminLocked: true } : {}),
             ...(parentToken ? { parentSessionKey: tokenKey(parentToken) } : {}),
             csrfToken: crypto.randomBytes(32).toString('hex'),
             issuedAt,
@@ -389,23 +394,39 @@ function createAdminAuth(options = {}) {
         finally { passwordOperationBusy = false; }
     }
 
+    function issueNativeGrant(token, displayOnly = false) {
+        if (nativeConfirmations.size >= 64 || nativeTickets.size >= 64) throw authError(429, 'NATIVE_TICKET_LIMIT', '大屏连接操作过于频繁，请稍后再试', 30);
+        const ticket = crypto.randomBytes(32).toString('hex');
+        const key = tokenKey(ticket), expiresAt = now() + 30000;
+        const confirmation = { sourceSessionKey: tokenKey(token), childSessionKey: '', expiresAt,
+            timer: setTimeout(() => { nativeConfirmations.delete(key); nativeTickets.delete(key); }, 30000) };
+        confirmation.timer.unref?.(); nativeConfirmations.set(key, confirmation);
+        nativeTickets.set(key, { sourceToken: token, sourceSessionKey: tokenKey(token), expiresAt, displayOnly });
+        return { ticket, expiresAt };
+    }
+
     return {
         status,
         requireSession,
+        bootstrapDisplay(previousToken = '') {
+            const existing = getSession(previousToken);
+            if (existing?.displayOnly && !existing.parentSessionKey) return { token: previousToken, status: status(previousToken) };
+            // Process-local display identities are not accounts, never unlock
+            // administration and never evict an engineer's session at capacity.
+            if (sessions.size >= 64) throw authError(429, 'DISPLAY_SESSION_LIMIT', '本机展示会话过多，请稍后重试', 30);
+            return issueSession('', 'local-display', '', true);
+        },
+        createDisplayTicket(token, csrfToken) {
+            const session = requireSession(token, csrfToken, { permission: { all: ['launch', 'view'] } });
+            if (session.displayOnly !== true || session.parentSessionKey) throw authError(403, 'DISPLAY_SESSION_REQUIRED', '需要本机只读展示会话');
+            return issueNativeGrant(token, true);
+        },
         createNativeTicket(token, csrfToken) {
             const session = requireSession(token, csrfToken, { permission: { all: ['session', 'launch', 'view'] } });
             if (!permissionsForSession(session).view) {
                 throw authError(403, 'ADMIN_PERMISSION_DENIED', '当前账户没有查看大屏的权限');
             }
-            if (nativeConfirmations.size >= 64 || nativeTickets.size >= 64) throw authError(429, 'NATIVE_TICKET_LIMIT', '大屏连接操作过于频繁，请稍后再试', 30);
-            const ticket = crypto.randomBytes(32).toString('hex');
-            const key = tokenKey(ticket), expiresAt = now() + 30000;
-            const confirmation = { sourceSessionKey: tokenKey(token), childSessionKey: '', expiresAt,
-                timer: setTimeout(() => { nativeConfirmations.delete(key); nativeTickets.delete(key); }, 30000) };
-            confirmation.timer.unref?.();
-            nativeConfirmations.set(key, confirmation);
-            nativeTickets.set(key, { sourceToken: token, sourceSessionKey: tokenKey(token), expiresAt });
-            return { ticket, expiresAt };
+            return issueNativeGrant(token);
         },
         exchangeNativeTicket(ticket, previousToken = '') {
             prune();
@@ -416,13 +437,13 @@ function createAdminAuth(options = {}) {
                 throw authError(401, 'NATIVE_TICKET_INVALID', '大屏登录凭据已失效，请重新切换到实时大屏');
             }
             const source = getSession(grant.sourceToken);
-            if (!source || !adminActive(source)) throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台会话已锁定，请重新登录');
+            if (!source || (grant.displayOnly ? source.displayOnly !== true : !adminActive(source))) throw authError(401, 'ADMIN_AUTH_REQUIRED', '后台会话已锁定，请重新登录');
             const permissions = permissionsForSession(source);
             if (!permissions.launch || !permissions.view) {
                 throw authError(403, 'ADMIN_PERMISSION_DENIED', '当前账户没有启动大屏的权限');
             }
             const previous = sessions.get(tokenKey(previousToken));
-            const result = issueSession(previous?.parentSessionKey ? previousToken : '', source.userId, grant.sourceToken);
+            const result = issueSession(previous?.parentSessionKey ? previousToken : '', source.userId, grant.sourceToken, grant.displayOnly === true);
             const confirmation = nativeConfirmations.get(key);
             if (confirmation) confirmation.childSessionKey = tokenKey(result.token);
             return result;
