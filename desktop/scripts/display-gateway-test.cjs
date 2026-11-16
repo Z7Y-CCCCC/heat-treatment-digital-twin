@@ -1,7 +1,7 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),http=require('node:http'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {WebSocket,WebSocketServer}=require('../../backend/node_modules/ws');
-const {startDisplayGateway}=require('../displayGateway.cjs');
+const {startDisplayGateway,gatewayListenError}=require('../displayGateway.cjs');
 const {collectorCenterExecutable}=require('../collectorLocation.cjs');
 async function fixture(t){
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'display-gateway-'));fs.writeFileSync(path.join(root,'index.html'),'DISPLAY_OWN_UI');fs.mkdirSync(path.join(root,'assets'));fs.writeFileSync(path.join(root,'assets','app.js'),'DISPLAY_JS');
@@ -51,11 +51,75 @@ test('center discovery ignores the display cache; machine config is authoritativ
     assert.throws(()=>collectorCenterExecutable({projectRoot:root,env}),/独立/,'never fall back to a second runtime');
 });
 
-test('display UI origin survives restart; a busy saved port fails visibly instead of losing origin-scoped drafts',async t=>{
-    const f=await fixture(t),portFile=path.join(f.root,'profile/ui-gateway.json');
-    const first=await startDisplayGateway({backendOrigin:f.upstream,frontendDir:f.root,portFile}),origin=first.origin;await first.close();
-    const second=await startDisplayGateway({backendOrigin:f.upstream,frontendDir:f.root,portFile});assert.equal(second.origin,origin);
-    await assert.rejects(startDisplayGateway({backendOrigin:f.upstream,frontendDir:f.root,portFile}),/已被占用/);
-    await second.close();assert.equal(JSON.parse(fs.readFileSync(portFile)).port,Number(new URL(origin).port));
-    fs.writeFileSync(portFile,'malformed');await assert.rejects(startDisplayGateway({backendOrigin:f.upstream,frontendDir:f.root,portFile}));assert.equal(fs.readFileSync(portFile,'utf8'),'malformed');
+
+async function configFixture(t) {
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'display-port-recovery-'));
+    t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    fs.writeFileSync(path.join(root,'index.html'),'DISPLAY_OWN_UI');
+    const portFile=path.join(root,'ui-gateway.json');
+    return {root,portFile,start:()=>startDisplayGateway({backendOrigin:'http://127.0.0.1:3001',frontendDir:root,portFile})};
+}
+test('stable saved UI port is reused; occupied port switches but gates UI/WS until state recovery',async t=>{
+    const f=await configFixture(t),first=await f.start(),origin=first.origin;await first.close();
+    const second=await f.start();t.after(()=>second.close());assert.equal(second.origin,origin);
+    const recovered=await f.start();t.after(()=>recovered.close());assert.notEqual(recovered.origin,origin);
+    assert.deepEqual(recovered.originMigration,{fromOrigin:origin,toOrigin:recovered.origin});
+    assert.equal((await fetch(recovered.origin+'/admin')).status,503);
+    assert.equal((await fetch(recovered.origin+'/api/health')).status,503);
+    const ws=new WebSocket(recovered.origin.replace('http:','ws:')+'/ws');
+    await new Promise(resolve=>ws.once('error',resolve));assert.notEqual(ws.readyState,WebSocket.OPEN);
+    assert.equal((await fetch(origin+'/admin')).status,200,'old owner stays alive');
+    const pending=JSON.parse(fs.readFileSync(f.portFile));assert.equal(pending.pendingOriginMigration.fromPort,Number(new URL(origin).port));
+    assert.equal(fs.readdirSync(path.join(f.root,'recovery')).length,1);
+    await recovered.completeOriginMigration();assert.equal((await fetch(recovered.origin+'/admin')).status,200);
+    assert.equal(JSON.parse(fs.readFileSync(f.portFile)).pendingOriginMigration,undefined);
+    const nextOrigin=recovered.origin;await recovered.close();const restart=await f.start();t.after(()=>restart.close());assert.equal(restart.origin,nextOrigin);
+});
+test('saved EACCES retries by binding port zero directly; original config backed up',async t=>{
+    const f=await configFixture(t),saved=JSON.stringify({version:1,port:64974});fs.writeFileSync(f.portFile,saved);
+    const server=http.createServer(),original=server.listen,baselineListening=server.listenerCount('listening');let attempts=0;
+    t.mock.method(server,'listen',function(port,host){
+        assert.equal(host,'127.0.0.1');attempts++;
+        if(attempts===1){assert.equal(port,64974);process.nextTick(()=>this.emit('error',Object.assign(new Error('denied'),{code:'EACCES'})));return this;}
+        assert.equal(port,0);return original.call(this,port,host);
+    });
+    t.mock.method(http,'createServer',()=>server);
+    const gateway=await f.start();t.after(()=>gateway.close());assert.equal(attempts,2);
+    assert.equal(server.listenerCount('listening'),baselineListening,'failed listen has no stale callback');
+    assert.equal(gateway.originMigration.fromOrigin,'http://127.0.0.1:64974');
+    assert.equal(fs.readFileSync(path.join(f.root,'recovery',fs.readdirSync(path.join(f.root,'recovery'))[0]),'utf8'),saved);
+    await gateway.completeOriginMigration();assert.equal(JSON.parse(fs.readFileSync(f.portFile)).port,Number(new URL(gateway.origin).port));
+});
+test('pending recovery survives restart and repeated collision retains ORIGINAL draft source',async t=>{
+    const f=await configFixture(t),owner=await f.start();t.after(()=>owner.close());
+    const first=await f.start(),migration=first.originMigration;await first.close();
+    const resumed=await f.start();assert.deepEqual(resumed.originMigration,migration);await resumed.close();
+    const blocker=http.createServer((req,res)=>res.end('unrelated'));await new Promise(r=>blocker.listen(Number(new URL(migration.toOrigin).port),'127.0.0.1',r));t.after(()=>new Promise(r=>blocker.close(r)));
+    const retry=await f.start();t.after(()=>retry.close());assert.equal(retry.originMigration.fromOrigin,owner.origin);
+    assert.notEqual(retry.origin,migration.toOrigin);assert.equal((await fetch(retry.origin)).status,503);
+});
+test('config corruption and malformed pending records fail without overwriting',async t=>{
+    const f=await configFixture(t);
+    for(const invalid of ['malformed',JSON.stringify({version:1,port:12000,pendingOriginMigration:null}),
+        JSON.stringify({version:1,port:12000,pendingOriginMigration:{fromPort:12001,toPort:12002}}),
+        JSON.stringify({version:1,port:12000,pendingOriginMigration:false})]){
+        fs.writeFileSync(f.portFile,invalid);await assert.rejects(f.start());assert.equal(fs.readFileSync(f.portFile,'utf8'),invalid);
+    }
+});
+test('migration acknowledgement refuses a concurrently changed config and keeps business UI gated',async t=>{
+    const f=await configFixture(t),owner=await f.start();t.after(()=>owner.close());
+    const gateway=await f.start();t.after(()=>gateway.close());const changed='{"version":1,"port":18082}';fs.writeFileSync(f.portFile,changed);
+    await assert.rejects(gateway.completeOriginMigration(),/其他操作/);assert.equal(fs.readFileSync(f.portFile,'utf8'),changed);
+    assert.equal((await fetch(gateway.origin)).status,503);
+});
+test('unknown listen error does not fallback or change original config; exhausted fallback is bounded',async t=>{
+    const f=await configFixture(t),saved=JSON.stringify({version:1,port:64974});fs.writeFileSync(f.portFile,saved);
+    const server=http.createServer(),baselineListening=server.listenerCount('listening'),baselineErrors=server.listenerCount('error');let attempts=0,code='EIO';
+    t.mock.method(server,'listen',function(){attempts++;process.nextTick(()=>this.emit('error',Object.assign(new Error(code),{code})));return this;});
+    t.mock.method(http,'createServer',()=>server);
+    await assert.rejects(f.start(),{code:'EIO'});assert.equal(attempts,1);assert.equal(fs.readFileSync(f.portFile,'utf8'),saved);
+    code='EACCES';attempts=0;await assert.rejects(f.start(),{code:'DISPLAY_UI_PORT_DENIED'});
+    assert.equal(attempts,4);assert.equal(server.listenerCount('listening'),baselineListening);assert.equal(server.listenerCount('error'),baselineErrors);
+    assert.equal(fs.readFileSync(f.portFile,'utf8'),saved);
+    const denied=Object.assign(new Error('denied'),{code:'EACCES'});assert.equal(gatewayListenError(denied,64974).cause,denied);
 });

@@ -30,6 +30,8 @@ function inputFingerprint() {
         }
     }
     visit(path.dirname(hostProject));
+    visit(path.join(desktopDir, 'ui-origin'));
+    visit(path.join(desktopDir, 'uiOriginRecovery.cjs'));
     visit(path.join(projectDir, 'shared', 'DependencyArchive.cs'));
     visit(path.join(desktopDir, 'assets', 'icon.ico'));
     visit(path.join(projectDir, 'frontend', 'public', 'loading', 'industrial-factory.png'));
@@ -79,6 +81,7 @@ for (const required of [
 }
 
 console.log(`Unity 内嵌后台宿主已生成：${executable}`);
+require('../uiOriginRecovery.cjs').writeUiOriginRecoveryMarker(outputDirectory);
 // Include restored NuGet state in the fingerprint written after publish.
 fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
 fs.writeFileSync(cacheFile, JSON.stringify({

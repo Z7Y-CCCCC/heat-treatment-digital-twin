@@ -19,6 +19,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="..\desktop\ui-origin\snapshot.js" LogicalName="snapshot.js" />
+    <EmbeddedResource Include="..\desktop\ui-origin\transfer.js" LogicalName="transfer.js" />
     <Compile Include="..\shared\DependencyArchive.cs" Link="DependencyArchive.cs" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
     <EmbeddedResource Include="..\frontend\public\loading\industrial-factory.png" LogicalName="HeatTreatmentAdminHost.LoadingFactory.png" />

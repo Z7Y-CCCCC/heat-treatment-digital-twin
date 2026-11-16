@@ -54,6 +54,14 @@ const empty = () => ({ lines: [], placements: [], devices: [], grounds: [] });
     const placementOnly = empty(); placementOnly.placements = body.placements;
     ok(allowsRequirement(apiPermission('/api/workshop-arrangement', 'PUT', placementOnly), { active: true, pagePermissions: grants }));
     ok(!allowsRequirement(apiPermission('/api/workshop-arrangement', 'PUT', empty()), { owner: true, active: true }));
+    // Confirmed yaw/depth correction remains a narrow layout transaction.
+    const automaticBefore=f.sql.prepare('SELECT * FROM devices WHERE id=?').get(cart.id),automatic=empty();
+    automatic.devices.push({id:cart.id,expected:expected(automaticBefore),value:{rotation_y:Math.PI,pos_z:Number(automaticBefore.pos_z)+.125}});
+    assert.equal((await f.request('/api/workshop-arrangement','PUT',automatic)).status,200);checks++;
+    const automaticAfter=f.sql.prepare('SELECT * FROM devices WHERE id=?').get(cart.id);
+    assert.equal(automaticAfter.rotation_y,Math.PI);assert.equal(automaticAfter.pos_z,Number(automaticBefore.pos_z)+.125);checks++;
+    for(const key of Object.keys(automaticBefore))if(!['rotation_y','pos_z'].includes(key))assert.deepEqual(automaticAfter[key],automaticBefore[key]);checks++;
+    assert.deepEqual(f.sql.prepare('SELECT * FROM data_points ORDER BY id').all(),beforePoints);checks++;
     console.log(JSON.stringify({ success: true, checks, atomicCommit: true, conflictsKeepDraft: true, noPlcOrBindingWrites: true, scopeAndPermissionIsolation: true }));
   } finally { await f.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

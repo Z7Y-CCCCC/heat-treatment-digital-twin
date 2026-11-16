@@ -15,10 +15,12 @@ const props = defineProps({
 })
 const emit = defineEmits(['action'])
 const root = ref(null), panel = ref(null), activeKind = ref('devices')
-const panelStyle = ref({})
+const panelStyle = ref({}), bridgeStyle = ref({})
+let geometryObserver
 const hovered = ref(false), focused = ref(false), pinned = ref(false), dismissed = ref(false)
 const panelId = `admin-service-connections-${useId()}`
 const serviceNames = { unity: 'Unity', devices: '设备采集', data: '数据服务', session: '登录状态' }
+const managementScopes = { devices: '管理范围：设备连接、采集进程、点位与读数质量', data: '管理范围：后台 API、数据库与大屏数据通道' }
 const actionIds = new Set(['check', 'reconnect', 'restart', 'center', 'unlock'])
 const tones = new Set(['is-online', 'is-offline', 'is-partial', 'is-unknown', 'is-busy', 'is-checking'])
 const visible = computed(() => !dismissed.value && (hovered.value || focused.value || pinned.value))
@@ -83,12 +85,19 @@ function enter(kind = 'devices') {
 }
 function leave() { hovered.value = false }
 function focusIn(kind = 'devices') {
+  // Focus restoration and pointer hover are not a request to change the
+  // selected service. An explicit click/ArrowDown/Enter can still switch it.
+  if (pinned.value && activeKind.value !== kind) return
   if (activeKind.value !== kind) pinned.value = false
   activeKind.value = kind; focused.value = true; dismissed.value = false
 }
 function focusOut(event) {
+  // Chromium can blur a disabled action with no relatedTarget. Keep the
+  // deliberately selected panel, rather than reverting to a hover menu.
+  if (!event.relatedTarget && pinned.value) { focused.value = false; return }
   if (!root.value?.contains(event.relatedTarget)) { focused.value = false; pinned.value = false; hovered.value = false }
 }
+function pinPanel() { pinned.value = true; dismissed.value = false }
 function close(restoreFocus = false) {
   pinned.value = false
   if (restoreFocus) root.value?.querySelector?.(`[data-connection-kind="${activeKind.value}"]`)?.focus()
@@ -108,32 +117,57 @@ function keys(event) {
 }
 async function triggerKeys(event, kind) {
   if (event.key !== 'ArrowDown') return
-  event.preventDefault(); focusIn(kind); pinned.value = true
+  event.preventDefault(); activeKind.value = kind; dismissed.value = false; focused.value = true; pinned.value = true
   await nextTick()
   panel.value?.querySelector?.('[data-connection-action]:not(:disabled)')?.focus()
 }
 function runAction(action) {
+  const owner = activeKind.value
   const allowed = panelActions.value.find(item => item.id === action?.id)
   if (!allowed || allowed.disabled || activeBusy.value) return
-  emit('action', { kind: activeKind.value, action: allowed.id })
+  // Reserve the owner before the parent starts an async operation or a modal.
+  // Moving the pointer over another pill must not redirect this menu/feedback.
+  pinPanel()
+  emit('action', { kind: owner, action: allowed.id })
 }
 function positionPanel() {
+  if (!visible.value) return
   const bounds = root.value?.getBoundingClientRect?.()
-  if (!bounds || !window.innerWidth || !window.innerHeight) return
+  const anchor = root.value?.querySelector?.(`[data-connection-kind="${activeKind.value}"]`)?.getBoundingClientRect?.()
+  if (!bounds || !anchor || !window.innerWidth || !window.innerHeight) return
   const width = Math.min(320, window.innerWidth - 24)
-  const left = Math.max(12, Math.min(bounds.right - width, window.innerWidth - width - 12))
-  panelStyle.value = { right: `${bounds.right - left - width}px`, maxHeight: `${Math.max(40, window.innerHeight - bounds.bottom - 22)}px` }
+  const desiredLeft = (anchor.left + anchor.right - width) / 2
+  const left = Math.max(12, Math.min(desiredLeft, window.innerWidth - width - 12))
+  const top = anchor.bottom + 10
+  // Anchor to the selected pill, not the right/bottom of the whole flex group.
+  // The latter also put first-row menus below unrelated second-row pills.
+  panelStyle.value = { left: `${left - bounds.left}px`, top: `${top - bounds.top}px`,
+    maxHeight: `${Math.max(40, window.innerHeight - top - 12)}px` }
+  bridgeStyle.value = { left: `${anchor.left - bounds.left}px`, top: `${anchor.bottom - bounds.top}px`, width: `${anchor.right - anchor.left}px` }
 }
 function resume() {
   window.addEventListener('pointerdown', outside); window.addEventListener('keydown', keys)
   window.addEventListener('resize', positionPanel)
+  window.addEventListener('scroll', positionPanel, true)
+  if (!geometryObserver && window.ResizeObserver && root.value) {
+    geometryObserver = new window.ResizeObserver(positionPanel)
+    geometryObserver.observe(root.value)
+    for (const kind of Object.keys(serviceNames)) {
+      const pill = root.value.querySelector?.(`[data-connection-kind="${kind}"]`)
+      if (pill) geometryObserver.observe(pill)
+    }
+  }
+  positionPanel()
 }
 function suspend() {
   hovered.value = false; focused.value = false; pinned.value = false; dismissed.value = false
   window.removeEventListener('pointerdown', outside); window.removeEventListener('keydown', keys)
   window.removeEventListener('resize', positionPanel)
+  window.removeEventListener('scroll', positionPanel, true)
+  geometryObserver?.disconnect(); geometryObserver = null
 }
 watch(visible, async value => { if (value) { await nextTick(); positionPanel() } })
+watch(activeKind, async () => { if (visible.value) { await nextTick(); positionPanel() } })
 watch(deviceMode, () => { if (activeKind.value === 'devices') close() })
 // Disabling a focused action blurs it in Chromium. Move focus before the DOM
 // update so a pending operation cannot unexpectedly dismiss its own feedback.
@@ -151,18 +185,20 @@ onBeforeUnmount(suspend)
 <template>
   <div ref="root" class="admin-connection-controls" :class="{ 'is-open': visible }" @mouseleave="leave" @focusout="focusOut">
     <button v-for="service in services" :key="service.key" type="button" class="admin-connection-pill" :class="[service.tone, `${service.key}-connection-pill`]" :data-connection-kind="service.key" :title="ariaLabel(service)" :aria-label="ariaLabel(service)" aria-haspopup="dialog" :aria-expanded="visible && activeKind === service.key" :aria-controls="panelId" @mouseenter="enter(service.key)" @focus="focusIn(service.key)" @click="toggle(service.key)" @keydown="triggerKeys($event, service.key)">
-      <ServiceConnectionIcon :name="service.key" /><ConnectionPlugIcon :connected="service.connected" />
+      <span class="connection-service-name">{{ service.name }}</span><ConnectionPlugIcon :connected="service.connected" />
     </button>
-    <section v-if="visible" :id="panelId" ref="panel" class="admin-service-connection-panel admin-device-connection-tooltip" :style="panelStyle" role="dialog" aria-modal="false" :aria-label="`${activeService.name}连接状态与操作`" :aria-busy="activeBusy" @focusin="focused = true">
+    <div v-if="visible" class="connection-hover-bridge" :style="bridgeStyle" aria-hidden="true"></div>
+    <section v-if="visible" :key="activeKind" :id="panelId" ref="panel" class="admin-service-connection-panel admin-device-connection-tooltip" :data-connection-panel-kind="activeKind" :style="panelStyle" role="dialog" aria-modal="false" :aria-label="`${activeService.name}连接状态与操作`" :aria-busy="activeBusy" @pointerdown="pinPanel" @focusin="focused = true; pinPanel()">
       <header>
         <strong>{{ activeService.name }}</strong>
         <button type="button" class="connection-icon-action connection-close" title="关闭连接面板" aria-label="关闭连接面板" @click="close(true)"><ServiceConnectionIcon name="close" /></button>
       </header>
+      <p v-if="managementScopes[activeKind]" class="connection-detail connection-management-scope">{{ managementScopes[activeKind] }}</p>
       <div class="connection-status-line" :class="activeService.tone"><ConnectionPlugIcon :connected="activeService.connected" /><strong>{{ activeService.label }}</strong></div>
       <p v-if="activeService.detail" class="connection-detail">{{ activeService.detail }}</p>
       <p class="connection-last-success"><span>最近成功通信</span><time :datetime="communicationDatetime(activeService.lastSuccessAt)">{{ communicationTime(activeService.lastSuccessAt) }}</time></p>
       <div v-if="panelActions.length" class="connection-actions" :aria-label="`${activeService.name}可用操作`">
-        <button v-for="action in panelActions" :key="action.id" type="button" class="connection-icon-action" :class="{ 'is-dangerous': action.dangerous || action.id === 'restart' }" :data-connection-action="action.id" :disabled="action.disabled || activeBusy" :title="action.reason ? `${action.label}：${action.reason}` : action.label" :aria-label="action.reason ? `${action.label}：${action.reason}` : action.label" @click="runAction(action)">
+        <button v-for="action in panelActions" :key="`${activeKind}:${action.id}`" type="button" class="connection-icon-action" :class="{ 'is-dangerous': action.dangerous || action.id === 'restart' }" :data-connection-action="action.id" :disabled="action.disabled || activeBusy" :title="action.reason ? `${action.label}：${action.reason}` : action.label" :aria-label="action.reason ? `${action.label}：${action.reason}` : action.label" @click="runAction(action)">
           <ServiceConnectionIcon :name="activeBusy ? 'spinner' : action.id" />
         </button>
       </div>
@@ -181,8 +217,8 @@ onBeforeUnmount(suspend)
 </template>
 
 <style scoped>
-.admin-connection-controls{display:flex;position:relative;align-items:center;gap:8px;flex:0 0 auto;flex-wrap:wrap}
-.admin-connection-controls.is-open::after{content:'';position:absolute;left:0;right:0;top:100%;height:11px;z-index:1499}
+.admin-connection-controls{display:flex;position:relative;align-items:center;gap:8px;flex:0 1 auto;min-width:0;max-width:100%;flex-wrap:wrap}
+.connection-hover-bridge{position:absolute;height:11px;z-index:1499}
 .admin-connection-pill{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:4px 10px;border:1px solid #dfe3e8;border-radius:999px;background:#f2f4f7;color:#667085;font:inherit;font-size:calc(12px * var(--admin-font-scale,1));font-weight:600;line-height:1;white-space:nowrap;cursor:pointer;box-sizing:border-box}
 .admin-connection-pill:focus-visible,.connection-icon-action:focus-visible,.device-connection-list:focus-visible{outline:2px solid #4285db;outline-offset:3px}
 .is-online{color:#176b3a}.is-offline{color:#b42318}.is-partial{color:#936208}.is-unknown{color:#667085}
@@ -191,7 +227,7 @@ onBeforeUnmount(suspend)
 .admin-connection-pill.is-partial{background:#fff7df;border-color:#ead29b}
 .admin-connection-pill.is-unknown{background:#f2f4f7;border-color:#dfe3e8}
 .admin-connection-pill.is-busy,.admin-connection-pill.is-checking{color:#17628a;background:#eaf5fb;border-color:#bedfed}
-.admin-service-connection-panel{position:absolute;right:0;top:calc(100% + 10px);z-index:1500;width:min(320px,calc(100vw - 24px));max-height:calc(100dvh - 110px);overflow:auto;overscroll-behavior:contain;padding:12px;border:1px solid #dfe5ee;border-radius:10px;background:#fff;box-shadow:0 12px 34px rgba(20,35,60,.18);color:#344054;font-size:calc(12px * var(--admin-font-scale,1));text-align:left;line-height:1.5;box-sizing:border-box}
+.admin-service-connection-panel{position:absolute;left:0;top:0;z-index:1500;width:min(320px,calc(100vw - 24px));max-height:calc(100dvh - 110px);overflow:auto;overscroll-behavior:contain;padding:12px;border:1px solid #dfe5ee;border-radius:10px;background:#fff;box-shadow:0 12px 34px rgba(20,35,60,.18);color:#344054;font-size:calc(12px * var(--admin-font-scale,1));text-align:left;line-height:1.5;box-sizing:border-box}
 .admin-service-connection-panel::before{content:'';position:absolute;top:-11px;left:0;right:0;height:11px}
 .admin-service-connection-panel header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 4px 8px;border-bottom:1px solid #edf0f5}
 .connection-status-line{display:flex;align-items:center;gap:8px;margin:12px 4px 0}

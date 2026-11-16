@@ -55,8 +55,8 @@
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/11.14.00_升降备料台.glb",
-      "bytes": 815352,
-      "sha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81"
+      "bytes": 820608,
+      "sha256": "7522a9bbf407833a153af26feb67722a34aa8f5b8149e5d0a93c13e28c804281"
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/11.22.00_固定备料台.glb",
@@ -90,8 +90,8 @@
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/sources/11.14.00_升降备料台.blend",
-      "bytes": 205937,
-      "sha256": "d0314698346b0be4ef9bbb085aad93a5e9154f2038951643fd9a6ba31fe785e5"
+      "bytes": 208719,
+      "sha256": "68e37ab74962157d4d0efd0fcc797b360818a32f2de67905ed7850e611d67d2a"
     },
     {
       "path": "backend/assets/models/cad_general_20261103_v1/sources/11.22.00_固定备料台.blend",
@@ -115,8 +115,8 @@
     },
     {
       "path": "backend/assets/models/cad_lifting_load_table_111400.glb",
-      "bytes": 815596,
-      "sha256": "dbe913f90575df3e64dd150c4ec4a7b4fe9dab26a267aa7b7987d33798b6af5a"
+      "bytes": 820884,
+      "sha256": "2a0fab6db631b3642bbfa81cf4be90ec8c127f62d036851b266d5e830b51fffe"
     },
     {
       "path": "backend/assets/models/cad_multipurpose_furnace_082000.glb",

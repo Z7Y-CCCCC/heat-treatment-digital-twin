@@ -6,10 +6,27 @@ const playwright = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const { createRunDirectory, startLoggedProcess, waitUntil } = require('../backend/scripts/integration-test-utils.cjs');
 const { stopOwnedSmokeProcess } = require('../desktop/scripts/smoke-sandbox.cjs');
 const { adminConnectionStatus } = require('../backend/services/adminConnectionStatus');
+const { createServiceControl, collectorCenterViewForPath, collectorCenterArguments } = require('../desktop/serviceControl.cjs');
 const directory = createRunDirectory('admin-connection-status-ui'), checks = [], errors = [];
 let server, browser, page, info, actualSnapshotEvidence, fixtureDevices = [], mode = 'simulation', rowStates = [], unityConnected = true;
 let unitySceneReady = true, databaseConnected = true, statusUnavailable = false, collectionAllowed = true, controlWrites = 0;
+let lockRequests = 0, centerReceiptMode = 'matching';
+const anchorEvidence = [], centerLaunchEvidence = [], centerBridgeEvidence = [], unexpectedNativeActions = [];
+const centerActionPaths = { collector_center_data: '/service/collector-center/data', collector_center_runtime: '/service/collector-center/runtime' };
+// Use the shipped desktop handler and argument mapping, with an owned launch
+// seam only. This never contacts the installed private desktop-control port,
+// opens a real center, or restarts anything. Real native GUI smoke is separate.
+const centerControl = createServiceControl({
+  restart: async () => { throw new Error('No restart is permitted in this owned fixture'); },
+  openCenter: async ({ view }) => {
+    const args = collectorCenterArguments(view);
+    assert.deepEqual(args, ['--open-view', view]);
+    centerLaunchEvidence.push({ view, args, receiptMode: centerReceiptMode });
+    return { opened: true, view: centerReceiptMode === 'matching' ? view : view === 'points' ? 'overview' : 'points' };
+  }
+});
 const mockHits = { native: 0, nativePreview: 0, engine: 0, devices: 0, connections: 0 };
+const serviceNames = { unity: 'Unity', devices: '设备采集', data: '数据服务', session: '登录状态' };
 const pass = name => { checks.push(name); console.log('PASS ' + name); };
 const badge = kind => page.locator(`[data-connection-kind="${kind}"]`);
 const tooltip = () => page.locator('.admin-service-connection-panel[role="dialog"]');
@@ -67,6 +84,30 @@ async function closeTooltip() {
 async function snapshot(name) {
   await page.screenshot({ path: path.join(directory, name), fullPage: false });
 }
+async function expectAnchor(kind) {
+  await page.waitForFunction(owner => {
+    const pill = document.querySelector('[data-connection-kind="' + owner + '"]');
+    const panel = document.querySelector('.admin-service-connection-panel[role="dialog"]');
+    if (!pill || !panel) return false;
+    const trigger = pill.getBoundingClientRect(), box = panel.getBoundingClientRect();
+    const expectedLeft = Math.max(12, Math.min(trigger.left + trigger.width / 2 - box.width / 2, innerWidth - box.width - 12));
+    return Math.abs(box.left - expectedLeft) <= 1.5 && Math.abs(box.top - trigger.bottom - 10) <= 1.5;
+  }, kind);
+  const trigger = await badge(kind).boundingBox(), panel = await tooltip().boundingBox(), viewport = page.viewportSize();
+  const centeredLeft = trigger.x + trigger.width / 2 - panel.width / 2;
+  const expectedLeft = Math.max(12, Math.min(centeredLeft, viewport.width - panel.width - 12));
+  assert.ok(Math.abs(panel.x - expectedLeft) <= 1.5, `${kind} panel centers under its own pill, except the exact 12px screen-edge clamp`);
+  assert.ok(Math.abs(panel.y - trigger.y - trigger.height - 10) <= 1.5, `${kind} panel top is its own pill bottom + 10px`);
+  assert.ok(panel.x >= 0 && panel.x + panel.width <= viewport.width + 1, 'real AdminPanel service menu stays horizontally bounded');
+  assert.ok(panel.y >= 0 && panel.y + panel.height <= viewport.height + 1, 'real AdminPanel service menu stays vertically bounded');
+  anchorEvidence.push({ kind, viewport, trigger, panel, expectedLeft, clamped: Math.abs(centeredLeft - expectedLeft) > 1.5 });
+}
+async function login() {
+  await page.getByRole('textbox', { name: '账号', exact: true }).fill(info.username);
+  await page.getByLabel('后台密码', { exact: true }).fill(info.password);
+  await page.getByRole('button', { name: '解锁后台', exact: true }).click();
+  await badge('unity').waitFor();
+}
 (async () => {
   const infoFile = path.join(directory, 'server.json');
   server = startLoggedProcess(process.execPath, [path.join(__dirname, 'manual-disassembly-ui-server.cjs')], {
@@ -79,10 +120,44 @@ async function snapshot(name) {
   browser = await playwright.chromium.launch({ headless: true,
     ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), args: ['--enable-unsafe-swiftshader'] });
   const context = await browser.newContext({ viewport: { width: 1680, height: 1080 } });
-  await context.addInitScript(() => localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({ activeTab: 'workshops' })));
+  await context.exposeBinding('__ownedServiceControl', async (_source, message) => {
+    assert.equal(_source.page, page, 'only the owned AdminPanel page invokes this fixture bridge');
+    const pathname = centerActionPaths[message.action];
+    if (!pathname) { unexpectedNativeActions.push(message.action); return { success: false, code: 'OWNED_FIXTURE_DENIED' }; }
+    const expectedView = collectorCenterViewForPath(pathname);
+    assert.equal(expectedView, message.action === 'collector_center_data' ? 'points' : 'overview');
+    return new Promise((resolve, reject) => {
+      let status;
+      const response = { writeHead(value) { status = value; }, end(body) {
+        try {
+          const result = JSON.parse(body);
+          centerBridgeEvidence.push({ action: message.action, pathname, expectedView, status, result });
+          resolve({ ...result, ...(status >= 400 ? { code: 'OWNED_LAUNCH_UNCONFIRMED' } : {}) });
+        } catch (error) { reject(error); }
+      } };
+      try { assert.equal(centerControl({ method: 'POST' }, response, pathname), true); }
+      catch (error) { reject(error); }
+    });
+  });
+  await context.addInitScript(() => {
+    localStorage.setItem('digital_twin_admin_ui_state_v1', JSON.stringify({ activeTab: 'workshops' }));
+    const listeners = new Set();
+    window.chrome ||= {};
+    window.chrome.webview = {
+      addEventListener(type, handler) { if (type === 'message') listeners.add(handler); },
+      removeEventListener(type, handler) { if (type === 'message') listeners.delete(handler); },
+      postMessage(message) {
+        if (message?.type !== 'service_connection_action') return;
+        window.__ownedServiceControl(message).then(result => {
+          for (const handler of listeners) handler({ data: { type: 'service_connection_result', requestId: message.requestId, ...result } });
+        });
+      }
+    };
+  });
   page = await context.newPage(); page.setDefaultTimeout(20000); page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => {
     if (request.method() !== 'GET' && /\/api\/(?:engine\/restart|collector\/mode|database)(?:[/?]|$)/.test(request.url())) controlWrites++;
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/admin-auth/lock') lockRequests++;
   });
   // Only this owned page receives controlled state transitions. All login,
   // permission, shell and unrelated requests continue to the owned backend.
@@ -99,9 +174,7 @@ async function snapshot(name) {
   await page.route('**/api/native-preview', route => { mockHits.nativePreview++; return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, unityClients: unityConnected ? 1 : 0 }) }); });
   await page.route('**/api/devices', route => { mockHits.devices++; return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(fixtureDevices) }); });
   await page.goto(info.origin + '/admin');
-  await page.getByRole('textbox', { name: '账号', exact: true }).fill(info.username);
-  await page.getByLabel('后台密码', { exact: true }).fill(info.password);
-  await page.getByRole('button', { name: '解锁后台', exact: true }).click();
+  await login();
   await badge('unity').waitFor(); await badge('devices').waitFor(); await expectTone('is-partial');
   // APIRequestContext is not routed by page.route. This proves the real
   // owned collector also exposes individual simulator snapshot health, not
@@ -136,16 +209,25 @@ async function snapshot(name) {
   await waitUntil(async () => await badge('unity').locator('svg[data-plug-state]').getAttribute('data-plug-state') === 'connected', 12000, 'first Unity status check completes with connected plug');
   assert.equal(await page.locator('[data-connection-kind]').count(), 4);
   for (const kind of ['unity', 'devices', 'data', 'session']) {
-    assert.equal((await badge(kind).innerText()).trim(), '', 'four pills are icon-only');
-    assert.ok((await badge(kind).getAttribute('aria-label')).length > 4, 'icon buttons retain meaningful service labels');
+    assert.equal((await badge(kind).innerText()).trim(), serviceNames[kind], 'four service names are complete and visible');
+    assert.ok((await badge(kind).getAttribute('aria-label')).length > 4, 'named buttons retain meaningful service labels');
     assert.equal((await badge(kind).boundingBox()).height, 32, 'existing 32px capsule height is preserved');
   }
   assert.equal(await page.locator('.admin-connection-strip .admin-connection-pill i').count(), 0, 'old round status dots are gone');
   await expectPlug(badge('unity'), true); await expectPlug(badge('devices'), false);
   await expectPlug(badge('data'), true); await expectPlug(badge('session'), true);
+  for (const viewport of [{ width: 1680, height: 1080 }, { width: 820, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    for (const kind of Object.keys(serviceNames)) {
+      await badge(kind).click(); await tooltip().waitFor(); await expectAnchor(kind);
+      await snapshot('10-anchor-' + kind + '-' + viewport.width + '.png'); await closeTooltip();
+    }
+  }
+  await page.setViewportSize({ width: 1680, height: 1080 });
+  pass('all four menus in the full AdminPanel anchor below their own pill centers at 1680px and 820px widths, with exact screen-edge clamping');
   await openTooltip(); await expectRows(rowStates, true); assert.match(await tooltip().innerText(), /模拟/);
   await snapshot('01-four-icons-simulation-not-green.png');
-  pass('four icon-only 32px capsules use exact service status; real simulator quality remains visible but simulation is amber, never green PLC');
+  pass('four named 32px capsules use exact service status; real simulator quality remains visible but simulation is amber, never green PLC');
 
   rowStates[1] = false; unityConnected = false;
   await expectTone('is-partial');
@@ -223,6 +305,95 @@ async function snapshot(name) {
   assert.equal(controlWrites, writesBefore, 'detect never restarts engine, changes mode or touches database configuration');
   await waitUntil(async () => (await tooltip().innerText()).includes('已重新检测'), 12000, 'read-only check feedback');
   await closeTooltip();
+  // Real AdminPanel async controller + session refresh, not just a component
+  // emission fixture. Hover-open every service then trigger a read-only check.
+  for (const kind of Object.keys(serviceNames)) {
+    await page.mouse.move(5, 5); await badge(kind).hover(); await tooltip().waitFor();
+    assert.equal(await tooltip().getAttribute('data-connection-panel-kind'), kind);
+    const before = mockHits.connections;
+    await tooltip().locator('[data-connection-action="check"]').click();
+    for (const other of Object.keys(serviceNames).filter(other => other !== kind)) {
+      await badge(other).hover();
+      assert.equal(await tooltip().getAttribute('data-connection-panel-kind'), kind, 'adjacent hover cannot replace a live operation menu');
+      assert.equal(await tooltip().locator('header strong').innerText(), serviceNames[kind]);
+    }
+    await waitUntil(() => mockHits.connections > before, 12000, 'same-owner check really reads the status API');
+    await waitUntil(async () => (await tooltip().innerText()).includes('已重新检测'), 12000, 'same-owner check receives real controller feedback');
+    assert.equal(await tooltip().getAttribute('data-connection-panel-kind'), kind, 'completed async refresh does not jump to another service');
+    assert.equal(controlWrites, writesBefore, 'all four detection actions stay read-only');
+    const selected = Object.keys(serviceNames).find(other => other !== kind);
+    await badge(selected).click();
+    assert.equal(await tooltip().getAttribute('data-connection-panel-kind'), selected, 'explicit other-pill click still switches service');
+    await closeTooltip();
+  }
+  await snapshot('09-four-service-menu-owner-regression.png');
+  pass('all four real AdminPanel read-only actions retain their menu owner through adjacent hover, async session/status refresh and feedback; explicit switching remains usable');
+
+  const workshopDraft = page.getByPlaceholder('车间名称（如 压铸车间）', { exact: true });
+  const sentinel = 'Owned unsaved workshop draft';
+  await workshopDraft.fill(sentinel);
+  const lockCountBeforeGuard = lockRequests;
+  await badge('session').click(); await tooltip().waitFor();
+  const unlock = tooltip().locator('[data-connection-action="unlock"]');
+  assert.equal(await unlock.isEnabled(), true, 'the real AdminPanel session action has an injected unlock callback');
+  assert.equal(await unlock.getAttribute('title'), '重新解锁后台');
+  await unlock.click();
+  const draftAlert = page.locator('.app-dialog[role="dialog"]');
+  await draftAlert.waitFor(); assert.match(await draftAlert.innerText(), /未保存|编辑表单/);
+  assert.match(await draftAlert.innerText(), /当前修改已保留/);
+  assert.equal(await workshopDraft.inputValue(), sentinel, 'unlock guard preserves the exact unsaved form draft');
+  assert.equal(lockRequests, lockCountBeforeGuard, 'dirty unlock never calls backend lock');
+  assert.equal(await page.locator('.admin-unlock-page .admin-unlock-card').count(), 0, 'dirty unlock remains in the authenticated AdminPanel');
+  const dirtySession = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
+  assert.equal(dirtySession.authenticated, true, 'server authentication is preserved when unlock is refused for a draft');
+  await snapshot('11-session-unlock-dirty-guard.png');
+  await draftAlert.getByRole('button', { name: '确定', exact: true }).click(); await draftAlert.waitFor({ state: 'hidden' });
+  await closeTooltip(); await workshopDraft.fill('');
+  await badge('session').click(); await tooltip().waitFor(); await tooltip().locator('[data-connection-action="unlock"]').click();
+  await page.locator('.admin-unlock-page .admin-unlock-card').waitFor();
+  assert.equal(await page.locator('[data-connection-kind]').count(), 0, 'clean unlock really exits AdminPanel and shows its existing password gate');
+  await waitUntil(() => lockRequests === lockCountBeforeGuard + 1, 12000, 'exactly one owned backend lock request');
+  await waitUntil(async () => {
+    const result = await (await page.request.get(info.origin + '/api/admin-auth/session')).json();
+    return result.authenticated === false;
+  }, 12000, 'backend confirms clean relock');
+  await snapshot('12-session-existing-password-gate.png'); await login();
+  await expectTone('is-online');
+  assert.equal((await (await page.request.get(info.origin + '/api/admin-auth/session')).json()).authenticated, true,
+    'return to AdminPanel requires a fresh real backend authentication');
+  await snapshot('13-session-reauthenticated.png');
+  pass('session lock icon refuses unsaved drafts without changing authentication; a clean click opens the real password page and fresh login restores AdminPanel');
+
+  for (const [kind, view, title] of [['devices', 'points', '打开设备采集管理（状态 / 点位）'], ['data', 'overview', '打开数据服务管理（API / 数据库）']]) {
+    await badge(kind).click(); await tooltip().waitFor();
+    assert.equal(await tooltip().locator('.connection-management-scope').innerText(), kind === 'devices'
+      ? '管理范围：设备连接、采集进程、点位与读数质量' : '管理范围：后台 API、数据库与大屏数据通道');
+    if (kind === 'data') assert.equal(await tooltip().locator('[data-device-id]').count(), 0);
+    const center = tooltip().locator('[data-connection-action="center"]');
+    assert.equal(await center.isEnabled(), true); assert.equal(await center.getAttribute('title'), title);
+    const launchesBefore = centerLaunchEvidence.length;
+    await center.click();
+    await waitUntil(() => centerLaunchEvidence.length === launchesBefore + 1, 12000, 'production desktop handler receives the distinct center page');
+    const result = centerBridgeEvidence.at(-1);
+    assert.equal(result.status, 200); assert.deepEqual(result.result, { success: true, opened: true, view });
+    const expectedFeedback = kind === 'devices' ? '已打开设备采集管理：采集状态 / 点位；不代表设备已恢复在线'
+      : '已打开数据服务管理：API / 数据库 / 数据通道；不代表服务已恢复正常';
+    await waitUntil(async () => await tooltip().getByRole('status').innerText() === expectedFeedback, 12000, 'confirmed page-specific info feedback');
+    assert.equal(await tooltip().getAttribute('data-connection-panel-kind'), kind);
+    assert.match(await tooltip().getByRole('status').innerText(), kind === 'devices' ? /不代表设备已恢复在线/ : /API \/ 数据库 \/ 数据通道.*不代表服务已恢复正常/);
+    assert.equal(await tooltip().getByRole('status').getAttribute('class'), 'connection-feedback is-info');
+    await snapshot('14-center-' + view + '-confirmed.png'); await closeTooltip();
+  }
+  centerReceiptMode = 'wrong-view';
+  await badge('data').click(); await tooltip().waitFor(); await tooltip().locator('[data-connection-action="center"]').click();
+  await tooltip().getByRole('alert').waitFor();
+  assert.equal(centerBridgeEvidence.at(-1).status, 503, 'production handler refuses a mismatched native page receipt');
+  assert.equal(centerBridgeEvidence.at(-1).result.success, false);
+  assert.doesNotMatch(await tooltip().getByRole('alert').innerText(), /已打开|恢复成功/);
+  await snapshot('15-center-wrong-view-rejected.png'); await closeTooltip(); centerReceiptMode = 'matching';
+  assert.deepEqual(unexpectedNativeActions, [], 'no restart, reconnect or other native action ran in this owned center-only fixture');
+  assert.equal(controlWrites, writesBefore, 'lock/center workflow never changes collection mode, restarts collection or writes database settings');
+  pass('device center opens points and data center opens overview via shipped route/argument mapping; matching receipts yield info only, wrong page is rejected without false success (native GUI verified separately)');
   statusUnavailable = true;
   await waitUntil(async () => (await badge('data').getAttribute('aria-label')).includes('检测失败'), 12000, 'failed status request');
   for (const kind of ['unity', 'devices', 'data', 'session']) await expectPlug(badge(kind), false);
@@ -231,11 +402,11 @@ async function snapshot(name) {
   assert.ok(mockHits.connections > 5, 'full AdminPanel polls the new minimal status endpoint');
 
   assert.deepEqual(errors, []);
-  fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({ success: true, checks, errors, mockHits, controlWrites, actualSnapshotEvidence, screenshotDirectory: directory }, null, 2));
+  fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({ success: true, scope: 'owned AdminPanel backend/authentication plus production desktop handler with owned launch seam; no installed controls or real native GUI claimed', checks, errors, mockHits, controlWrites, lockRequests, anchorEvidence, centerLaunchEvidence, centerBridgeEvidence, unexpectedNativeActions, actualSnapshotEvidence, screenshotDirectory: directory }, null, 2));
   console.log('REPORT ' + directory);
 })().catch(async error => {
   await page?.screenshot({ path: path.join(directory, 'failure.png') }).catch(() => {});
   const badgeDiagnostics = page ? await page.locator('[data-connection-kind]').evaluateAll(elements => elements.map(element => ({ kind: element.dataset.connectionKind, label: element.getAttribute('aria-label'), class: element.className, icon: element.querySelector('svg[data-plug-state]')?.getAttribute('data-plug-state') }))).catch(() => []) : [];
-  fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({ success: false, checks, errors, mockHits, badgeDiagnostics, failure: error.stack, screenshotDirectory: directory }, null, 2));
+  fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({ success: false, checks, errors, mockHits, controlWrites, lockRequests, anchorEvidence, centerLaunchEvidence, centerBridgeEvidence, unexpectedNativeActions, badgeDiagnostics, failure: error.stack, screenshotDirectory: directory }, null, 2));
   console.error(error.stack); process.exitCode = 1;
 }).finally(async () => { await browser?.close(); await stopOwnedSmokeProcess(server); });

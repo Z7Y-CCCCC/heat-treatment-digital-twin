@@ -14,12 +14,13 @@ for (const name of ['ConnectionPlugIcon', 'ServiceConnectionIcon']) {
   const code = vueImports(compileScript(parse(iconSource).descriptor, { id: name + '-test', inlineTemplate: true }).content)
   icons[name] = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`
 }
-const exposed = source.replace('</script>', '\ndefineExpose({ root, panel, visible, activeKind, enter, leave, focusIn, focusOut, toggle, close, outside, keys, triggerKeys, runAction, resume, suspend })\n</script>')
+const exposed = source.replace('</script>', '\ndefineExpose({ root, panel, panelStyle, bridgeStyle, positionPanel, visible, activeKind, enter, leave, focusIn, focusOut, toggle, close, outside, keys, triggerKeys, runAction, resume, suspend })\n</script>')
 const componentCode = vueImports(compileScript(parse(exposed).descriptor, { id: 'connection-status-test', inlineTemplate: true }).content)
   .replace(/from (['"])\.\/(ConnectionPlugIcon|ServiceConnectionIcon)\.vue\1/g, (_, quote, name) => `from ${JSON.stringify(icons[name])}`)
 const { default: Component } = await import(`data:text/javascript;base64,${Buffer.from(componentCode).toString('base64')}`)
 const node = (type, text = '') => ({ type, text, children: [], props: {}, parent: null, focusCount: 0,
   focus() { this.focusCount++ },
+  getBoundingClientRect() { return this.rect || { left: 0, right: 0, top: 0, bottom: 0 } },
   contains(target) { for (let current = target; current; current = current.parent) if (current === this) return true; return false },
   querySelector(selector) {
     if (selector.startsWith('[data-connection-kind=')) return all(this).find(item => item.props['data-connection-kind'] === selector.match(/"([^"]+)"/)[1])
@@ -68,18 +69,28 @@ async function fixture(t, extra = {}) {
     dialog: () => all(root).find(item => item.props.role === 'dialog') }
 }
 
-test('four icon-only status pills preserve the plug silhouette and accessible semantic service names', async t => {
+test('device and data panels explain different management scopes and never share device details', async t => {
+  const f = await fixture(t, { services: liveServices() })
+  f.vm.toggle('devices'); await nextTick()
+  assert.match(content(f.dialog()), /管理范围：设备连接、采集进程、点位与读数质量/)
+  assert.doesNotMatch(content(f.dialog()), /管理范围：后台 API/)
+  assert.equal(f.elements(item => item.props['data-device-id']).length, 2)
+  f.vm.toggle('data'); await nextTick()
+  assert.match(content(f.dialog()), /管理范围：后台 API、数据库与大屏数据通道/)
+  assert.doesNotMatch(content(f.dialog()), /设备明细|管理范围：设备连接/)
+  assert.equal(f.elements(item => item.props['data-device-id']).length, 0)
+})
+
+test('four named status pills preserve the plug silhouette and complete readable service names', async t => {
   const f = await fixture(t)
   const buttons = f.elements(item => item.props['data-connection-kind'])
   assert.deepEqual(buttons.map(item => item.props['data-connection-kind']), ['unity', 'devices', 'data', 'session'])
-  assert.deepEqual(buttons.map(content), ['', '', '', ''])
+  assert.deepEqual(buttons.map(content), ['Unity', '设备采集', '数据服务', '登录状态'])
   for (const button of buttons) {
     assert.ok(button.props['aria-label']); assert.equal(button.props.title, button.props['aria-label'])
     assert.equal(button.props['aria-haspopup'], 'dialog')
     assert.equal(plugs(button).length, 1)
-    const semantic = all(button).find(item => item.props['data-service-icon'])
-    assert.equal(semantic.props['data-service-icon'], button.props['data-connection-kind'])
-    assert.equal(semantic.props['aria-hidden'], 'true')
+    assert.equal(all(button).filter(item => item.props['data-service-icon']).length, 0)
   }
   assert.deepEqual(buttons.map(item => plugs(item)[0].props['data-plug-state']), ['connected', 'disconnected', 'disconnected', 'disconnected'])
   assert.equal(all(plugs(buttons[0])[0]).some(item => item.props.transform === 'translate(3 0)'), true)
@@ -87,6 +98,43 @@ test('four icon-only status pills preserve the plug silhouette and accessible se
   assert.equal(f.elements(item => item.type === 'i').length, 0)
   await f.render({ unityConnected: false, unityClass: 'is-offline' })
   assert.equal(plugs(f.badge('unity'))[0].props['data-plug-state'], 'disconnected')
+})
+
+test('an action pins its owning service across hover, automatic focus, busy, blur and late feedback', async t => {
+  for (const owner of ['unity', 'devices', 'data', 'session']) {
+    const actions = Object.fromEntries(['unity', 'devices', 'data', 'session'].map(kind => [kind, [{ id: 'check', label: '重新检测' }]]))
+    const f = await fixture(t, { services: liveServices(), actions })
+    f.vm.enter(owner); await nextTick()
+    f.vm.runAction({ id: 'check' }); await nextTick()
+    const selectedDialog = f.dialog()
+    assert.deepEqual(f.events, [{ kind: owner, action: 'check' }])
+    for (const other of ['unity', 'devices', 'data', 'session'].filter(kind => kind !== owner)) {
+      f.vm.enter(other); f.vm.focusIn(other); await nextTick()
+      assert.equal(f.vm.activeKind, owner)
+      assert.equal(f.dialog(), selectedDialog, 'no other service may reuse this dialog during automatic events')
+    }
+    f.vm.focusOut({ relatedTarget: null }); f.vm.leave()
+    await f.render({ busy: owner }); assert.equal(f.vm.visible, true); assert.equal(f.vm.activeKind, owner)
+    await f.render({ busy: '', feedback: { [owner]: { type: 'success', message: '原服务检测反馈' } } })
+    assert.equal(f.dialog().props['data-connection-panel-kind'], owner)
+    assert.match(content(f.dialog()), /原服务检测反馈/)
+    f.vm.toggle(owner === 'data' ? 'unity' : 'data'); await nextTick()
+    assert.notEqual(f.dialog(), selectedDialog, 'an explicit switch creates its own service dialog')
+    assert.equal(f.vm.activeKind, owner === 'data' ? 'unity' : 'data')
+    f.unmount()
+  }
+})
+
+test('panel pointer interaction pins before action focus, while explicit ArrowDown can switch a pinned service', async t => {
+  const f = await fixture(t, { services: liveServices(), actions: { unity: [{ id: 'check', label: '重新检测' }], data: [{ id: 'check', label: '重新检测' }] } })
+  f.vm.enter('unity'); await nextTick()
+  f.dialog().props.onPointerdown()
+  f.vm.focusIn('devices'); f.vm.enter('session'); await nextTick()
+  assert.equal(f.vm.activeKind, 'unity')
+  await f.vm.triggerKeys({ key: 'ArrowDown', preventDefault() {} }, 'data')
+  assert.equal(f.vm.activeKind, 'data')
+  assert.equal(f.dialog().props['data-connection-panel-kind'], 'data')
+  f.vm.runAction({ id: 'check' }); assert.deepEqual(f.events, [{ kind: 'data', action: 'check' }])
 })
 
 test('hover dialog preserves device names and each device plug without visible row status words', async t => {
@@ -257,13 +305,15 @@ test('unknown, stale and restricted devices never leak detail or render a connec
   assert.equal(f.environment.browser.listeners.get('keydown').size, 0)
   assert.equal(f.environment.browser.listeners.get('pointerdown').size, 0)
   assert.equal(f.environment.browser.listeners.get('resize').size, 0)
+  assert.equal(f.environment.browser.listeners.get('scroll').size, 0)
 })
 
 test('panels and long device lists are bounded and scrollable, pill palette/size and lifecycle stay consistent', async () => {
   const descriptor = parse(source).descriptor
   const css = compileStyle({ source: descriptor.styles[0].content, id: 'connection-status-test', scoped: true })
   assert.deepEqual(css.errors, [])
-  assert.match(css.code, /top:calc\(100% \+ 10px\)/)
+  assert.match(css.code, /position:absolute;left:0;top:0/)
+  assert.doesNotMatch(css.code, /top:calc\(100% \+ 10px\)/)
   assert.match(css.code, /overflow:auto/)
   assert.match(css.code, /max-height:calc\(100dvh - 110px\)/)
   assert.match(css.code, /max-height:min\(340px,calc\(100dvh - 280px\)\)/)
@@ -277,4 +327,52 @@ test('panels and long device lists are bounded and scrollable, pill palette/size
   const icon = parse(await readFile(new URL('ServiceConnectionIcon.vue', base), 'utf8')).descriptor
   assert.deepEqual(compileStyle({ source: icon.styles[0].content, id: 'service-icon-test', scoped: true }).errors, [])
   assert.match(icon.styles[0].content, /prefers-reduced-motion:reduce/)
+})
+
+test('every service panel centers below its own pill, never below the whole strip', async t => {
+  const f = await fixture(t, { services: liveServices() })
+  Object.assign(f.environment.browser, { innerWidth: 1600, innerHeight: 900 })
+  f.vm.root.rect = { left: 700, right: 1150, top: 20, bottom: 52 }
+  const rects = { unity: [700, 780], devices: [788, 900], data: [908, 1018], session: [1026, 1148] }
+  for (const [kind, [left, right]] of Object.entries(rects)) f.badge(kind).rect = { left, right, top: 20, bottom: 52 }
+  for (const [kind, [left, right]] of Object.entries(rects)) {
+    f.vm.toggle(kind); await nextTick(); f.vm.positionPanel()
+    assert.equal(Number.parseFloat(f.vm.panelStyle.left) + 700 + 160, (left + right) / 2)
+    assert.equal(f.vm.panelStyle.top, '42px')
+    assert.equal(f.vm.panelStyle.maxHeight, '826px')
+    assert.equal(f.vm.bridgeStyle.left, `${left - 700}px`)
+    assert.equal(f.vm.bridgeStyle.top, '32px')
+    assert.equal(f.vm.bridgeStyle.width, `${right - left}px`)
+    assert.equal(f.vm.panelStyle.right, undefined)
+    f.vm.close()
+  }
+})
+
+test('wrapped pills use their individual row bottom and panel edges clamp within the viewport', async t => {
+  const f = await fixture(t, { services: liveServices() })
+  Object.assign(f.environment.browser, { innerWidth: 360, innerHeight: 320 })
+  f.vm.root.rect = { left: 10, right: 350, top: 10, bottom: 82 }
+  f.badge('unity').rect = { left: 10, right: 90, top: 10, bottom: 42 }
+  f.badge('session').rect = { left: 238, right: 350, top: 50, bottom: 82 }
+  f.vm.toggle('unity'); await nextTick(); f.vm.positionPanel()
+  assert.equal(f.vm.panelStyle.left, '2px'); assert.equal(f.vm.panelStyle.top, '42px')
+  assert.equal(f.vm.panelStyle.maxHeight, '256px')
+  f.vm.toggle('session'); await nextTick(); f.vm.positionPanel()
+  assert.equal(f.vm.panelStyle.left, '18px'); assert.equal(f.vm.panelStyle.top, '82px')
+  assert.equal(f.vm.panelStyle.maxHeight, '216px')
+})
+
+test('scroll and pill resize update the active anchor; keep-alive disconnects geometry observation', async t => {
+  const f = await fixture(t), observers = []
+  Object.assign(f.environment.browser, { innerWidth: 1600, innerHeight: 900,
+    ResizeObserver: class { constructor(callback) { this.callback = callback; this.observed = []; observers.push(this) } observe(value) { this.observed.push(value) } disconnect() { this.disconnected = true } } })
+  f.vm.root.rect = { left: 700, right: 1150, top: 20, bottom: 52 }
+  f.badge('unity').rect = { left: 700, right: 780, top: 20, bottom: 52 }
+  f.vm.suspend(); f.vm.resume(); f.vm.resume(); assert.equal(observers.length, 1); assert.equal(observers[0].observed.length, 5)
+  f.vm.toggle('unity'); await nextTick(); f.vm.positionPanel(); assert.equal(f.vm.panelStyle.left, '-120px')
+  f.badge('unity').rect.right = 820; observers[0].callback(); assert.equal(f.vm.panelStyle.left, '-100px')
+  f.badge('unity').rect.bottom = 60
+  for (const callback of f.environment.browser.listeners.get('scroll')) callback()
+  assert.equal(f.vm.panelStyle.top, '50px')
+  f.vm.suspend(); assert.equal(observers[0].disconnected, true); assert.equal(f.environment.browser.listeners.get('scroll').size, 0)
 })

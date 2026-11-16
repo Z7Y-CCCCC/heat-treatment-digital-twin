@@ -6,14 +6,61 @@ import { parse, compileScript, compileTemplate } from 'vue/compiler-sfc'
 const panel = await readFile(new URL('../src/views/AdminPanel.vue', import.meta.url), 'utf8')
 const dialog = await readFile(new URL('../src/views/admin/components/LoadingAlignmentDialog.vue', import.meta.url), 'utf8')
 const browser = await readFile(new URL('../src/views/admin/components/DeviceManagementBrowser.vue', import.meta.url), 'utf8')
+const panelTemplate = parse(panel).descriptor.template.ast
+const elements = []
+function collectElements(node, parent = null) {
+  if (node.type === 1) elements.push({ node, parent })
+  for (const child of node.children || []) collectElements(child, node)
+}
+collectElements(panelTemplate)
+const attribute = (node, name) => node.props.find(prop => prop.type === 6 && prop.name === name)?.value?.content
+const directive = (node, name, arg) => node.props.find(prop => prop.type === 7 && prop.name === name && (arg == null || prop.arg?.content === arg))?.exp?.content
 test('model and device loading port editors are discoverable and distinct', () => {
   assert.match(panel, /key: 'ports', label: '进出料口'/)
-  assert.match(panel, /aria-label="选择进出料口模型"/)
-  assert.match(panel, /activeTab === 'models' && modelLibraryStep === 'ports' && activePreviewModel/)
+  const selectors = elements.filter(({ node }) => node.tag === 'select' && attribute(node, 'aria-label') === '选择进出料口模型')
+  assert.equal(selectors.length, 1, 'one accessible model selector must be connected to the loading-port workspace')
+  const { node: selector, parent } = selectors[0]
+  assert.equal(directive(selector, 'bind', 'value'), 'selectedPreviewModelId')
+  assert.equal(directive(selector, 'bind', 'disabled'), 'modelLoadingPortRef?.busy')
+  assert.equal(directive(selector, 'on', 'change'), 'changeLoadingPortModel')
+  assert.equal(directive(parent, 'if'), "modelLibraryStep === 'ports'")
+  const option = selector.children.find(node => node.type === 1 && node.tag === 'option')
+  assert.equal(directive(option, 'for'), 'model in loadingPortModelOptions')
+  assert.equal(directive(option, 'bind', 'value'), 'model.id')
+  const modelEditors = elements.filter(({ node }) => node.tag === 'LoadingPortWorkspace' && attribute(node, 'ref') === 'modelLoadingPortRef')
+  assert.equal(modelEditors.length, 1)
+  assert.equal(directive(modelEditors[0].node, 'if'), "activeTab === 'models' && modelLibraryStep === 'ports' && activePreviewModel")
+  assert.equal(directive(modelEditors[0].node, 'bind', 'model'), 'activePreviewModel')
   assert.match(panel, /ref="modelLoadingPortRef"/)
   assert.match(panel, /aria-label="设备进出料口微调"/)
   assert.match(panel, /ref="deviceLoadingPortRef"[^>]*:model="loadingPortDeviceModel"[^>]*:device="loadingPortDevice"/)
   assert.match(panel, /showDeviceForm\.value\) return alert\('请先保存或取消/)
+})
+test('model selector keeps the previous model after declined/invalid changes and uses the guarded existing preview path', async () => {
+  const selectedPreviewModelId = { value: 'old' }, loadingPortModelOptions = { value: [{ id: 'old' }, { id: 'new' }] }, calls = []
+  let allow = false
+  const source = panel.slice(panel.indexOf('async function changeLoadingPortModel('), panel.indexOf('function applySavedLoadingPorts('))
+  assert.ok(source.startsWith('async function changeLoadingPortModel('))
+  const change = new Function('loadingPortModelOptions', 'previewExistingModel', 'selectedPreviewModelId', `${source};return changeLoadingPortModel`)(
+    loadingPortModelOptions, async model => { calls.push(model.id); if (allow) selectedPreviewModelId.value = model.id }, selectedPreviewModelId
+  )
+  const event = { target: { value: 'new' } }
+  await change(event); assert.equal(event.target.value, 'old'); assert.equal(selectedPreviewModelId.value, 'old')
+  event.target.value = 'removed'; await change(event); assert.equal(event.target.value, 'old'); assert.deepEqual(calls, ['new'])
+  allow = true; event.target.value = 'new'; await change(event)
+  assert.equal(event.target.value, 'new'); assert.equal(selectedPreviewModelId.value, 'new'); assert.deepEqual(calls, ['new', 'new'])
+
+  const previewSource = panel.slice(panel.indexOf('async function previewExistingModel('), panel.indexOf('async function openModelLoadingPorts('))
+  assert.ok(previewSource.startsWith('async function previewExistingModel('))
+  assert.doesNotMatch(previewSource + source, /adminApi\.|saveDeviceLoadingPorts|saveModelLoadingPorts/)
+  const selected = { value: 'old' }, guards = [], status = { value: '' }, saving = { value: false }, locked = { value: false }
+  const preview = new Function('modelAssetLocked', 'modelBindingSaving', 'modelNameSaving', 'modelUploading', 'modelBindingStatus', 'selectedPreviewModelId', 'modelLoadingPortRef', `${previewSource};return previewExistingModel`)(
+    locked, saving, { value: false }, { value: false }, status, selected, { value: { canLeave: async () => { guards.push('leave'); return false } } }
+  )
+  await preview({ id: 'new' }); assert.deepEqual(guards, ['leave']); assert.equal(selected.value, 'old')
+  saving.value = true; await preview({ id: 'new' }); assert.deepEqual(guards, ['leave']); assert.equal(selected.value, 'old')
+  assert.match(status.value, /正在保存模型/)
+  saving.value = false; locked.value = true; await preview({ id: 'new' }); assert.deepEqual(guards, ['leave']); assert.equal(selected.value, 'old')
 })
 test('the shared fixed/auxiliary directory table exposes only edit and delete, not repeated loading-port shortcuts', () => {
   const tables = panel.slice(panel.indexOf('<DeviceManagementBrowser'), panel.indexOf('<DeviceModelHoverPreview'))

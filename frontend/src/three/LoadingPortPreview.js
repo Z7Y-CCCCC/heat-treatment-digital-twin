@@ -93,6 +93,19 @@ export function stopLoadingPortOrbitDamping(controls, camera) {
   }
 }
 
+// Match the disassembly viewport's browsing gestures. Editing a loading mouth
+// is an explicit mode owned by its button, never the default left-button action.
+export function configureLoadingPortPreviewControls(controls) {
+  controls.enableDamping = true
+  controls.dampingFactor = .12
+  controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE
+  controls.mouseButtons.MIDDLE = THREE.MOUSE.DOLLY
+  controls.mouseButtons.RIGHT = THREE.MOUSE.PAN
+  controls.touches.ONE = THREE.TOUCH.ROTATE
+  controls.touches.TWO = THREE.TOUCH.DOLLY_PAN
+  return controls
+}
+
 export function loadingPortHeightLabel(port, kind) {
   const height = Number(port.position[1].toFixed(4))
   return `${kind === 'outlet' ? '出料口' : '进料口'} · 高度 ${height}`
@@ -214,23 +227,25 @@ export function collectLoadingPortNodes(root) {
 }
 
 export class LoadingPortPreview {
-  constructor(container, { onSurface = () => {}, onRegion = () => {}, onRegionError = () => {}, onRegionState = () => {} } = {}) {
+  constructor(container, { onSurface = () => {}, onRegion = () => {}, onRegionError = () => {}, onRegionState = () => {}, onDrawingExit = () => {} } = {}) {
     this.container = container
     this.onSurface = onSurface
     this.onRegion = onRegion; this.onRegionError = onRegionError; this.onRegionState = onRegionState
-    this.disposed = false
+    this.onDrawingExit = onDrawingExit
+    this.disposed = false; this.active = true
+    this.picking = false; this.regionMode = false
     this.scene = new THREE.Scene()
     this.scene.background = new THREE.Color(0xf1f5f9)
     this.camera = new THREE.PerspectiveCamera(42, 1, .01, 10000)
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
     this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, 2))
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
-    this.renderer.domElement.setAttribute('aria-label', '模型进出料口三维预览，拖动旋转，滚轮缩放')
+    this.renderer.domElement.setAttribute('aria-label', '模型进出料口三维预览，左键旋转，右键平移，滚轮缩放')
     this.renderer.domElement.setAttribute('role', 'img')
+    this.renderer.domElement.style.cursor = 'grab'
     container.appendChild(this.renderer.domElement)
     this.labels = new LoadingPortLabelLayer(container)
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement)
-    this.controls.enableDamping = true
+    this.controls = configureLoadingPortPreviewControls(new OrbitControls(this.camera, this.renderer.domElement))
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x879db2, 2.5))
     const light = new THREE.DirectionalLight(0xffffff, 2)
     light.position.set(8, 14, 9); this.scene.add(light)
@@ -243,6 +258,7 @@ export class LoadingPortPreview {
         && event.clientY >= rect.top && event.clientY <= rect.bottom
     }
     this.down = event => {
+      if (this.active === false) return
       const eligible = this.picking && this.root && event.target === this.renderer.domElement && inside(event)
       if (this.regionMode && this.regionStart && eligible && event.button !== 0) this.cancelRegion()
       if (this.regionMode && eligible && event.button === 0) {
@@ -261,6 +277,7 @@ export class LoadingPortPreview {
       if (this.gesture.begin(event, eligible)) stopLoadingPortOrbitDamping(this.controls, this.camera)
     }
     this.move = event => {
+      if (this.active === false) return
       if(this.regionMode&&this.regionStart) {
         if(this.regionDrag&&this.regionDrag.id!==event.pointerId)return
         if(this.regionDrag){event.preventDefault();event.stopImmediatePropagation();this.regionDrag.maxDistance=Math.max(this.regionDrag.maxDistance,Math.hypot(event.clientX-this.regionDrag.x,event.clientY-this.regionDrag.y))}
@@ -272,6 +289,7 @@ export class LoadingPortPreview {
       if (this.gesture.move(event)) event.stopImmediatePropagation()
     }
     this.up = event => {
+      if (this.active === false) return
       if(this.regionMode&&this.regionDrag?.id===event.pointerId) {
         event.preventDefault();event.stopImmediatePropagation();const gesture=this.regionDrag
         this.regionDrag=null;this.controls.enabled=true
@@ -292,24 +310,25 @@ export class LoadingPortPreview {
       const point = loadingPortSurfacePoint(hit, this.root)
       if (point) this.onSurface(point)
     }
-    this.cancel = event => {this.gesture.cancel(event);if(this.regionDrag?.id===event?.pointerId)this.cancelRegion()}
-    this.wheel = () => {this.gesture.invalidate();if(this.regionStart)this.cancelRegion()}
-    this.blur = () => {this.gesture.reset();this.cancelRegion()}
-    this.keydown=event=>{if(event.key==='Escape'&&this.regionStart){event.preventDefault();this.cancelRegion()}}
+    this.cancel = event => {this.gesture.cancel(event);if(this.regionDrag?.id===event?.pointerId)this.cancelRegion(this.active!==false)}
+    this.wheel = () => {if(this.active===false)return;this.gesture.invalidate();if(this.regionStart)this.cancelRegion()}
+    this.blur = () => {this.gesture.reset();this.cancelRegion(this.active!==false)}
+    this.keydown=event=>{if(event.key==='Escape'&&this.exitDrawing())event.preventDefault()}
     for (const [name, handler] of [['pointerdown', this.down], ['pointermove', this.move], ['pointerup', this.up], ['pointercancel', this.cancel]]) this.pointerDocument.addEventListener(name, handler, true)
     this.renderer.domElement.addEventListener('lostpointercapture', this.cancel)
     this.renderer.domElement.addEventListener('wheel', this.wheel, { capture: true, passive: true })
     globalThis.window?.addEventListener('blur', this.blur)
     globalThis.window?.addEventListener('keydown',this.keydown)
     this.resize = () => {
-      if (this.disposed) return
+      if (this.disposed || this.active === false) return
       const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight)
       this.renderer.setSize(width, height); this.resizeCamera(width / height)
     }
     if (globalThis.ResizeObserver) { this.observer = new ResizeObserver(this.resize); this.observer.observe(container) }
     else globalThis.window?.addEventListener('resize', this.resize)
     this.resize()
-    this.renderer.setAnimationLoop(() => { if (!this.disposed) { if (!this.gesture.pendingClick) this.controls.update(); this.renderer.render(this.scene, this.camera); this.labels.update(this.root, this.camera) } })
+    this.renderFrame = () => { if (!this.disposed && this.active !== false) { if (!this.gesture.pendingClick) this.controls.update(); this.renderer.render(this.scene, this.camera); this.labels.update(this.root, this.camera) } }
+    this.renderer.setAnimationLoop(this.renderFrame)
   }
 
   async load(model, { signal } = {}) {
@@ -366,10 +385,39 @@ export class LoadingPortPreview {
     updateCameraWithoutLoadingPortInertia(this.controls)
   }
 
-  setPicking(value) { this.picking = !!value; if (!value) {this.gesture?.reset();this.cancelRegion()}; this.renderer.domElement.style.cursor = value ? 'crosshair' : 'grab' }
-  setRegionMode(value) {this.regionMode=!!value;this.cancelRegion();this.renderer.domElement.style.cursor=value&&this.picking?'crosshair':'grab'}
+  setActive(value=true) {
+    if(this.disposed || this.active===!!value)return
+    this.active=!!value
+    if(!this.active) {
+      // Preserve the last composed view, not the pending orbit inertia. Returning
+      // from docking must not resume a rotation/pan left over before the switch.
+      stopLoadingPortOrbitDamping(this.controls,this.camera)
+      this.picking=false;this.regionMode=false;this.gesture?.reset();this.cancelRegion()
+      this.renderer.setAnimationLoop(null);this.renderer.domElement.style.cursor='grab'
+      this.controls.enabled=false
+    } else {
+      this.controls.enabled=true;this.resize();this.renderFrame();this.renderer.setAnimationLoop(this.renderFrame)
+    }
+  }
+  setPicking(value) { this.picking = !!value&&this.active!==false; if (!this.picking) {this.gesture?.reset();this.cancelRegion(this.active!==false)}; this.renderer.domElement.style.cursor = this.picking ? 'crosshair' : 'grab' }
+  setRegionMode(value) {this.regionMode=!!value&&this.active!==false;this.cancelRegion(this.active!==false);this.renderer.domElement.style.cursor=this.regionMode&&this.picking?'crosshair':'grab'}
+  exitDrawing() {
+    if(this.active===false||!this.regionMode)return false
+    this.regionMode=false;this.picking=false;this.gesture?.reset();this.cancelRegion()
+    this.renderer.domElement.style.cursor='grab';this.onDrawingExit?.()
+    return true
+  }
   clearRegionOverlay(){if(this.regionOverlay){this.markers?.remove(this.regionOverlay);disposeSceneObject(this.regionOverlay);this.regionOverlay=null}}
-  cancelRegion(){this.regionStart=null;this.regionDrag=null;this.regionWaiting=false;this.clearRegionOverlay();if(this.controls)this.controls.enabled=true;this.onRegionState?.(false)}
+  cancelRegion(notify=true){
+    const pointerId=this.regionDrag?.id
+    this.regionStart=null;this.regionDrag=null;this.regionWaiting=false;this.clearRegionOverlay()
+    // A cancelled/disabled tool must not keep owning the canvas pointer. Clear
+    // the gesture first because releasing capture can fire lostpointercapture.
+    const canvas=this.renderer?.domElement
+    try {if(Number.isFinite(pointerId)&&canvas?.hasPointerCapture?.(pointerId))canvas.releasePointerCapture(pointerId)} catch { /* The canvas may already be detached during disposal. */ }
+    if(this.controls)this.controls.enabled=this.active!==false
+    if(notify)this.onRegionState?.(false)
+  }
   regionSurfaceAt(event){
     const rect=this.renderer.domElement.getBoundingClientRect();this.camera.updateMatrixWorld(true);this.root.updateMatrixWorld(true)
     this.raycaster.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,-(event.clientY-rect.top)/rect.height*2+1),this.camera)
@@ -453,7 +501,9 @@ export class LoadingPortPreview {
     if (suggestion) marker(suggestion, activeKind, true)
   }
 
-  // Authoring always measures the selected asset, never a generated cart substitute.
+  // Port authoring always uses the selected asset's real geometry. Runtime
+  // presentation (including the rotating-cart placeholder) is not a model
+  // replacement here: picking a placeholder would measure the wrong surface.
   clearAsset() {
     this.gesture?.reset()
     this.cancelRegion()

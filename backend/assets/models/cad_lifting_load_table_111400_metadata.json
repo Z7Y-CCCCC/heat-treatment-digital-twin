@@ -11,7 +11,7 @@
     "node_naming_rule": "role_part_action，例如 fan_rear_rotate、door_front_lift、valve_gas_01",
     "delivery_status": "review",
     "owner": "",
-    "notes": "用户提供的 11.14.00_升降备料台.glb 原文件入库；保留原始节点、材质和坐标。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。"
+    "notes": "用户提供的 11.14.00_升降备料台.glb 原文件入库；保留原始节点、材质和坐标。 统一展示送料基准为 1.25 m；门板密封搭边保留，原 CAD 交付文件保留。 油缸、活塞杆和上端销眼的初始姿态已在源模型中修正到剪叉中心；保留原节点路径与动作行程。 补齐源实体贯通中轴（直径36 mm、长780 mm），穿过油缸上销眼与两侧剪叉；旧节点路径和动作行程保持。"
   },
   "optimization": {
     "mode": "auto",
@@ -385,11 +385,11 @@
   "partBindings": [],
   "sourceAsset": {
     "filename": "11.14.00_升降备料台.glb",
-    "sha256": "dbe913f90575df3e64dd150c4ec4a7b4fe9dab26a267aa7b7987d33798b6af5a",
+    "sha256": "2a0fab6db631b3642bbfa81cf4be90ec8c127f62d036851b266d5e830b51fffe",
     "stats": {
-      "nodes": 36,
-      "meshes": 25,
-      "triangles": 15216,
+      "nodes": 37,
+      "meshes": 26,
+      "triangles": 15312,
       "materials": 9,
       "size": [
         1.8370001018047333,
@@ -427,13 +427,48 @@
     "surfaceY": 1.25,
     "loadY": 1.29,
     "basketStroke": null,
-    "sourceSha256": "22b11f4fd3147c8eb5bdec0300f293a700d7818d914cb98ec492d686076cef81",
+    "sourceSha256": "7522a9bbf407833a153af26feb67722a34aa8f5b8149e5d0a93c13e28c804281",
     "note": "Display transfer-height alignment; door sealing overlap retained; original CAD deliveries preserved.",
-    "assetSha256": "dbe913f90575df3e64dd150c4ec4a7b4fe9dab26a267aa7b7987d33798b6af5a",
+    "assetSha256": "2a0fab6db631b3642bbfa81cf4be90ec8c127f62d036851b266d5e830b51fffe",
     "calibration": {
       "floor": 0.14,
       "knot": 0.95,
       "delta": 0.05
     }
+  },
+  "liftCylinderRestPose": {
+    "schemaVersion": 1,
+    "coordinateSpace": "three-y-up-local-m",
+    "base": [
+      0.48,
+      0.16123456790123458,
+      0
+    ],
+    "mid": [
+      0.0722517010692533,
+      0.5084708379011581,
+      0
+    ],
+    "tip": [
+      0,
+      0.5700000000000001,
+      0
+    ]
+  },
+  "liftCrossshaft": {
+    "schemaVersion": 1,
+    "node": "cad_lifting_staging_table_v1_crossshaft_metal",
+    "center": [
+      0,
+      0.5700000000000001,
+      0
+    ],
+    "axis": [
+      0,
+      0,
+      1
+    ],
+    "radius": 0.018,
+    "length": 0.78
   }
 }

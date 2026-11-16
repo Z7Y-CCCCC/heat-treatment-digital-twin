@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createServiceControl } = require('../serviceControl.cjs');
+const { createServiceControl, collectorCenterViewForPath, collectorCenterArguments } = require('../serviceControl.cjs');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function response() { return { writeHead(status) { this.status = status; }, end(body) { this.data = JSON.parse(body); } }; }
 function fixture(overrides = {}) {
@@ -48,6 +48,30 @@ test('center waits for spawn confirmation and blocks duplicate opens', async () 
     const f = fixture(); const result = f.request('POST', '/service/collector-center');
     assert.equal(result.status, undefined); assert.equal(f.request('POST', '/service/collector-center').status, 409);
     await tick(); assert.equal(result.status, 200); assert.equal(result.data.opened, true); assert.deepEqual(f.calls, ['center']);
+});
+
+test('center scopes preserve existing permission IDs and dispatch exact view receipts without restarting a service', async () => {
+    const selections = [], f = fixture({ openCenter: async options => { selections.push(options); return { opened: true, view: options.view }; } });
+    for (const [path, view] of [['/service/collector-center/data', 'points'], ['/service/collector-center/runtime', 'overview']]) {
+        const result = f.request('POST', path); await tick(); await tick();
+        assert.equal(result.status, 200); assert.deepEqual(result.data, { success: true, opened: true, view });
+        assert.equal(collectorCenterViewForPath(path), view);
+    }
+    assert.deepEqual(selections, [{ view: 'points' }, { view: 'overview' }]); assert.deepEqual(f.calls, []); assert.deepEqual(f.queued, []);
+});
+test('a spawned old center or mismatched view receipt cannot be reported as the requested page opening', async () => {
+    for (const receipt of [undefined, { opened: true }, { opened: true, view: 'overview' }, { opened: false, view: 'points' }]) {
+        const f = fixture({ openCenter: async () => receipt }), result = f.request('POST', '/service/collector-center/data');
+        await tick(); await tick(); assert.equal(result.status, 503); assert.equal(result.data.success, false);
+    }
+});
+test('center argv is a pure fixed whitelist and navigation cannot carry URLs, commands, arbitrary tabs or test paths', () => {
+    assert.deepEqual(collectorCenterArguments(), []); assert.deepEqual(collectorCenterArguments('points'), ['--open-view', 'points']); assert.deepEqual(collectorCenterArguments('overview'), ['--open-view', 'overview']);
+    for (const view of ['logs', 'points;cmd', 'http://HOST', '../quit', '', 0, {}]) assert.throws(() => collectorCenterArguments(view));
+    const f = fixture();
+    for (const path of ['/service/collector-center/points', '/service/collector-center/data?view=overview', '/service/collector-center/runtime/quit']) {
+        assert.equal(collectorCenterViewForPath(path), null); assert.equal(f.request('POST', path).handled, false);
+    }
 });
 test('operation receipts expire without affecting work or permitting unknown IDs', () => {
     let now = 1000; const f = fixture({ now: () => now });

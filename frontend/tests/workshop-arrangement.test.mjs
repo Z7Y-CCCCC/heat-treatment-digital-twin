@@ -46,7 +46,8 @@ test('automatic docking spacing never repacks manual X, resizes lines, reorders 
     assert.deepEqual({ l, r }, original)
     assert.deepEqual(plan.rows.map(d => [d.id, d.x]), r.map(d => [d.id, d.x]))
     assert.deepEqual(plan.layout.lanes.map(d => [d.id, d.length]), l.lanes.map(d => [d.id, d.length]))
-    assert.deepEqual(plan.layout.rails, l.rails)
+    assert.deepEqual(plan.layout.rails.map(({length,...rail})=>rail),l.rails.map(({length,...rail})=>rail))
+    assert.ok(plan.layout.rails.every(rail=>rail.length===60),'Rail length follows occupied equipment rows; its origin and spacing remain unchanged')
     for (const after of plan.rows) {
       const before = r.find(d => d.id === after.id)
       assert.deepEqual({ ...after, z: before.z }, before, 'only depth may change, not X/Y, calibration, rotation or station identity')

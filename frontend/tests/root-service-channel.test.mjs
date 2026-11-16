@@ -10,6 +10,7 @@ const session = reactive({ ready: true, authenticated: true, displayAuthenticate
   accountSlotId: 'main', user: { id: 'owner' }, permissions: { view: true, launch: true }, sessionRevision: 0 })
 let reconnect = async () => ({ success: true, channels: 1 })
 test.mock.module('../src/runtime/adminSession.js', { namedExports: { adminSession: session,
+  bootstrapDisplayAccess: async () => ({ success: true, displayOnly: true }),
   issueNativeSessionTicket: async () => 'owned-ticket', logoutCurrentAdminAccount: async () => {},
   refreshAdminSession: async () => {}, startAdminSessionTracking() {}, stopAdminSessionTracking() {} } })
 test.mock.module('../src/runtime/DataStore.js', { namedExports: { reconnectActiveDashboardChannels: options => reconnect(options) } })

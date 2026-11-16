@@ -5,12 +5,17 @@ const { normalizeUsername } = require('../../shared/accountPolicy.mjs');
 const { recentUsernames, decodeLoginHistory, encodeLoginHistory } = require('../services/adminLoginHistory');
 const { getAdminPageCatalog } = require('../../shared/adminPages.mjs');
 const DISPLAY_COOKIE_MS = 30 * 24 * 60 * 60 * 1000;
+const { isLicenseEnforced, getLicenseStatus } = require('../services/license');
 const {
     activeAdminAccountSlot,
     adminAccountCookieName,
     adminActiveAccountCookieName,
     adminSessionCookieName,
     adminWebSocketCookieName,
+    displaySessionCookieName,
+    suppliedDisplaySession,
+    suppliedReadSession,
+    createOperationRateLimiter,
     isLoopbackAddress,
     isTrustedAdminOrigin,
     suppliedAdminAccounts,
@@ -90,7 +95,7 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
     }
 
     router.get('/session', handle((req, res, service) => {
-        const token = suppliedAdminSession(req), status = service.status(token);
+        const token = suppliedReadSession(req, service), status = service.status(token);
         syncSocketCookie(req, res, token, status);
         res.json({ ...status, accountSlotId: activeAdminAccountSlot(req) });
     }));
@@ -148,6 +153,23 @@ module.exports = function createAdminAuthRouter(auth = getAdminAuth) {
     }));
     router.post('/native-ticket', handle((req, res, service) => {
         res.json({ success: true, ...service.createNativeTicket(suppliedAdminSession(req), req.get('x-csrf-token')) });
+    }));
+    router.post('/display-bootstrap', createOperationRateLimiter({ name: 'display-bootstrap', limit: 30, windowMs: 60000 }), handle((req, res, service) => {
+        if (isLicenseEnforced() && !getLicenseStatus().valid) {
+            res.status(402).json({ success: false, code: 'LICENSE_REQUIRED', error: '请先激活当前电脑的大屏许可证' }); return;
+        }
+        const result = service.bootstrapDisplay(suppliedDisplaySession(req));
+        res.cookie(displaySessionCookieName(), result.token, { ...cookieOptions(req), maxAge: DISPLAY_COOKIE_MS });
+        res.json({ success: true, displayOnly: true });
+    }));
+    router.post('/native-display-ticket', handle((req, res, service) => {
+        // The CSRF belongs to the isolated display identity, not a locked or
+        // privileged account selected in the other WebView.
+        const token = suppliedDisplaySession(req), status = service.status(token);
+        // Header must match the current display CSRF when the selected session
+        // is itself display-only; an existing engineer session is checked too.
+        service.requireSession(suppliedReadSession(req, service), req.get('x-csrf-token'), { permission: 'account' });
+        res.json({ success: true, ...service.createDisplayTicket(token, status.csrfToken) });
     }));
     router.post('/native-exchange', handle((req, res, service) => {
         sendSession(req, res, service.exchangeNativeTicket(req.body?.ticket, suppliedAdminSessionForSlot(req, 'main')));

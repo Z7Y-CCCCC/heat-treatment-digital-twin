@@ -53,6 +53,8 @@ internal sealed partial class AdminPanelForm : Form
     private string _dashboardAccessError = string.Empty;
     private bool _returnToDashboardAfterUnlock;
     private bool _initialMapPending = true;
+    private readonly TaskCompletionSource<bool> _displayAccessReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private bool _waitingForAutomaticDisplay;
     private bool _dragging;
     private bool _draggingParentWindow;
     private bool _parentDragStarted;
@@ -311,10 +313,19 @@ internal sealed partial class AdminPanelForm : Form
             }
             await _adminPageReady.Task;
             if (_closing || IsDisposed) return;
+            // NavigationCompleted precedes Vue's cookie/bootstrap request. Do
+            // not mistake that gap for a required engineer login. An older or
+            // unavailable service returns to the admin/error surface, never a
+            // 0% native scene cover waiting indefinitely for credentials.
+            var displayReady = false;
+            var displayWaitTimedOut = false;
+            try { displayReady = await _displayAccessReady.Task.WaitAsync(TimeSpan.FromSeconds(12), _pipeCancellation.Token); }
+            catch (TimeoutException) { displayWaitTimedOut = true; WriteHostInfo("展示启动确认超时，保留后台入口，不报告场景就绪"); }
+            if (_closing || IsDisposed) return;
             // Complete the initial placement before the desktop startup cover
             // is removed. An unsigned-in user must see the existing admin
             // login, never a second login painted on the Unity scene.
-            if (!_adminVisible && await HasDashboardLaunchPermissionAsync())
+            if (!_adminVisible && displayReady && await HasDashboardLaunchPermissionAsync())
             {
                 if (_dashboardOverlay != null)
                 {
@@ -326,6 +337,7 @@ internal sealed partial class AdminPanelForm : Form
             {
                 _returnToDashboardAfterUnlock = true;
                 ShowAdmin();
+                _waitingForAutomaticDisplay = displayWaitTimedOut;
             }
             await ReportStartupReadyAsync();
             _status.Text = "已嵌入 Unity 大屏 · 可拖动后台管理页签";
@@ -393,6 +405,17 @@ internal sealed partial class AdminPanelForm : Form
             var root = document.RootElement;
             if (!root.TryGetProperty("type", out var typeElement)) return;
             var type = typeElement.GetString();
+            if (type == "display_access_ready")
+            {
+                var ready = root.TryGetProperty("success", out var confirmed) && confirmed.ValueKind == JsonValueKind.True;
+                _displayAccessReady.TrySetResult(ready);
+                if (ready && _waitingForAutomaticDisplay)
+                {
+                    _waitingForAutomaticDisplay = false;
+                    ShowDashboard(); // Late service recovery still needs no password.
+                }
+                return;
+            }
             if (type == "service_connection_action")
             {
                 if (ServiceConnectionPolicy.IsAdminSource(args.Source, _options.Url))
@@ -952,6 +975,7 @@ internal sealed partial class AdminPanelForm : Form
 
     private void ShowAdmin()
     {
+        _waitingForAutomaticDisplay = false; // An explicit admin request must not be stolen by a late startup reply.
         _castPresentationMode = false;
         _dashboardOverlay?.SetPresentationMode(false);
         _adminVisible = true;

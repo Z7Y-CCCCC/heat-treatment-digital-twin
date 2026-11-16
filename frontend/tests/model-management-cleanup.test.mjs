@@ -40,18 +40,24 @@ test('saving inspection or bindings preserves legacy render settings and history
   for (const key of ['assetSpec', 'acceptance', 'release']) assert.equal(Object.hasOwn(fresh, key), false)
 })
 
-test('motion package actions are right aligned beside mode tabs, not an import banner in model management', () => {
+test('model management owns the sole icon-only asset toolbar while all three pages remain independent', () => {
   const workspace = panel.slice(panel.indexOf('<div class="motion-workspace-toolbar">'), panel.indexOf('<template v-else>', panel.indexOf('<div class="motion-workspace-toolbar">')))
-  assert.match(workspace, /<nav class="motion-workspace-modes"[\s\S]*<ModelAssetTransfer/)
+  assert.match(workspace, /<nav class="motion-workspace-modes"/)
+  assert.doesNotMatch(workspace, /<ModelAssetTransfer/)
+  assert.match(panel, /class="model-assets-page-heading"[\s\S]*?<h2>模型管理<\/h2>[\s\S]*?<ModelAssetTransfer/)
   assert.equal((panel.match(/<ModelAssetTransfer /g) || []).length, 1)
-  assert.doesNotMatch(transfer, /项目导入文件|安装包无预置|asset-toolbar|asset-transfer/)
+  assert.deepEqual(adminNavPages('models').map(page => page.key), ['models', 'disassembly-layout', 'model-animations'])
+  assert.doesNotMatch(transfer, /项目导入文件|安装包无预置/)
   const actions = transfer.slice(transfer.indexOf('<div class="motion-package-actions"'), transfer.indexOf('<Teleport'))
-  assert.equal((actions.match(/<button /g) || []).length, 2)
-  assert.match(actions, />导入动作包<\/button>/)
-  assert.match(actions, />导出动作包<\/button>/)
+  assert.equal((actions.match(/<button /g) || []).length, 4)
+  for (const label of ['导入模型资产', '导出模型资产', '补充更新模型资产', '模型资产版本']) assert.ok(actions.includes(`aria-label="${label}"`))
+  for (const button of actions.match(/<button\b[\s\S]*?<\/button>/g)) {
+    assert.match(button, /<AssetTransferIcon/)
+    assert.equal(button.replace(/<[^>]*>/g, '').trim(), '', 'asset tools use icons, not visible button text')
+  }
   assert.doesNotMatch(actions, /<select|<p>|<strong>/)
-  assert.match(transfer, /\.motion-package-actions\s*\{[^}]*margin-left: auto/)
   assert.match(transfer, /<style scoped src="\.\.\/styles\/form-controls.css"/)
+  assert.match(transfer, /<style scoped src="\.\.\/styles\/model-asset-transfer.css"/)
 })
 
 test('package dialogs keep explicit import confirmation, checksum validation and safe dismissal', () => {
@@ -60,7 +66,8 @@ test('package dialogs keep explicit import confirmation, checksum validation and
   assert.doesNotMatch(transfer, /@click.self|@pointerout|@mouseleave/)
   assert.match(transfer, /function closeDialog\(\)\s*\{\s*if \(busy.value\) return/)
   assert.match(transfer, /inspectedSha256/)
-  assert.match(transfer, /:disabled="busy \|\| !canAdminPage\('models', 'edit'\)"/)
+  assert.match(transfer, /canEdit = computed\(\(\) => canAdminPage\('models', 'edit'\)\)/)
+  assert.match(transfer, /blocked = computed\(\(\) => busy.value \|\| props.disabled \|\| props.dirty\)/)
   assert.match(transfer, /new Set\(exportIds.value\)/)
   assert.doesNotMatch(transfer, /const id = props.selectedId \|\| exportId.value/)
   assert.match(transfer, /onUnmounted\(\(\) => \{ disposed = true; controller\?\.abort\(\)/)
@@ -94,13 +101,26 @@ for (const reused of [false, true]) test(`raw model upload selects the server's 
 
 test('removed inspection and binding steps cannot be selected or mutate a model', async () => {
   const steps = [{ key: 'library' }, { key: 'ports' }], modelLibraryStep = { value: 'library' }
-  const deps = { MODEL_LIBRARY_STEPS: steps, modelLibraryStep, modelNameSaving: { value: false }, modelUploading: { value: false },
+  const deps = { MODEL_LIBRARY_STEPS: steps, modelLibraryStep, modelAssetLocked: { value: false }, modelNameSaving: { value: false }, modelUploading: { value: false },
     activePreviewModel: { value: { id: 'model-a' } }, activePreviewIsEnvironment: { value: false },
     modelLoadingPortRef: { value: { canLeave: () => { throw Error('removed steps must not start navigation') } } },
     nextTick: () => { throw Error('unexpected render') }, renderSelectedModelPreview: () => { throw Error('unexpected render') }, disposeModelPreview: () => {} }
   const body = panel.slice(panel.indexOf('function modelLibraryStepRequiresModel('), panel.indexOf('async function loadModels('))
   const select = new Function(...Object.keys(deps), `${body};return selectModelLibraryStep`)(...Object.values(deps))
   for (const step of ['inspection', 'bindings']) { await select(step); assert.equal(modelLibraryStep.value, 'library') }
+})
+
+test('an open asset operation prevents changing the underlying model-management step', async () => {
+  const modelLibraryStep = { value: 'library' }
+  const forbidden = () => { throw Error('a locked asset operation must not navigate or dispose its model context') }
+  const deps = { modelAssetLocked: { value: true }, modelLibraryStep, MODEL_LIBRARY_STEPS: [{ key: 'library' }, { key: 'ports' }],
+    modelNameSaving: { value: false }, modelUploading: { value: false }, activePreviewModel: { value: { id: 'fixture' } },
+    activePreviewIsEnvironment: { value: false }, modelLoadingPortRef: { value: { canLeave: forbidden } },
+    nextTick: forbidden, renderSelectedModelPreview: forbidden, disposeModelPreview: forbidden }
+  const body = panel.slice(panel.indexOf('function modelLibraryStepRequiresModel('), panel.indexOf('async function loadModels('))
+  const select = new Function(...Object.keys(deps), `${body};return selectModelLibraryStep`)(...Object.values(deps))
+  await select('ports')
+  assert.equal(modelLibraryStep.value, 'library')
 })
 
 test('model action column uses the animation list, including built-ins and excluding retired clips', () => {

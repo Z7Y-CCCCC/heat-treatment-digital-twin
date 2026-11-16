@@ -9,6 +9,7 @@ import { adminApi } from '../src/config/factoryConfig.js'
 import { installBrowser, settle } from './helpers.mjs'
 import { normalizeLineLayout, defaultLineLayout } from '../src/views/admin/utils/lineLayout.js'
 import { lineSceneUnitsPerMeter, movementSceneUnitsPerMeter, assertLineMovementUnits, resolveLineRailSpacing, editLineRailSpacing, shiftRailMovement } from '../../shared/lineRailSpacing.mjs'
+import {syncLineRailLength} from '../../shared/lineRailLength.mjs'
 
 const require = createRequire(new URL('../../backend/package.json', import.meta.url))
 const { normalizeLineLayout: normalizeBackend } = require('./utils/spatialLayout.js')
@@ -180,7 +181,7 @@ async function fieldFixture(t, options = {}) {
     return api.realFetch(api.base + pathname, { ...options, headers })
   })
   const dependencies = { selectedLineEditor: line, devices, lineDeviceLayoutBusy: busy, lineLayoutSaving: saving,
-    canAdminPage: () => true, normalizeLineLayout, defaultLineLayout, editLineRailSpacing, shiftRailMovement, adminApi, savedLineLayoutSnapshots, savedDeviceLayoutSnapshots,
+    canAdminPage: () => true, normalizeLineLayout, defaultLineLayout, editLineRailSpacing, shiftRailMovement, syncLineRailLength, adminApi, savedLineLayoutSnapshots, savedDeviceLayoutSnapshots,
     parseInstanceConfig: value => typeof value === 'string' ? JSON.parse(value) : value || {}, numberOrDefault: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback, getLineBaseZ: () => 0,
     getDevicesBoundToLayoutItem: (type, id, owner, source = devices.value) => source.filter(row => { const config = typeof row.instance_config === 'string' ? JSON.parse(row.instance_config) : row.instance_config; return String(config[type === 'rail' ? 'railId' : 'laneId']) === String(id) && String(config[type === 'rail' ? 'railLineId' : 'laneLineId'] || row.line_id) === String(owner.id) }),
     getLineDeviceById: id => devices.value.find(row => row.id === id), alert: (message, options) => alerts.push({ message, options }),
@@ -337,7 +338,8 @@ for (const units of [.8, 1.25, 2]) test(`saved legacy line ${units} units/m has 
   assert.deepEqual(savedConfig.animationBindings, initial.instance_config.animationBindings); assert.deepEqual(savedConfig.custom, initial.instance_config.custom)
   await f.reopen(); assert.equal(hasCalibrationControl(), false); assert.equal(f.line.value.layout.sceneUnitsPerMeter, units); assert.equal(f.field('小车导轨 设备线与轨道中心距（米）').value, '0.6')
   approximate(Number(f.field('小车导轨 偏移Z').value), .6 * units)
-  const text = f.elements().map(node => node.text).join(' '); assert.match(text, /固定基准 \/ 约束跟随/); assert.match(text, /长度（场景坐标）/); assert.doesNotMatch(text, /偏移Z（米）/)
+  const text = f.elements().map(node => node.text).join(' '); assert.match(text, /固定基准 \/ 约束跟随/); assert.match(text, /长度 · 自动跟随设备线/); assert.doesNotMatch(text, /偏移Z（米）/)
+  assert.equal(f.field('小车导轨 长度').props.disabled,true,'Single-rail length is dependent, not an independently editable calibration')
   assert.equal(f.field('小车导轨 偏移Z').props.disabled, true, 'The carrier rail cannot be repositioned with the arbitrary offset control')
   const before = JSON.stringify({ layout: f.line.value.layout, devices: f.devices.value })
   f.busy.value = true; await settled(); await f.field('小车导轨 设备线与轨道中心距（米）').fire('change', '99')

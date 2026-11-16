@@ -45,7 +45,7 @@ const PROFILES = {
         ['电气柜与柜体附件', ['electrics','cabinet_details'], [1.35,.75,.3]],
         ['承料辊道', ['roller_bed'], [0,1.2,0]],
         ['送料电机与链轮', ['feed_motor','feed_sprocket'], [-1.2,1.0,0]],
-        ['推料机构', ['pusher'], [0,.45,1.4]],
+        ['推料机构与推拉钩', ['pusher'], [0,.45,1.4]],
         ['回链导向机构', ['return_chain'], [0,.4,-1.4]],
         ['送料联锁附件', ['feed_interlock'], [0,1.2,1.0]]
     ]],

@@ -101,6 +101,7 @@ function summary(asset) {
     const m = asset.manifest.model;
     return { model: { id: m.id, name: m.name, assetType: m.asset_type, placementLevel: m.placement_level },
         actions: asset.actions.map(({ id, label, mode, duration }) => ({ id, label, mode, duration })), files: asset.manifest.files,
+        hasInspection: single.assetCapabilities(asset).inspection, contentCapabilities: single.assetCapabilities(asset),
         partBindingCount: require('./modelAssetMetadata').normalizeModelMetadata(m.metadata).partBindings.length };
 }
 async function inspectPackage(filename, db = null, factoryId = '') {

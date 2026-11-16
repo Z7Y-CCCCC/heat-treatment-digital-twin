@@ -21,6 +21,7 @@ export function resolveLinePlacementTemplate(layout) {
   if (t.compact !== undefined && typeof t.compact !== 'boolean'
       || t.clearanceGapMeters !== undefined && (!Number.isFinite(t.clearanceGapMeters) || t.clearanceGapMeters <= 0 || t.clearanceGapMeters > 10)) fail('产线布局留缝设置无效')
   if (t.independentSides !== undefined && typeof t.independentSides !== 'boolean') fail('双侧排布方式无效')
+  if (t.mouthAligned !== undefined && typeof t.mouthAligned !== 'boolean') fail('料口对齐方式无效')
   if (t.independentSides && t.kind === 'dual' && (!finite(t.secondaryMinimumDistance) || t.secondaryMinimumDistance <= 0)) fail('第二侧间距无效')
   const rails = layout.rails || [], lanes = layout.lanes || []
   if (rails.length !== 1 || rails[0].id !== t.railId || rails[0].spacing != null
@@ -37,7 +38,7 @@ export function resolveLinePlacementTemplate(layout) {
     if (t.independentSides) {
       const secondaryDistance = (t.railOffsetZ - secondary.offsetZ) * sign
       if (!finite(secondaryDistance) || secondaryDistance < t.secondaryMinimumDistance - 1e-7) fail('第二侧设备线侵入小车通道')
-    } else secondary.offsetZ = Number((t.railOffsetZ - sign * distance).toFixed(6))
+    } else secondary.offsetZ = Number((t.railOffsetZ - sign * distance).toFixed(t.mouthAligned===true?12:6))
     if (!finite(secondary.offsetZ) || Math.fround(secondary.offsetZ) === Math.fround(t.railOffsetZ)) fail('第二条设备线超出场景坐标范围')
   }
   return next
@@ -84,9 +85,11 @@ export function assertLineTemplateClearance(layout, rows) {
   if (collisions.length) fail(`模型外形仍重叠：${collisions.slice(0, 3).map(([a, b]) => `${a.name || a.id} / ${b.name || b.id}`).join('、')}。请调整同排设备前后间距；未缩小模型或挤动导轨。`)
 }
 
-export function lineTemplateSpacingLimits(layout,rows,lanes,rail,gapMeters){
+export function lineTemplateSpacingLimits(layout,rows,lanes,rail,gapMeters,{measuredMinimum=false}={}){
   const units=layout.sceneUnitsPerMeter??1,carts=rows.filter(r=>r.railId===rail.id),gap=gapMeters*units
-  let minimum=2*units,maximum=Infinity
+  // A commissioned short-stroke cart must not fail only because of the old
+  // aesthetic 2 m floor. New mouth-aligned plans use measured body clearance.
+  let minimum=measuredMinimum&&lanes.some(([lane])=>rows.some(r=>r.laneId===lane.id))?0:2*units,maximum=Infinity
   for(const [lane,side] of lanes)for(const row of rows.filter(r=>r.laneId===lane.id)){
     const relative=row.z-lane.offsetZ
     if(!carts.length)minimum=Math.max(minimum,.5*units+gap+(side<0?relative+row.maxZ:-relative-row.minZ))
@@ -104,7 +107,34 @@ export function lineTemplateSpacingLimits(layout,rows,lanes,rail,gapMeters){
   return {minimum,maximum}
 }
 
-export function planLinePlacementTemplate(layout, kind, rows, gapMeters, { independentSides = false } = {}) {
+// Prefer the existing presentation grid, but a real, narrower mechanical
+// interval must not be rejected just because it contains no 50 mm grid point.
+// Quantize the actual lane coordinate (not only its distance from the rail),
+// and never round it beyond the original reach maximum. No saved layout is
+// migrated by this selector; it is used only while planning/checking a band.
+export function selectLineTemplateDistance({minimum,maximum},units=1,{compact=true,railOffsetZ=0,side=1}={}){
+  if(!Number.isFinite(minimum)||minimum<0||!(Number.isFinite(maximum)||maximum===Infinity)
+      ||!Number.isFinite(units)||units<=0||!Number.isFinite(railOffsetZ)||![1,-1].includes(side))return null
+  const tolerance=Number.EPSILON*16*Math.max(1,units,Math.abs(minimum),Math.abs(railOffsetZ))
+  if(minimum>maximum+tolerance)return null
+  const distanceAt=coordinate=>side*(coordinate-railOffsetZ)
+  const usable=distance=>Number.isFinite(distance)&&distance>=minimum-tolerance&&distance<=maximum
+  const snapped=compact?Math.ceil((minimum/units-1e-8)*20)/20*units:Math.ceil(minimum*10)/10
+  const snappedDistance=distanceAt(Number((railOffsetZ+side*snapped).toFixed(12)))
+  if(usable(snappedDistance))return snappedDistance
+  for(const precision of [6,9,12]){
+    const roundedDistance=distanceAt(Number((railOffsetZ+side*minimum).toFixed(precision)))
+    if(usable(roundedDistance))return roundedDistance
+    const scale=10**precision,target=(railOffsetZ+side*minimum)*scale
+    let coordinate=Number(((side>0?Math.ceil(target):Math.floor(target))/scale).toFixed(precision))
+    if(distanceAt(coordinate)<minimum-tolerance)coordinate=Number((coordinate+side/scale).toFixed(precision))
+    const distance=distanceAt(coordinate)
+    if(usable(distance))return distance
+  }
+  return null
+}
+
+export function planLinePlacementTemplate(layout, kind, rows, gapMeters, { independentSides = false, measuredMinimum = false } = {}) {
   if (!LINE_PLACEMENT_TEMPLATES.some(row => row.id === kind)) fail('请选择一种布局模板')
   lineEnvelopeIntersections(rows)
   const next = clone(layout), units = next.sceneUnitsPerMeter ?? 1, dual = kind === 'dual'
@@ -123,22 +153,23 @@ export function planLinePlacementTemplate(layout, kind, rows, gapMeters, { indep
   next.lanes = dual ? [primary, secondary] : [primary]
   const side = dual ? (next.placementTemplate?.primarySide || (primary.offsetZ < rail.offsetZ ? 'negative' : 'positive')) : kind === 'single-negative' ? 'negative' : 'positive'
   const sign = side === 'negative' ? -1 : 1
-  const limits=lineTemplateSpacingLimits(next,rows,[[primary,sign],...(dual&&!independentSides?[[secondary,-sign]]:[])],rail,gapMeters)
-  let minimum=compact?Math.ceil((limits.minimum/units-1e-8)*20)/20*units:Math.ceil(limits.minimum*10)/10
-  if(minimum>limits.maximum+1e-6)fail(`这组设备的进料面没有对齐，无法同时留缝并在原行程内交接。请核对进出料口位置和模型朝向；未改变原布局，也不会拉长机构行程。`)
+  const limits=lineTemplateSpacingLimits(next,rows,[[primary,sign],...(dual&&!independentSides?[[secondary,-sign]]:[])],rail,gapMeters,{measuredMinimum})
+  let minimum=selectLineTemplateDistance(limits,units,{compact,railOffsetZ:rail.offsetZ,side:sign})
+  if(minimum===null)fail(`这组设备的进料面没有对齐，无法同时留缝并在原行程内交接。请核对进出料口位置和模型朝向；未改变原布局，也不会拉长机构行程。`)
   let secondaryMinimum = minimum
   if (dual && independentSides) {
-    const other = lineTemplateSpacingLimits(next, rows, [[secondary, -sign]], rail, gapMeters)
-    secondaryMinimum = compact ? Math.ceil((other.minimum / units - 1e-8) * 20) / 20 * units : Math.ceil(other.minimum * 10) / 10
-    if (secondaryMinimum > other.maximum + 1e-6) fail('第二侧设备的料口与原机构行程没有可用间距，请核对该侧料口和模型朝向；未改变原布局。')
+    const other = lineTemplateSpacingLimits(next, rows, [[secondary, -sign]], rail, gapMeters, {measuredMinimum})
+    secondaryMinimum = selectLineTemplateDistance(other,units,{compact,railOffsetZ:rail.offsetZ,side:-sign})
+    if (secondaryMinimum === null) fail('第二侧设备的料口与原机构行程没有可用间距，请核对该侧料口和模型朝向；未改变原布局。')
   }
   // Only explicit, confirmed template application selects the measured gap.
   const distance = minimum
   delete rail.spacing
   next.placementTemplate = { version: 1, kind, railId: rail.id, railOffsetZ: rail.offsetZ, primaryLaneId: primary.id, primarySide: side,
+    ...(measuredMinimum ? { mouthAligned: true } : {}),
     ...(dual ? { secondaryLaneId: secondary.id, ...(independentSides ? { independentSides: true, secondaryMinimumDistance: secondaryMinimum } : {}) } : {}), minimumDistance: minimum,...(compact?{clearanceGapMeters:gapMeters,compact:true}: {}) }
-  primary.offsetZ = Number((rail.offsetZ + sign * distance).toFixed(6))
-  if (dual && independentSides) secondary.offsetZ = Number((rail.offsetZ - sign * secondaryMinimum).toFixed(6))
+  primary.offsetZ = Number((rail.offsetZ + sign * distance).toFixed(12))
+  if (dual && independentSides) secondary.offsetZ = Number((rail.offsetZ - sign * secondaryMinimum).toFixed(12))
   const resolved = resolveLinePlacementTemplate(next)
   const moved = rows.map(row => {
     const oldLane = layout.lanes.find(lane => lane.id === row.laneId), newLane = resolved.lanes.find(lane => lane.id === row.laneId)

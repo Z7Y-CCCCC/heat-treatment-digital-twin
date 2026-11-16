@@ -2,7 +2,7 @@
 // Compact templates allow up to 0.2 m, bounded by the original mechanism.
 // Legacy layouts retain their 0.5 m presentation allowance until reapplied.
 const fail = message => { throw Error(message) }
-import {lineTemplateSpacingLimits} from './linePlacementTemplate.mjs'
+import {lineTemplateSpacingLimits,selectLineTemplateDistance} from './linePlacementTemplate.mjs'
 export function lineAdjustmentBand(layout, rows, allowanceMeters = .5) {
   const t = layout?.placementTemplate
   if (!t) return null
@@ -28,9 +28,18 @@ export function lineAdjustmentBand(layout, rows, allowanceMeters = .5) {
     minimum = Math.max(minimum, side < 0 ? rail.offsetZ - low + gap + relative + row.maxZ : high - rail.offsetZ + gap - relative - row.minZ)
   }
   let reachMaximum=Infinity
-  if(t.compact){const limits=lineTemplateSpacingLimits(layout,rows,lanes,rail,t.clearanceGapMeters??.15);minimum=Math.max(t.minimumDistance,Math.ceil((limits.minimum/units-1e-8)*20)/20*units);reachMaximum=limits.maximum;allowanceMeters=Math.min(allowanceMeters,.2)}
+  if(t.compact){
+    const limits=lineTemplateSpacingLimits(layout,rows,lanes,rail,t.clearanceGapMeters??.15,{measuredMinimum:t.mouthAligned===true})
+    // Share the planner's feasible-distance selection: a valid short interval
+    // need not contain a 50 mm grid point. Reading a band never changes its
+    // saved baseline or grants additional mechanical reach.
+    const selected=selectLineTemplateDistance({...limits,minimum:Math.max(t.minimumDistance,limits.minimum)},units,{compact:true,railOffsetZ:rail.offsetZ,side:sign})
+    if(selected===null)fail('这排设备距离不合适，请先点“进料面前后对齐”并重新选择布局模板')
+    minimum=selected;reachMaximum=limits.maximum;allowanceMeters=Math.min(allowanceMeters,.2)
+  }
   else minimum = Math.ceil((minimum - 1e-8) * 10) / 10
-  let maximum = Number(Math.min(minimum + allowanceMeters * units,reachMaximum).toFixed(6))
+  let maximum = Math.min(minimum + allowanceMeters * units,reachMaximum)
+  if(!t.compact)maximum=Number(maximum.toFixed(6))
   if(maximum<minimum-1e-6)fail('这排设备距离不合适，请先点“进料面前后对齐”并重新选择布局模板')
   if (t.compact && (maximum < minimum || Math.fround(rail.offsetZ + sign * minimum) === Math.fround(rail.offsetZ + sign * maximum))) maximum = minimum
   const ends = [rail.offsetZ + sign * minimum, rail.offsetZ + sign * maximum]
@@ -47,7 +56,8 @@ export function lineAdjustmentBand(layout, rows, allowanceMeters = .5) {
 export function clampLineAdjustment(z, band, step = .05) {
   if (!band || !Number.isFinite(z) || !Number.isFinite(step) || step <= 0) fail('设备线微调范围尚未检查')
   // Snap first, clamp last: a rounded coordinate must not cross the measured edge.
-  return Number(Math.max(band.minZ, Math.min(band.maxZ, Math.round(z / step) * step)).toFixed(6))
+  const rounded=Number(Math.max(band.minZ, Math.min(band.maxZ, Math.round(z / step) * step)).toFixed(6))
+  return Math.max(band.minZ,Math.min(band.maxZ,rounded))
 }
 
 export function lineAdjustmentBandStyle(band, bounds, length) {
