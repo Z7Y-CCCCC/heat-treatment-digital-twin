@@ -20,10 +20,34 @@ public static class SetupPreviewNative {
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,System.Text.StringBuilder text,int max);
  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h,EnumProc p,IntPtr l);
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+ [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+ [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
+ [DllImport("user32.dll")] public static extern int GetWindowLongW(IntPtr h,int index);
  public static string[] Controls(IntPtr h){var list=new System.Collections.Generic.List<string>();EnumChildWindows(h,(c,l)=>{var t=new System.Text.StringBuilder(2048);GetWindowText(c,t,2048);Rect r;GetWindowRect(c,out r);list.Add(c+"|"+IsWindowVisible(c)+"|"+r.Left+","+r.Top+","+r.Right+","+r.Bottom+"|"+t);return true;},IntPtr.Zero);return list.ToArray();}
  public static string[] Texts(IntPtr h){var list=new System.Collections.Generic.List<string>();EnumChildWindows(h,(c,l)=>{var text=new System.Text.StringBuilder(2048);GetWindowText(c,text,2048);if(text.Length>0)list.Add(text.ToString());return true;},IntPtr.Zero);return list.ToArray();}
+ public static string[] VisibleTexts(IntPtr h){var list=new System.Collections.Generic.List<string>();EnumChildWindows(h,(c,l)=>{if(!IsWindowVisible(c))return true;var text=new System.Text.StringBuilder(2048);GetWindowText(c,text,2048);if(text.Length>0)list.Add(text.ToString());return true;},IntPtr.Zero);return list.ToArray();}
  public static string Text(IntPtr h){var text=new System.Text.StringBuilder(2048);GetWindowText(h,text,2048);return text.ToString();}
  public static IntPtr Edit(IntPtr h){IntPtr found=IntPtr.Zero;EnumChildWindows(h,(c,l)=>{var cls=new System.Text.StringBuilder(100);GetClassName(c,cls,100);if(cls.ToString()=="Edit" && IsWindowVisible(c)){found=c;return false;}return true;},IntPtr.Zero);return found;}
+ public static IntPtr CustomToggle(IntPtr h){
+  IntPtr found=IntPtr.Zero;
+  EnumChildWindows(h,(c,l)=>{
+   if(!IsWindowVisible(c) || !IsWindowEnabled(c))return true;
+   var cls=new System.Text.StringBuilder(100);GetClassName(c,cls,100);
+   if(!String.Equals(cls.ToString(),"Button",StringComparison.OrdinalIgnoreCase) || (GetWindowLongW(c,-16)&0xf)!=0xb)return true;
+   var text=Text(c);
+   if(text.StartsWith("自定义安装",StringComparison.Ordinal) || text.StartsWith("收起设置",StringComparison.Ordinal)){found=c;return false;}
+   return true;
+  },IntPtr.Zero);
+  return found;
+ }
+ public static bool ClickCustomToggle(IntPtr root){
+  var link=CustomToggle(root);if(link==IntPtr.Zero)return false;
+  var parent=GetParent(link);var id=GetDlgCtrlID(link);
+  if(parent==IntPtr.Zero || parent==root || id<0)return false;
+  // nsDialogs LINK is an owner-draw BUTTON. Its child dialog dispatches
+  // BN_CLICKED using the actual generated control ID, not the root's ID 1/2.
+  return PostMessage(parent,0x111,new IntPtr(id & 0xffff),link);
+ }
  public delegate bool EnumProc(IntPtr h,IntPtr l);
  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc p,IntPtr l);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
@@ -62,6 +86,22 @@ try {
   # window. BM_CLICK can silently fail for an inactive dialog (Win32 contract).
   $null=[SetupPreviewNative]::PostMessage($handle,0x111,[IntPtr]([int]$Id),$button);Start-Sleep -Milliseconds 600
  }
+ function Set-CustomExpanded([bool]$Expanded){
+  $toggle=[SetupPreviewNative]::CustomToggle($handle)
+  if($toggle -eq [IntPtr]::Zero){throw 'Missing visible custom-install toggle'}
+  $caption=[SetupPreviewNative]::Text($toggle)
+  $actualExpanded=$caption.StartsWith('收起设置',[StringComparison]::Ordinal)
+  if($actualExpanded -ne $Expanded){
+   if(-not [SetupPreviewNative]::ClickCustomToggle($handle)){throw 'Custom-install link notification was not delivered to its child dialog'}
+  }
+  for($n=0;$n -lt 50;$n++){
+   $caption=[SetupPreviewNative]::Text($toggle)
+   $editable=[SetupPreviewNative]::Edit($handle) -ne [IntPtr]::Zero
+   if($caption.StartsWith('收起设置',[StringComparison]::Ordinal) -eq $Expanded -and $editable -eq $Expanded){return}
+   Start-Sleep -Milliseconds 100
+  }
+  throw 'Custom-install expansion state was not confirmed'
+ }
  Start-Sleep -Milliseconds 500
  [SetupPreviewNative]::Controls($handle)|Set-Content -LiteralPath (Join-Path $OutputDirectory 'settings-controls.txt') -Encoding UTF8
  Capture '01-settings.png'
@@ -73,15 +113,25 @@ try {
   return
  }
  if($Scenario -eq 'normal'){
+  Set-CustomExpanded $true
   $edit=[SetupPreviewNative]::Edit($handle);if($edit -eq [IntPtr]::Zero){throw 'Missing editable installation path'}
   $original=[SetupPreviewNative]::Text($edit)
   foreach($invalid in @('relative-path','C:\',$env:WINDIR,(Join-Path $env:WINDIR 'System32'))){
-   [SetupPreviewNative]::SendMessage($edit,0xC,[IntPtr]::Zero,$invalid)|Out-Null;Click '1'
-   if([SetupPreviewNative]::Text([SetupPreviewNative]::GetDlgItem($handle,1037)) -ne '热处理数字孪生大屏'){throw "Invalid path entered installation: $invalid"}
-   if(-not ([SetupPreviewNative]::Texts($handle) -match '请选择|请不要|请为')){throw "Missing inline validation for $invalid"}
-   $pathChecks+=@{path=$invalid;blocked=$true}
+   foreach($collapsed in @($false,$true)){
+    Set-CustomExpanded $true
+    $edit=[SetupPreviewNative]::Edit($handle)
+    [SetupPreviewNative]::SendMessage($edit,0xC,[IntPtr]::Zero,$invalid)|Out-Null
+    if($collapsed){Set-CustomExpanded $false}
+    Click '1'
+    if([SetupPreviewNative]::Text([SetupPreviewNative]::GetDlgItem($handle,1037)) -ne '热处理数字孪生大屏'){throw "Invalid path entered installation: $invalid"}
+    $visibleErrors=[SetupPreviewNative]::VisibleTexts($handle)|Where-Object {$_ -match '^请选择|^请不要|^请为|^安装位置|^安装路径'}
+    if(-not $visibleErrors){throw "Missing visible inline validation for $invalid (collapsed=$collapsed)"}
+    if([SetupPreviewNative]::Edit($handle) -eq [IntPtr]::Zero){throw "Rejected path settings remained collapsed: $invalid"}
+    $pathChecks+=@{path=$invalid;collapsedBeforeSubmit=$collapsed;blocked=$true;visibleError=$true;settingsEditable=$true}
+   }
   }
   [SetupPreviewNative]::SendMessage($edit,0xC,[IntPtr]::Zero,$original)|Out-Null
+  Set-CustomExpanded $false
  }
  Click '1';Capture '02-installing.png'
  if([SetupPreviewNative]::Text([SetupPreviewNative]::GetDlgItem($handle,1037)) -eq '热处理数字孪生大屏'){

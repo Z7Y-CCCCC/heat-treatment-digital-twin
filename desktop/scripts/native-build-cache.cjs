@@ -29,6 +29,30 @@ function buildConfigurationInputs(project) {
   return files;
 }
 
+// MSBuild imports arbitrary environment properties, not just Version or a
+// small DOTNET_* allowlist. Hash the complete environment conservatively and
+// pass this same immutable snapshot to every tool invocation. Windows children
+// receive one case-insensitive key (matching Node's sorted first-key policy).
+// Only its digest belongs in a cache receipt; never persist environment values.
+function snapshotBuildEnvironment(environment = process.env, platform = process.platform) {
+  const snapshot = Object.create(null);
+  for (const name of Object.keys(environment).sort()) {
+    if (environment[name] === undefined || environment[name] === null) continue;
+    const key = platform === 'win32' ? name.toUpperCase() : name;
+    if (!Object.hasOwn(snapshot, key)) snapshot[key] = String(environment[name]);
+  }
+  return Object.freeze(snapshot);
+}
+function fingerprintBuildEnvironment(environment = process.env, platform = process.platform) {
+  const snapshot = snapshotBuildEnvironment(environment, platform);
+  return crypto.createHash('sha256').update(JSON.stringify(Object.keys(snapshot).sort().map(name => [name, snapshot[name]]))).digest('hex');
+}
+function assertBuildEnvironmentUnchanged(snapshot, environment = process.env, platform = process.platform) {
+  if (fingerprintBuildEnvironment(snapshot, platform) !== fingerprintBuildEnvironment(environment, platform)) {
+    throw Error('Native build environment changed during compilation');
+  }
+}
+
 async function buildCachedNative({ output, fingerprint, build, required, force = false, restoredState = () => '' }) {
   const marker = output + '.build.json', before = fingerprint();
   let cached;
@@ -53,4 +77,5 @@ async function buildCachedNative({ output, fingerprint, build, required, force =
   fs.renameSync(temporary, marker);
   return { reused: false };
 }
-module.exports = { fingerprintInputs, buildConfigurationInputs, buildCachedNative };
+module.exports = { fingerprintInputs, buildConfigurationInputs, buildCachedNative,
+  snapshotBuildEnvironment, fingerprintBuildEnvironment, assertBuildEnvironmentUnchanged };

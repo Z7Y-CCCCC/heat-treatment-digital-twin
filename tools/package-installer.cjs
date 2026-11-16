@@ -8,8 +8,12 @@ function compressionOptions(level, inherited = process.env) {
   const env = { ...inherited };
   // Builder 26's level env override always selects Deflate, even at level 0.
   // A genuine Copy/Store ZIP needs BOTH store config and no env override.
-  if (level === '0') delete env.ELECTRON_BUILDER_COMPRESSION_LEVEL;
-  else env.ELECTRON_BUILDER_COMPRESSION_LEVEL = level;
+  // Windows preserves inherited key casing while resolving it case-insensitively.
+  // Remove every spelling before optionally adding one canonical nonzero value.
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === 'ELECTRON_BUILDER_COMPRESSION_LEVEL') delete env[key];
+  }
+  if (level !== '0') env.ELECTRON_BUILDER_COMPRESSION_LEVEL = level;
   return { compression: level === '0' ? 'store' : 'normal', env };
 }
 

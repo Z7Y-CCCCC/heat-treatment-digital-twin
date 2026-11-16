@@ -270,12 +270,7 @@ FunctionEnd
 Function DisplayToggleCustom
   Pop $0
   ${If} $displayCustomExpanded == 0
-    StrCpy $displayCustomExpanded 1
-    SendMessage $displayCustomToggle ${WM_SETTEXT} 0 "STR:收起设置 ▴"
-    ShowWindow $displayPathPanel ${SW_SHOW}
-    ShowWindow $displayPath ${SW_SHOW}
-    ShowWindow $displayBrowse ${SW_SHOW}
-    ShowWindow $displayPathError ${SW_SHOW}
+    Call DisplayExpandCustomSettings
   ${Else}
     StrCpy $displayCustomExpanded 0
     SendMessage $displayCustomToggle ${WM_SETTEXT} 0 "STR:自定义安装 ▾"
@@ -284,6 +279,26 @@ Function DisplayToggleCustom
     ShowWindow $displayBrowse ${SW_HIDE}
     ShowWindow $displayPathError ${SW_HIDE}
   ${EndIf}
+FunctionEnd
+
+; Also callable from validation: unlike the click callback, this helper does
+; not pop a notification handle or collapse settings that are already open.
+Function DisplayExpandCustomSettings
+  StrCpy $displayCustomExpanded 1
+  SendMessage $displayCustomToggle ${WM_SETTEXT} 0 "STR:收起设置 ▴"
+  ShowWindow $displayPathPanel ${SW_SHOW}
+  ShowWindow $displayPath ${SW_SHOW}
+  ShowWindow $displayBrowse ${SW_SHOW}
+  ShowWindow $displayPathError ${SW_SHOW}
+FunctionEnd
+
+; Consume the error text while preserving the caller's path register. Every
+; rejected path must leave both its explanation and editable settings visible.
+Function DisplayShowPathError
+  Exch $0
+  Call DisplayExpandCustomSettings
+  SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:$0"
+  Pop $0
 FunctionEnd
 
 Function DisplayPathChanged
@@ -315,8 +330,8 @@ Function DisplaySettingsLeave
   StrCpy $2 $0 2 1
   ${If} $0 == ""
   ${OrIf} $2 != ":\"
-    ShowWindow $displayPathError ${SW_SHOW}
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:请选择本机磁盘上的完整安装路径。"
+    Push "请选择本机磁盘上的完整安装路径。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   ; Win32 normalization also supports a new, not-yet-created folder. The NSIS
@@ -324,7 +339,8 @@ Function DisplaySettingsLeave
   System::Call 'kernel32::GetFullPathNameW(w r0, i ${NSIS_MAX_STRLEN}, w.r3, p 0) i.r1'
   ${If} $1 == 0
   ${OrIf} $1 >= ${NSIS_MAX_STRLEN}
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:安装路径无效，请重新选择。"
+    Push "安装路径无效，请重新选择。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   StrCpy $0 $3
@@ -336,12 +352,14 @@ Function DisplaySettingsLeave
   ${EndIf}
   System::Call 'shlwapi::PathGetDriveNumberW(w r0) i.r1'
   ${If} $1 < 0
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:请选择本机磁盘上的完整安装路径。"
+    Push "请选择本机磁盘上的完整安装路径。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   System::Call 'shlwapi::PathIsPrefixW(w "$WINDIR", w r0) i.r1'
   ${If} $1 != 0
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:请不要将程序安装到 Windows 系统目录中。"
+    Push "请不要将程序安装到 Windows 系统目录中。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   System::Call 'shlwapi::PathIsRootW(w r0) i.r1'
@@ -351,21 +369,24 @@ Function DisplaySettingsLeave
   ${OrIf} $0 == "$PROGRAMFILES64"
   ${OrIf} $0 == "$COMMONFILES64"
   ${OrIf} $0 == "$PROFILE"
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:请为程序选择独立文件夹，不要直接安装到磁盘或系统目录。"
+    Push "请为程序选择独立文件夹，不要直接安装到磁盘或系统目录。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   System::Call 'kernel32::GetFileAttributesW(w r0) i.r1'
   ${If} $1 != -1
     IntOp $2 $1 & 0x10
     ${If} $2 == 0
-      SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:安装位置是一个文件，请选择独立文件夹。"
+      Push "安装位置是一个文件，请选择独立文件夹。"
+      Call DisplayShowPathError
       Abort
     ${EndIf}
   ${EndIf}
   Call DisplayProductDirectory
   StrLen $1 $0
   ${If} $1 > 180
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:安装路径过长，请选择较短的文件夹名称。"
+    Push "安装路径过长，请选择较短的文件夹名称。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   StrCpy $INSTDIR $0

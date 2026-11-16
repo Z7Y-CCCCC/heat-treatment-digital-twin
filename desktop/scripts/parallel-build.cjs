@@ -15,7 +15,8 @@ function buildTasks(project) {
   return tasks;
 }
 
-async function runBuildTasks(tasks, { directory, concurrency = 2, env = process.env } = {}) {
+async function runBuildTasks(tasks, { directory, concurrency = 2, env = process.env,
+  createLogStream = file => fs.createWriteStream(file), spawnProcess = spawn } = {}) {
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw Error('Build concurrency must be 1-4');
   fs.mkdirSync(directory, { recursive: true });
   const stages = [], started = performance.now();
@@ -27,15 +28,12 @@ async function runBuildTasks(tasks, { directory, concurrency = 2, env = process.
     console.log(`开始 ${task.name}；日志：${logFile}`);
     const start = performance.now();
     return new Promise(resolve => {
-      const log = fs.createWriteStream(logFile);
-      let launchError, logError;
-      log.on('error', error => { logError = error.message; });
-      const child = spawn(task.command, task.args, { cwd: task.cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false });
-      child.once('error', error => { launchError = error.message; });
-      child.once('close', (code, signal) => {
-        // Wait for logs to flush before writing a success record.
-        log.end(() => {
+      let log, child, launchError, logError, finishing = false;
+      function finish(code, signal) {
+        if (finishing) return;
+        finishing = true;
+        const record = error => {
+          if (error) logError ||= error.message;
           const result = { name: task.name, seconds: +((performance.now()-start)/1000).toFixed(3),
             exitCode: launchError || logError ? -1 : code ?? -1, signal, error: launchError || logError, logFile };
           stages[index] = result;
@@ -43,7 +41,38 @@ async function runBuildTasks(tasks, { directory, concurrency = 2, env = process.
           console.log(`结束 ${task.name}：${result.seconds} 秒，退出码 ${result.exitCode}`);
           if (result.exitCode !== 0) console.error(launchError || logError || `构建失败，详见 ${logFile}`);
           resolve(result);
+        };
+        // end/finish does not wait for the file descriptor's asynchronous
+        // close. A later close error must still fail this stage before the
+        // scheduler can start dependants or return its report.
+        if (!log || log.closed) { record(); return; }
+        log.once('close', () => record());
+        if (!log.destroyed) log.end(error => {
+          if (error) { logError ||= error.message; failed = true; }
         });
+      }
+      try { log = createLogStream(logFile); }
+      catch (error) { logError = error.message; failed = true; finish(-1); return; }
+      log.on('error', error => {
+        logError ||= error.message;
+        failed = true; // Stop queued stages immediately, not only on child close.
+        if (!child) { finish(-1); return; }
+        // A failed pipe otherwise pauses verbose compilers forever. Keep both
+        // pipes drained so already-running stages can exit and be recorded.
+        for (const stream of [child.stdout, child.stderr]) stream.unpipe(log);
+        queueMicrotask(() => {
+          for (const stream of [child.stdout, child.stderr]) stream.resume();
+        });
+      });
+      // Do not launch a build if its evidence file cannot even be opened.
+      log.once('open', () => {
+        if (finishing) return;
+        try {
+          child = spawnProcess(task.command, task.args, { cwd: task.cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        } catch (error) { launchError = error.message; failed = true; finish(-1); return; }
+        child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false });
+        child.once('error', error => { launchError = error.message; failed = true; });
+        child.once('close', finish);
       });
     });
   }
