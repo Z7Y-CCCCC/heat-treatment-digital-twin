@@ -4,11 +4,15 @@ const { spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '../..');
 const quote = value => "'" + String(value).replace(/'/g, "''") + "'";
 function fixture(t, prefix = 'installer-isolated-') {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    // Hosted Windows runners may expose TEMP using an 8.3 alias while
+    // Windows PowerShell 5.1 expands it. Compare one real directory identity,
+    // not two spellings; keep the exact path and cleanup assertions.
+    const temporaryRoot = fs.realpathSync.native(os.tmpdir());
+    const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(temporaryRoot, prefix)));
     const verified = path.resolve(directory);
-    if (!verified.startsWith(path.resolve(os.tmpdir()) + path.sep)) throw Error('Unsafe fixture directory');
+    if (!verified.startsWith(path.resolve(temporaryRoot) + path.sep)) throw Error('Unsafe fixture directory');
     t.after(() => {
-        if (path.resolve(directory) !== verified || !verified.startsWith(path.resolve(os.tmpdir()) + path.sep)) throw Error('Unsafe fixture cleanup');
+        if (path.resolve(fs.realpathSync.native(directory)) !== verified || !verified.startsWith(path.resolve(temporaryRoot) + path.sep)) throw Error('Unsafe fixture cleanup');
         fs.rmSync(verified, { recursive: true, force: true });
     });
     const programData = path.join(directory, 'program-data');

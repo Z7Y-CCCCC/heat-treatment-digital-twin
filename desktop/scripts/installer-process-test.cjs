@@ -32,12 +32,38 @@ test('Windows argument quoting round-trips empty strings, quotes and trailing ba
     assert.deepEqual(JSON.parse(json), values);
 });
 
-test('native OEM output is decoded before Unicode logging, not mistaken for UTF-8', windows, t => {
+test('real native ACL output keeps a Unicode target even when its legacy OEM page cannot represent Chinese', windows, t => {
     const f = fixture(t), file = path.join(f.directory, '中文日志.txt'); fs.writeFileSync(file, 'fixture');
     const r = f.runPowerShell(f.helper + 'Initialize-InstallerOutput\n$code=Invoke-InstallerProcess -NativeOutput -FilePath (Join-Path $env:SystemRoot "System32\\icacls.exe") -ArgumentList @(' + quote(file) + ')\nexit $code');
     assert.equal(r.status, 0, r.text + r.errorText);
     assert.ok(r.text.includes('中文日志.txt'), r.text);
+    assert.ok(r.text.includes('Windows ACL 目标（Unicode）：' + file), r.text);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'fixture');
     assert.doesNotMatch(r.text, /\uFFFD/);
+});
+
+
+// This independently checks the actual byte boundary on every system OEM page.
+// It does not assume CP437 can emit Chinese or accept a lossy '?' as expected.
+test('raw native OEM bytes decode to the independently recorded non-ASCII character and preserve exit codes', windows, t => {
+    const f = fixture(t), child = path.join(f.directory, 'oem-byte-probe.ps1'), metadata = path.join(f.directory, 'oem-byte-probe.json');
+    fs.writeFileSync(child, '\uFEFF' + f.helper + [
+        '$encoding = Get-InstallerNativeEncoding',
+        "$value = @('é','中文','あ','Ж','א','£','ا','가','Ω') | Where-Object { $encoding.GetString($encoding.GetBytes($_)) -ceq $_ } | Select-Object -First 1",
+        "if (-not $value) { throw 'No non-ASCII OEM probe character is encodable' }",
+        "$bytes = $encoding.GetBytes('[OEM-PROBE] ' + $value + [Environment]::NewLine)",
+        '[IO.File]::WriteAllText(' + quote(metadata) + ', (@{value=$value;codePage=$encoding.CodePage;bytesBase64=[Convert]::ToBase64String($bytes)} | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))',
+        '[Console]::OpenStandardOutput().Write($bytes,0,$bytes.Length)',
+        'exit 9'
+    ].join('\n'));
+    const r = f.runPowerShell(f.helper + 'Initialize-InstallerOutput\n$code=Invoke-InstallerProcess -NativeOutput -FilePath (Get-InstallerPowerShell) -ArgumentList @("-NoLogo","-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass","-File",' + quote(child) + ')\nexit $code');
+    assert.equal(r.status, 9, r.text + r.errorText);
+    const expected = JSON.parse(fs.readFileSync(metadata, 'utf8'));
+    assert.match(expected.value, /[^\x00-\x7f]/);
+    assert.ok(Number.isInteger(expected.codePage) && expected.codePage > 0);
+    assert.ok(r.text.includes('[OEM-PROBE] ' + expected.value), r.text);
+    assert.doesNotMatch(r.text, /\uFFFD/);
+    if (expected.codePage !== 65001) assert.notEqual(Buffer.from(expected.bytesBase64, 'base64').toString('utf8').trim(), '[OEM-PROBE] ' + expected.value);
 });
 
 test('stream draining does not impose a sleep per line or deadlock stderr; a failed child keeps its exit code', windows, t => {

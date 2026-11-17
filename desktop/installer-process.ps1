@@ -49,6 +49,12 @@ function Invoke-InstallerProcess {
     $info.Arguments = ($ArgumentList | ForEach-Object { ConvertTo-InstallerArgument $_ }) -join ' '
     $info.UseShellExecute = $false; $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+    if ($NativeOutput -and $ArgumentList.Count -gt 0 -and [IO.Path]::GetFileName($FilePath) -ieq 'icacls.exe') {
+        # English OEM pages cannot represent Chinese filenames: icacls may
+        # replace them before emitting bytes. Preserve the supplied ACL target
+        # as Unicode context; do not rewrite raw tool output or log secrets.
+        Write-InstallerMessage ('Windows ACL 目标（Unicode）：' + $ArgumentList[0])
+    }
     $textEncoding = if ($NativeOutput) { Get-InstallerNativeEncoding } else { [Text.UTF8Encoding]::new($false) }
     $info.StandardOutputEncoding = $textEncoding
     $info.StandardErrorEncoding = $textEncoding
