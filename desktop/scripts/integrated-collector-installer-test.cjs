@@ -49,8 +49,21 @@ test('real NSIS compilation embeds exactly the version-bound ZIP, independently 
  fs.writeFileSync(path.join(tmp,'plugin-manifest.json'),JSON.stringify({product:'collector-plugin',version:'2.3.3',buildSourceCommit:commit,files:[]}));
  execFileSync(require('7zip-bin').path7za,['a','-tzip',archive,'plugin-manifest.json'],{cwd:tmp,windowsHide:true,stdio:'ignore'});
  const {preparePayload,verifyEmbeddedPayload}=require('../../tools/collector-installer-payload.cjs');const payload=preparePayload(archive,tmp,{version:'2.3.3',commit});
- const source=`Unicode true\nName "Collector compile fixture"\nOutFile "${path.join(tmp,'fixture.exe')}"\nRequestExecutionLevel user\n!include LogicLib.nsh\n!include FileFunc.nsh\n!include nsDialogs.nsh\n!include MUI2.nsh\nVar PowerShellPath\n!macro DisplayLabel X Y W H TEXT COLOR\n\u0024{NSD_CreateLabel} \u0024{X} \u0024{Y} \u0024{W} \u0024{H} \u0024{TEXT}\nPop $0\n!macroend\n!include "${path.join(root,'desktop/collector-installer.nsh')}"\nFunction DisplayRefreshFonts\nFunctionEnd\nFunction DisplayShowClose\nFunctionEnd\nFunction DisplayPaintPrimary\nFunctionEnd\nSection\nCall InstallSelectedCollector\nSectionEnd\n`;
+ const source=`Unicode true\nName "Collector compile fixture"\nOutFile "${path.join(tmp,'fixture.exe')}"\nRequestExecutionLevel user\n!include LogicLib.nsh\n!include FileFunc.nsh\n!include nsDialogs.nsh\n!macro DisplayLabel X Y W H TEXT COLOR\n\u0024{NSD_CreateLabel} \u0024{X} \u0024{Y} \u0024{W} \u0024{H} \u0024{TEXT}\nPop $0\n!macroend\n!include "${path.join(root,'desktop/collector-installer.nsh')}"\nFunction DisplayRefreshFonts\nFunctionEnd\nFunction DisplayShowClose\nFunctionEnd\nFunction DisplayPaintPrimary\nFunctionEnd\nSection\nCall CollectorChoiceInit\nCall CollectorChoicePage\nCall CollectorChoiceLeave\nCall InstallSelectedCollector\nCall VerifySelectedCollector\nSectionEnd\n`;
  const file=path.join(tmp,'fixture.nsi');fs.writeFileSync(file,source);
- const tool=await require('./nsis-toolchain.cjs').nsisToolchain();execFileSync(tool.path,['/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env,DIGITAL_TWIN_COLLECTOR_PAYLOAD_INCLUDE:payload.include},stdio:'pipe'});
+ const tool=await require('./nsis-toolchain.cjs').nsisToolchain();const compiled=spawnSync(tool.path,['/WX','/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env,DIGITAL_TWIN_COLLECTOR_PAYLOAD_INCLUDE:payload.include},encoding:'utf8'});assert.equal(compiled.status,0,compiled.stdout+compiled.stderr);
  assert.equal(verifyEmbeddedPayload(path.join(tmp,'fixture.exe'),archive,tmp).success,true);
+});
+
+test('the real shared app-running hook compiles in the uninstaller namespace without installing a collector', {skip:process.platform!=='win32'},async t=>{
+ const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'collector-uninstall-nsis-'));t.after(()=>fs.rmSync(tmp,{recursive:true,force:true}));
+ const include=path.join(root,'desktop/node_modules/app-builder-lib/templates/nsis/include');
+ const source=`Unicode true\nName "Uninstall hook compile fixture"\nOutFile "${path.join(tmp,'fixture.exe')}"\nRequestExecutionLevel user\n!define BUILD_UNINSTALLER\n!define PRODUCT_NAME "Fixture"\n!define VERSION "2.3.3"\n!include LogicLib.nsh\nVar PowerShellPath\n!macro IS_POWERSHELL_AVAILABLE\nStrCpy $PowerShellPath "$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe"\n!macroend\n!macro _CHECK_APP_RUNNING\nDetailPrint "Underlying app-running guard remains present"\n!macroend\n!addincludedir "${include}"\n!include "${path.join(root,'desktop/display-installer.nsh')}"\n!insertmacro MUI_LANGUAGE "English"\nSection\nSectionEnd\nSection "Uninstall"\n!insertmacro customCheckAppRunning\nSectionEnd\n`;
+ const file=path.join(tmp,'fixture.nsi');fs.writeFileSync(file,source);
+ const tool=await require('./nsis-toolchain.cjs').nsisToolchain();
+ execFileSync(tool.path,['/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env},stdio:'pipe'});
+ assert.ok(fs.statSync(path.join(tmp,'fixture.exe')).size>0);
+ const hook=read('desktop/display-installer.nsh').split('!macro customCheckAppRunning')[1].split('!macroend')[0];
+ assert.match(hook,/!ifndef BUILD_UNINSTALLER\s+Call InstallSelectedCollector\s+!endif/);
+ assert.match(hook,/!insertmacro _CHECK_APP_RUNNING/);
 });
