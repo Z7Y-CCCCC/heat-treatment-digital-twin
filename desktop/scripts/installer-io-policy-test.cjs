@@ -55,8 +55,8 @@ test('I/O policy uses stock main/uninstaller signing and size gates, with post-i
     assert.match(hooks,/!ifndef BUILD_UNINSTALLER[\s\S]*FAST_IO_MACROS_LOADED[\s\S]*FAST_PROGRAM_IO_OVERRIDE_SOURCE/);
     const template=path.join(root,'desktop/node_modules/app-builder-lib/templates/nsis');
     const load=name=>fs.readFileSync(path.join(template,name),'utf8');
-    assert.doesNotThrow(()=>validateStockInstallerTemplates(load('installer.nsi'),load('installSection.nsh'),load('include/extractAppPackage.nsh'),load('uninstaller.nsh')));
-    assert.throws(()=>validateStockInstallerTemplates('changed','changed','changed','changed'),/Unsupported/);
+    assert.doesNotThrow(()=>validateStockInstallerTemplates(load('installer.nsi'),load('installSection.nsh'),load('include/extractAppPackage.nsh'),load('uninstaller.nsh'),load('common.nsh')));
+    assert.throws(()=>validateStockInstallerTemplates('changed','changed','changed','changed','changed'),/Unsupported/);
     // Exercise the real builder decision with a bounded mock. Stop before any
     // compiler, EXE, signing, Wine, installer or uninstaller process is run.
     require('../node_modules/app-builder-lib'); // initialize circular packager class exports first
@@ -156,3 +156,32 @@ for (const fault of ['unknown file','unknown directory','modified configuration'
         assert.equal(fs.readFileSync(path.join(target,'Display.exe'),'utf8'),'fixture only: Display.exe');
     });
 }
+
+test('early rollback macro compiles before the stock uninstaller filename definition in both builder passes, and the old ordering fails', windows, async t => {
+    const f=fixture(t), target=path.join(f.directory,'early-macro-payload');payload(target);
+    const io=createInstallerIoPolicy(root,target,path.join(f.directory,'early-macro-io'));
+    const ui=fs.readFileSync(path.join(root,'desktop/display-installer-ui.nsh'),'utf8');
+    const start=ui.indexOf('!macro DisplayAbort TEXT'), macro=ui.slice(start,ui.indexOf('!macroend',start)+9);
+    const productName='Uninstall '+String.fromCharCode(36)+'{PRODUCT_FILENAME}.exe';
+    const lateName=String.fromCharCode(36)+'{UNINSTALL_FILENAME}';
+    assert.ok(macro.includes(productName));
+    const broken=macro.replace(productName,lateName);assert.notEqual(broken,macro);
+    const tool=await require('./nsis-toolchain.cjs').nsisToolchain();
+    const {spawnSync}=require('node:child_process');
+    for(const uninstallerPass of [false,true]) {
+        function compile(label,body) {
+            const tag=label+(uninstallerPass?'-uninstaller':'-installer'),file=path.join(f.directory,tag+'.nsi');
+            const source=['Unicode true','Name "CompileOnly"','OutFile "'+path.join(f.directory,tag+'.exe')+'"',
+                'RequestExecutionLevel user','SilentInstall silent','InstallDir "'+path.join(f.directory,'never-installed')+'"',
+                'Var displayFailure','!define PRODUCT_FILENAME "CompileOnly"',
+                ...(uninstallerPass?['!define BUILD_UNINSTALLER']:[]),'!include "'+io.include+'"',body,
+                'Function .onInit','  !insertmacro DisplayAbort "compile fixture only"','FunctionEnd',
+                '!define UNINSTALL_FILENAME "'+productName+'"','Section','  DetailPrint "compile fixture only"','SectionEnd'].join('\n');
+            fs.writeFileSync(file,source,'utf8');
+            return spawnSync(tool.path,['/WX','/INPUTCHARSET','UTF8',file],{cwd:f.directory,windowsHide:true,encoding:'utf8',timeout:60000,env:{...process.env,...tool.env}});
+        }
+        const good=compile('fixed',macro);assert.equal(good.status,0,good.stdout+good.stderr);assert.doesNotMatch(good.stdout+good.stderr,/warning 6000/);
+        const bad=compile('old-ordering',broken);assert.notEqual(bad.status,0,'the actual compiler must reject the old ordering with warnings as errors');
+        assert.match(bad.stdout+bad.stderr,/UNINSTALL_FILENAME/);assert.match(bad.stdout+bad.stderr,/warning treated as error|warning 6000/i);
+    }
+});
