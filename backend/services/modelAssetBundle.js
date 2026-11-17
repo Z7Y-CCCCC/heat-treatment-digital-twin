@@ -5,6 +5,7 @@ const archiver = require('archiver'), unzipper = require('unzipper');
 const authoring = require('./motionAuthoring');
 const { mergeBuiltinModels } = require('./builtinModels');
 const { stringifyModelMetadata } = require('./modelAssetMetadata');
+const { normalizeLoadingPorts } = require('../../shared/loadingPorts.cjs');
 const { withModelImportLock, readImportReceipt, saveImportReceipt, preserveExtensions } = require('./modelDuplicates');
 const { decideImport, confirmDecision, visibleModels, saveActionUpdate } = require('./modelAssetImportPlan');
 const FORMAT = 'digital-twin-model-asset', MAX_BYTES = 184 * 1024 * 1024;
@@ -18,11 +19,29 @@ async function fileSha(filename) {
 const object = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const fail = message => { throw Object.assign(new Error(message), { statusCode: 400 }); };
 const parse = v => typeof v === 'string' ? JSON.parse(v || '{}') : v || {};
+function validatePortNodes(ports, documents) {
+    if (ports === undefined) return;
+    const normalized = normalizeLoadingPorts(ports);
+    const references = [normalized.inlet, normalized.outlet].flatMap(port => [port?.nodeName, port?.region?.nodeName]).filter(Boolean);
+    if (!references.length) return;
+    const catalogs = documents.map(document => {
+        const names = new Map(), seen = new Set(), pending = [...(document.scenes?.[document.scene ?? 0]?.nodes || [])];
+        while (pending.length) {
+            const index = pending.pop(), node = document.nodes?.[index];
+            if (!node || seen.has(index)) continue;
+            seen.add(index); names.set(node.name, (names.get(node.name) || 0) + 1);
+            pending.push(...(node.children || []));
+        }
+        return names;
+    });
+    for (const name of references) if (!catalogs.some(names => names.get(name) === 1)) fail('进出料口引用的节点不存在或名称不唯一：' + name);
+}
 function assetCapabilities(asset) {
     const metadata = asset.manifest.model.metadata, parts = metadata.inspection?.parts || [];
     const inspection = parts.length > 0 && (metadata.disassemblyLayout?.version === 1 && metadata.disassemblyLayout?.configured === true
         || parts.some(part => [part.explode_offset, part.explode_rotation].some(vector => Array.isArray(vector) && vector.some(value => typeof value === 'number' && Number.isFinite(value) && value !== 0))));
-    return { model: true, inspection, actions: asset.actions.length > 0 || (metadata.partBindings || []).length > 0 || (metadata.motionAuthoring?.actions || []).length > 0 };
+    const ports = Object.hasOwn(metadata, 'loadingPorts') ? normalizeLoadingPorts(metadata.loadingPorts) : null;
+    return { model: true, inspection, ports: !!(ports?.inlet || ports?.outlet), actions: asset.actions.length > 0 || (metadata.partBindings || []).length > 0 || (metadata.motionAuthoring?.actions || []).length > 0 };
 }
 function validateMotion(data, modelId, source, rig) {
     if (!object(data) || data.schemaVersion !== 1 || data.modelId !== modelId || data.sourceSha256 !== sha(source) || data.rigSha256 !== sha(rig)
@@ -75,14 +94,17 @@ function buildEntries(model) {
     // History is installation-private immutable storage, never a portable
     // asset property pointing at another installation's uploads directory.
     delete metadata.assetVersionHistory;
-    authoring.glb(source);
+    if (Object.hasOwn(metadata, 'loadingPorts')) metadata.loadingPorts = normalizeLoadingPorts(metadata.loadingPorts);
+    const portDocuments = [authoring.glb(source).document];
     const entries = new Map([['model.glb', source]]), motion = model.motion_package || require('./builtinModels').builtinMotionForModel(model);
     if (motion) {
         const rig = fs.readFileSync(authoring.localFile(motion.rigPath)), bytes = fs.readFileSync(authoring.localFile(motion.clipPath));
         if (sha(source) !== motion.sourceSha256 || sha(rig) !== motion.rigSha256 || sha(bytes) !== motion.clipSha256) fail('模型资产或动作文件已改变，请重新核对后导出');
         validateMotion(JSON.parse(bytes), model.id, source, rig);
+        portDocuments.push(authoring.glb(rig).document);
         entries.set('motion.glb', rig); entries.set('motion.json', bytes);
     }
+    validatePortNodes(metadata.loadingPorts, portDocuments);
     // All runtime paths are relocated during import; never trust paths supplied
     // inside metadata. Part/inspection layout and authoring recipes are retained.
     if (metadata.motionAuthoring) {
@@ -140,11 +162,16 @@ function validateAssetEntries(entries) {
         || !['model','environment'].includes(m.asset_type) || !['device','line','workshop','factory'].includes(m.placement_level)
         || !Number.isFinite(m.default_scale) || m.default_scale <= 0 || m.default_scale > 1000 || !Array.isArray(m.tags) || m.tags.length > 100
         || m.tags.some(v => typeof v !== 'string' || v.length > 100) || !object(m.metadata)) fail('模型资产信息无效');
-    authoring.glb(entries.get('model.glb'));
+    // Preserve omission for legacy packages (duplicate reuse must not erase an
+    // existing richer model), but validate every explicitly supplied port now.
+    if (Object.hasOwn(m.metadata, 'loadingPorts')) normalizeLoadingPorts(m.metadata.loadingPorts);
+    const portDocuments = [authoring.glb(entries.get('model.glb')).document];
     const hasMotion = entries.has('motion.glb');
     if (hasMotion !== entries.has('motion.json')) fail('动作 GLB 与动作数据 JSON 必须成套');
     const data = hasMotion ? JSON.parse(entries.get('motion.json')) : null;
     const actions = hasMotion ? validateMotion(data, m.id, entries.get('model.glb'), entries.get('motion.glb')) : [];
+    if (hasMotion) portDocuments.push(authoring.glb(entries.get('motion.glb')).document);
+    validatePortNodes(m.metadata.loadingPorts, portDocuments);
     return { manifest, entries, data, actions };
 }
 async function inspectAsset(filename, db = null, factoryId = '') {

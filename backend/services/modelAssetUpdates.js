@@ -7,7 +7,10 @@ const authoring = require('./motionAuthoring');
 const { visibleModels, revision, saveActionUpdate } = require('./modelAssetImportPlan');
 const { withModelImportLock, readImportReceipt, saveImportReceipt } = require('./modelDuplicates');
 const { normalizeModelMetadata, stringifyModelMetadata } = require('./modelAssetMetadata');
-const MODULES = ['model', 'inspection', 'actions'], HISTORY_KEY = 'assetVersionHistory', HISTORY_LIMIT = 40;
+const { normalizeLoadingPorts } = require('../../shared/loadingPorts.cjs');
+const MODULES = ['model', 'inspection', 'actions', 'ports'], HISTORY_KEY = 'assetVersionHistory', HISTORY_LIMIT = 40;
+const MODULE_KEYS = { model: ['assetSpec', 'optimization'], inspection: ['inspection', 'disassemblyLayout'],
+    actions: ['partBindings', 'motionAuthoring'], ports: ['loadingPorts'] };
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const clone = value => JSON.parse(JSON.stringify(value));
 const parse = value => typeof value === 'string' ? JSON.parse(value || '{}') : value || {};
@@ -22,7 +25,7 @@ function ids(value, name) {
 function options(input, needsTarget = true) {
     if (!object(input) || Object.keys(input).some(key => !['targetId', 'modules', 'actionIds', 'replaceActionIds'].includes(key))) fail('补充更新选项无效');
     const modules = ids(input.modules, '更新模块');
-    if (!modules.length || modules.some(module => !MODULES.includes(module))) fail('请选择模型、拆解布局或动作模块');
+    if (!modules.length || modules.some(module => !MODULES.includes(module))) fail('请选择模型、拆解布局、动作或进出料口设置模块');
     if (needsTarget && (typeof input.targetId !== 'string' || !/^[\w-]{1,128}$/.test(input.targetId))) fail('请选择已有模型作为补充目标');
     if (!modules.includes('actions') && (input.actionIds !== undefined || input.replaceActionIds !== undefined)) fail('动作选择只能用于动作模块');
     return { ...(needsTarget ? { targetId: input.targetId } : {}), modules: MODULES.filter(module => modules.includes(module)),
@@ -133,7 +136,10 @@ function validateReferences(model, metadata, source, rig, oldSource = null) {
     }
     for (const name of metadata.inspection?.shell?.node_names || []) assertName(name, '外壳设置');
     for (const nodePath of metadata.inspection?.shell?.node_paths || []) assertPath(nodePath, '外壳设置');
-    for (const port of [metadata.loadingPorts?.inlet, metadata.loadingPorts?.outlet]) assertName(port?.nodeName, '进出料口');
+    for (const port of [metadata.loadingPorts?.inlet, metadata.loadingPorts?.outlet]) {
+        assertName(port?.nodeName, '进出料口');
+        assertName(port?.region?.nodeName, '进出料口区域');
+    }
     if (oldSource) {
         const oldIndex = nodeIndex(oldSource);
         for (const recipe of metadata.motionAuthoring?.actions || []) for (const track of recipe.tracks || []) {
@@ -183,6 +189,13 @@ async function prepareUpdate(db, asset, input, factoryId) {
         if (Object.hasOwn(incoming.metadata, 'disassemblyLayout')) metadata.disassemblyLayout = clone(incoming.metadata.disassemblyLayout);
         else metadata.disassemblyLayout = { version: 1, configured: true };
     }
+    if (opt.modules.includes('ports')) {
+        // Only model-root-local geometry travels with a model asset. Device
+        // offsets, PLC signals, point IDs and world placement are not copied.
+        if (!Object.hasOwn(incoming.metadata, 'loadingPorts')) fail('包内未提供进出料口设置；旧包不能清空已有设置', 'ASSET_MODULE_MISSING');
+        if (!object(incoming.metadata.loadingPorts)) fail('进出料口设置必须为完整对象，不能用 null 清空已有配置');
+        metadata.loadingPorts = normalizeLoadingPorts(incoming.metadata.loadingPorts);
+    }
     if (opt.modules.includes('model')) {
         source = asset.entries.get('model.glb'); next.default_scale = incoming.default_scale; next.name = incoming.name.trim(); next.tags = JSON.stringify(incoming.tags.filter(tag => tag !== 'packaged'));
         for (const key of ['assetSpec', 'optimization']) if (Object.hasOwn(incoming.metadata, key)) metadata[key] = clone(incoming.metadata[key]);
@@ -198,10 +211,12 @@ async function prepareUpdate(db, asset, input, factoryId) {
     const affected = await db.get('SELECT COUNT(*) AS n FROM devices WHERE model_type = ?', [target.id]);
     const inspectionChanged = opt.modules.includes('inspection') && (!eq(raw.inspection, metadata.inspection) || !eq(raw.disassemblyLayout, metadata.disassemblyLayout));
     const modelChanged = opt.modules.includes('model') && (!sourceMatches || target.default_scale !== next.default_scale || target.name !== next.name || !eq(parse(target.tags || '[]'), incoming.tags) || !eq(raw.assetSpec, metadata.assetSpec) || !eq(raw.optimization, metadata.optimization));
-    const actions = [...differences.values()], changes = actions.some(action => action.kind !== 'same') || inspectionChanged || modelChanged;
+    const portsChanged = opt.modules.includes('ports') && !eq(raw.loadingPorts, metadata.loadingPorts);
+    const actions = [...differences.values()], changes = actions.some(action => action.kind !== 'same') || inspectionChanged || modelChanged || portsChanged;
     const updatePlan = { targetId: target.id, targetName: target.name, revision: contentRevision(target, old), modules: opt.modules, sourceMatches,
         sourceSha256: sha(old.source), incomingSourceSha256: sha(asset.entries.get('model.glb')), shared: target.factory_id == null, affectedDeviceCount: Number(affected?.n || 0),
-        actions, conflicts: [...conflicts], canImport: conflicts.size === 0, hasInspection: Object.hasOwn(incoming.metadata, 'inspection'), inspectionChanged, modelChanged, changes };
+        actions, conflicts: [...conflicts], canImport: conflicts.size === 0, hasInspection: Object.hasOwn(incoming.metadata, 'inspection'),
+        hasLoadingPorts: Object.hasOwn(incoming.metadata, 'loadingPorts'), inspectionChanged, modelChanged, portsChanged, changes };
     updatePlan.planHash = sha(Buffer.from(canonicalJson({ updatePlan, options: opt, incoming: asset.manifest, selectedData: data })));
     return { opt, target, record, old, next, metadata, source, rig, data, updatePlan };
 }
@@ -254,6 +269,7 @@ function snapshot(target, files, modules, label) {
             if (files.data) { descriptor.file_path = target.file_path; writeMotion(descriptor, metadata, files, owned); }
         }
         if (modules.includes('inspection')) for (const key of ['inspection', 'disassemblyLayout']) if (Object.hasOwn(raw, key)) metadata[key] = clone(raw[key]);
+        if (modules.includes('ports') && Object.hasOwn(raw, 'loadingPorts')) metadata.loadingPorts = clone(raw.loadingPorts);
         if (modules.includes('model')) {
             fs.writeFileSync(path.join(owned.directory, 'model.glb'), files.source, { flag: 'wx' });
             Object.assign(descriptor, { file_path: owned.base + 'model.glb', name: target.name, default_scale: target.default_scale, tags: target.tags });
@@ -325,7 +341,7 @@ async function restore(db, id, versionId, factoryId, confirmedRevision, authoriz
         const entry = (raw[HISTORY_KEY] || []).find(item => (item.id || item.versionId) === versionId); if (!entry) fail('资产历史版本不存在', 'ASSET_HISTORY_NOT_FOUND', 404);
         const saved = readSnapshot(entry), modules = saved.modules; if (saved.model.id !== target.id) fail('历史快照不属于当前模型');
         const metadata = clone(raw), next = { ...target };
-        for (const module of modules) for (const key of module === 'actions' ? ['partBindings', 'motionAuthoring'] : module === 'inspection' ? ['inspection', 'disassemblyLayout'] : ['assetSpec', 'optimization']) {
+        for (const module of modules) for (const key of MODULE_KEYS[module] || []) {
             if (Object.hasOwn(saved.metadata, key)) metadata[key] = clone(saved.metadata[key]); else delete metadata[key];
         }
         if (modules.includes('actions')) {
@@ -352,7 +368,8 @@ async function exportSupplement(db, modelIds, factoryId, filename, input) {
     ids(modelIds, '模型选择'); if (modelIds.length !== 1) fail('补充包请一次选择一个模型；完整资产包可选择多个模型');
     const opt = options(input, false), { model } = await targetModel(db, modelIds[0], factoryId), entries = single.buildEntries(model), manifest = JSON.parse(entries.get('manifest.json'));
     const raw = manifest.model.metadata, metadata = { assetSupplement: { version: 1, modules: opt.modules, sourceModelId: model.id, sourceSha256: sha(entries.get('model.glb')) } };
-    for (const module of opt.modules) for (const key of module === 'actions' ? ['partBindings', 'motionAuthoring', 'runtime'] : module === 'inspection' ? ['inspection', 'disassemblyLayout'] : ['assetSpec', 'optimization']) if (Object.hasOwn(raw, key)) metadata[key] = clone(raw[key]);
+    if (opt.modules.includes('ports') && !Object.hasOwn(raw, 'loadingPorts')) fail('模型尚未保存进出料口设置，请先配置后再导出', 'ASSET_MODULE_MISSING');
+    for (const module of opt.modules) for (const key of module === 'actions' ? [...MODULE_KEYS.actions, 'runtime'] : MODULE_KEYS[module]) if (Object.hasOwn(raw, key)) metadata[key] = clone(raw[key]);
     if (opt.modules.includes('actions')) {
         const asset = single.validateAssetEntries(entries), catalog = actionCatalog(asset), selected = new Set(opt.actionIds || [...catalog.catalog.keys()]);
         for (const id of selected) if (!catalog.catalog.has(id)) fail('模型中没有所选动作：' + id);

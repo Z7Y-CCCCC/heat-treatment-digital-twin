@@ -81,7 +81,7 @@ const metadata = model => typeof model.metadata === 'string' ? JSON.parse(model.
     const siteBefore = site(), firstMeta = metadata(first);
     async function supplement(file, modules) {
         await choose('补充更新模型资产', file); await dialog.waitFor();
-        const choices = [['actions','动作'],['inspection','拆解布局'],['model','模型文件']];
+        const choices = [['actions','动作'],['inspection','拆解布局'],['model','模型文件'],['ports','进出料口设置']];
         // Select the next scope before removing the default scope: never submit an intermediate empty update.
         for (const [module, label] of choices.sort((a,b) => Number(modules.includes(b[0])) - Number(modules.includes(a[0])))) {
             const box = dialog.getByRole('checkbox', { name: label, exact: true });
@@ -149,6 +149,25 @@ const metadata = model => typeof model.metadata === 'string' ? JSON.parse(model.
     const exported = await require('../backend/services/modelAssetBundle').readAsset(assetPath);
     assert.deepEqual(exported.actions.map(action => action.id).sort(), ['door','fan']); assert.equal(exported.manifest.model.metadata.disassemblyLayout.configured, true);
     pass('complete export carries the currently-saved model, layout and appended actions in one portable archive');
+    assert.deepEqual(exported.manifest.model.metadata.loadingPorts,metadata(restored).loadingPorts);
+    await transfer.getByRole('button',{name:'导出模型资产',exact:true}).click();await dialog.waitFor();
+    await dialog.getByRole('radio',{name:'仅进出料口设置',exact:true}).check();await ready('确认导出模型资产');
+    const portDownload=page.waitForEvent('download');await dialog.getByRole('button',{name:'确认导出模型资产',exact:true}).click();
+    const portPath=path.join(directory,'ports-only.zip');await (await portDownload).saveAs(portPath);await close();
+    const portAsset=await require('../backend/services/modelAssetBundle').readAsset(portPath);
+    assert.deepEqual(Object.keys(portAsset.manifest.model.metadata).sort(),['assetSupplement','loadingPorts']);
+    assert.deepEqual(portAsset.manifest.model.metadata.loadingPorts,metadata(restored).loadingPorts);
+    await choose('导入模型资产',portPath);await dialog.waitFor();await ready('确认补充更新');
+    assert.equal(await dialog.getByRole('checkbox',{name:'进出料口设置',exact:true}).isChecked(),true);
+    assert.equal(await dialog.getByRole('checkbox',{name:'动作',exact:true}).isChecked(),false);
+    assert.equal(await dialog.getByRole('checkbox',{name:'拆解布局',exact:true}).isChecked(),false);
+    assert.equal(await dialog.getByRole('checkbox',{name:'模型文件',exact:true}).isChecked(),false);
+    await dialog.screenshot({path:path.join(directory,'06b-loading-ports-package.png')});
+    await apply('确认补充更新');const afterPorts=await getModel(id);
+    for(const key of ['loadingPorts','partBindings','inspection','motionAuthoring'])assert.deepEqual(metadata(afterPorts)[key],metadata(restored)[key]);
+    assert.deepEqual(site(),siteBefore);
+    pass('complete and ports-only exports retain model-local port geometry; importing a ports supplement auto-selects only ports and preserves all device/PLC records');
+
     for (const viewport of [{ width: 1600, height: 1000 }, { width: 1024, height: 820 }, { width: 720, height: 900 }]) {
         await page.setViewportSize(viewport);
         for (const label of ['模型管理','拆解布局','动作动画']) {
