@@ -62,6 +62,7 @@ Var runtimeNeedsReboot
     MessageBox MB_ICONSTOP "运行环境尚未就绪，未启动大屏。$\r$\n$1$\r$\n可重新运行安装程序，或从 Microsoft 官网安装 WebView2 / Visual C++ x64 运行库。"
     Abort
   ${EndIf}
+  Call VerifySelectedCollector
 !macroend
 
 !macro customFinishPage

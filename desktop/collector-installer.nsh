@@ -118,5 +118,20 @@ Function InstallSelectedCollector
   ${EndIf}
   StrCpy $collectorInstalled "1"
 FunctionEnd
+Function VerifySelectedCollector
+  ${If} $collectorChoice != "1"
+    Return
+  ${EndIf}
+  ; Old display uninstallers may have touched SCM after the pre-copy migration.
+  ; Recheck AFTER display installation, repair only with this exact payload,
+  ; and never let a completed frontend hide a missing/stale collector service.
+  nsExec::ExecToStack /TIMEOUT=180000 `"$PowerShellPath" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Install-CollectorPayload.ps1" -ArchivePath "$PLUGINSDIR\collector-plugin.zip" -ExpectedSha256 "${COLLECTOR_PAYLOAD_SHA256}" -ExpectedVersion "${COLLECTOR_BUILD_VERSION}" -ExpectedCommit "${COLLECTOR_BUILD_COMMIT}" -VerifyInstalledOnly`
+  Pop $0
+  Pop $1
+  ${If} $0 != 0
+    StrCpy $collectorInstalled "0"
+    Call InstallSelectedCollector
+  ${EndIf}
+FunctionEnd
 !endif
 !endif

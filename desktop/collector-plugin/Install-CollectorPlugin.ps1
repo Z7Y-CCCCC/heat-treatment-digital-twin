@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [string]$InstallRoot = (Join-Path $env:ProgramFiles 'HeatTreatmentCollectorPlugin'),
+    [string]$InstallRoot = (Join-Path $(if($env:ProgramW6432){$env:ProgramW6432}else{$env:ProgramFiles}) 'HeatTreatmentCollectorPlugin'),
     [string]$ImportDataDirectory = (Join-Path $env:APPDATA 'heat-treatment-digital-twin-desktop'),
     [switch]$ResumeImportedData,
     [switch]$SkipUserDataImport

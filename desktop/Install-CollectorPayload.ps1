@@ -4,13 +4,34 @@ param(
     [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{64}$')][string]$ExpectedSha256,
     [Parameter(Mandatory=$true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$ExpectedVersion,
     [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{40}$')][string]$ExpectedCommit,
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [switch]$VerifyInstalledOnly
 )
 # The NSIS installer embeds an immutable, same-build ZIP. Never download a
 # plugin at install time or pick up a previous runtime/cache from this machine.
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.IO.Compression
+function Get-PluginInstallRoot {
+    # NSIS itself is x86. Its PowerShell child can also be x86; never let that
+    # redirect this x64 service into Program Files (x86) or leave the old copy.
+    $root=$env:ProgramW6432
+    if(-not $root){throw '需要 Intel/AMD x64 Windows 的原生 Program Files 目录。'}
+    return Join-Path $root 'HeatTreatmentCollectorPlugin'
+}
+function Assert-InstalledPayload($Manifest) {
+    $installed=Get-PluginInstallRoot
+    $record=Get-Content -LiteralPath (Join-Path $installed 'plugin-manifest.json') -Raw -Encoding UTF8|ConvertFrom-Json
+    if($record.version -ne $ExpectedVersion -or $record.buildSourceCommit -ne $ExpectedCommit){throw '安装后采集服务版本核对失败。'}
+    $service=Get-CimInstance Win32_Service -Filter "Name='HeatTreatmentCollector'"
+    $configFile=Join-Path $env:ProgramData 'HeatTreatmentDigitalTwin\collector-service.json'
+    $expected='"'+(Join-Path $installed 'resources\collector-service\HeatTreatmentCollector.exe')+'" --config "'+$configFile+'"'
+    if(-not $service -or $service.State -ne 'Running' -or $service.StartMode -ne 'Auto' -or $service.PathName -cne $expected){throw '安装后的独立采集服务未正确注册或运行。'}
+    foreach($file in $Manifest.files){
+        if($file.path -in @('Install-CollectorPlugin.ps1','安装采集插件.cmd')){continue}
+        if((Get-FileHash -LiteralPath (Join-Path $installed $file.path) -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw '安装后的采集程序文件与本次构建不一致。'}
+    }
+}
 $archive=[IO.File]::Open($ArchivePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
 $zip=$null
 try {
@@ -35,10 +56,11 @@ try {
     try {$manifest=$reader.ReadToEnd() | ConvertFrom-Json} finally {$reader.Dispose()}
     if($manifest.product -ne 'collector-plugin' -or $manifest.version -ne $ExpectedVersion -or $manifest.buildSourceCommit -ne $ExpectedCommit){throw '主程序和采集插件的版本或源码提交不一致。'}
     if($VerifyOnly){[pscustomobject]@{success=$true;version=$ExpectedVersion;commit=$ExpectedCommit;entries=$names.Count}|ConvertTo-Json -Compress;return}
+    if($VerifyInstalledOnly){Assert-InstalledPayload $manifest;Write-Output '安装后采集服务与同提交插件一致。';return}
     if(-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装采集服务需要 Windows 管理员授权。'}
     # An administrator-only Program Files sibling, not a user-writable temp
     # directory, holds executable extraction. Keep failure evidence for repair.
-    $programFiles=[Environment]::GetFolderPath('ProgramFiles')
+    $programFiles=Split-Path -Parent (Get-PluginInstallRoot)
     $stage=Join-Path $programFiles ('HeatTreatmentCollectorPayload-'+[Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null
     foreach($entry in $zip.Entries){
@@ -50,16 +72,9 @@ try {
     }
 } finally {if($zip){$zip.Dispose()};$archive.Dispose()}
 if($VerifyOnly){exit 0}
-& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $stage 'Install-CollectorPlugin.ps1') -SkipUserDataImport
+& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $stage 'Install-CollectorPlugin.ps1') -InstallRoot (Get-PluginInstallRoot) -SkipUserDataImport
 if($LASTEXITCODE -ne 0){throw '独立采集插件安装失败；请保留安装记录及原工程。'}
-$installed=Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'HeatTreatmentCollectorPlugin'
-$installedManifest=Get-Content -LiteralPath (Join-Path $installed 'plugin-manifest.json') -Raw -Encoding UTF8|ConvertFrom-Json
-if($installedManifest.version -ne $ExpectedVersion -or $installedManifest.buildSourceCommit -ne $ExpectedCommit){throw '安装后采集服务版本核对失败。'}
-foreach($file in $manifest.files){
-    if($file.path -in @('Install-CollectorPlugin.ps1','安装采集插件.cmd')){continue}
-    $target=Join-Path $installed $file.path
-    if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $file.sha256){throw '安装后的采集程序文件与本次构建不一致。'}
-}
+Assert-InstalledPayload $manifest
 Write-Output "采集服务已安装并逐文件核对：$ExpectedVersion / $ExpectedCommit。已有机器级工程未覆盖；用户级旧工程需通过项目迁移显式导入。"
 
 # Delete only the exact, newly created and verified staging sibling on success.

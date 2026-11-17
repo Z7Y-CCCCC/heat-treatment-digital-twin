@@ -18,6 +18,8 @@ test('the verified collector ZIP is created before NSIS and the actual embedded 
  const helper=read('desktop/Install-CollectorPayload.ps1');assert.match(helper,/ExpectedSha256/);assert.match(helper,/manifest.buildSourceCommit -ne \$ExpectedCommit/);
  assert.match(helper,/SkipUserDataImport/);assert.doesNotMatch(helper,/Invoke-WebRequest|DownloadFile|ADMIN_API_TOKEN|MCP_API_TOKEN/);
  assert.match(helper,/ExternalAttributes/);assert.match(helper,/StartsWith\(\$stage/);
+ assert.match(helper,/ProgramW6432/);assert.match(helper,/Assert-InstalledPayload/);assert.match(helper,/VerifyInstalledOnly/);
+ assert.match(read('desktop/display-installer.nsh'),/Call VerifySelectedCollector/);
 });
 test('payload preparation refuses stale version/commit and binds a synthetic ZIP hash',t=>{
  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'integrated-collector-'));t.after(()=>fs.rmSync(tmp,{recursive:true,force:true}));
