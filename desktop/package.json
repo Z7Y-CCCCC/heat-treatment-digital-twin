@@ -1,6 +1,6 @@
 {
   "name": "heat-treatment-digital-twin-desktop",
-  "version": "2.3.4",
+  "version": "2.3.5",
   "description": "热处理数字孪生大屏 Windows 桌面部署版",
   "main": "main.cjs",
   "author": "Digital Twin Team",
@@ -21,7 +21,7 @@
     "build:collector-runtime": "node scripts/build-collector-runtime.cjs",
     "test:logs": "node scripts/log-manager-test.cjs",
     "test:processes": "node --test scripts/process-lifecycle-test.cjs scripts/desktop-supervisor-unit-test.cjs scripts/activation-client-test.cjs",
-    "test:resources": "node --test --test-concurrency=1 scripts/release-size-policy-test.cjs scripts/release-test-output-test.cjs scripts/default-dashboard-template-test.cjs scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/build-performance-test.cjs scripts/native-build-inputs-test.cjs ../tools/package-installer.test.cjs scripts/release-frontend-cache-test.cjs scripts/dependency-cache-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs scripts/optional-collector-test.cjs scripts/prerequisites-test.cjs scripts/installer-ui-test.cjs scripts/installer-startup-test.cjs ../tools/installer-extraction-smoke.test.cjs ../tools/release-source-snapshot.test.cjs scripts/integrated-collector-installer-test.cjs scripts/workspace-frontend-test.cjs",
+    "test:resources": "node --test --test-concurrency=1 scripts/release-size-policy-test.cjs scripts/release-test-output-test.cjs scripts/default-dashboard-template-test.cjs scripts/resource-preparation-test.cjs scripts/runtime-cache-test.cjs scripts/build-performance-test.cjs scripts/native-build-inputs-test.cjs ../tools/package-installer.test.cjs scripts/release-frontend-cache-test.cjs scripts/dependency-cache-test.cjs scripts/dependency-runtime-policy-test.cjs scripts/installer-process-test.cjs scripts/installer-io-policy-test.cjs scripts/collector-install-data-policy-test.cjs scripts/directory-publish-test.cjs scripts/native-client-path-test.cjs scripts/optional-collector-test.cjs scripts/prerequisites-test.cjs scripts/installer-ui-test.cjs scripts/installer-startup-test.cjs ../tools/installer-extraction-smoke.test.cjs ../tools/release-source-snapshot.test.cjs scripts/integrated-collector-installer-test.cjs scripts/workspace-frontend-test.cjs",
     "preview:installer": "node scripts/installer-preview.cjs",
     "test:deployment": "node --test scripts/deployment-test.cjs scripts/collector-startup-policy-test.cjs scripts/connection-health-test.cjs scripts/deployment-health-ui-test.cjs scripts/desktop-supervisor-unit-test.cjs scripts/display-gateway-test.cjs scripts/ui-origin-recovery-test.cjs scripts/service-control-test.cjs scripts/workspace-collector-center-test.cjs scripts/display-startup-test.cjs && node scripts/service-connection-policy-test.cjs",
     "test:ui-origin": "node --test scripts/display-gateway-test.cjs scripts/ui-origin-recovery-test.cjs ../tools/ui-origin-migration/transfer.test.cjs && node ../tools/ui-origin-migration/automatic-test.cjs",
@@ -32,7 +32,8 @@
     "test:admin-host-parent": "node scripts/admin-host-parent-test.cjs",
     "test:admin-host-retry": "node scripts/admin-host-retry-test.cjs",
     "dist": "node scripts/build-release.cjs",
-    "prepare:prerequisites": "node scripts/prepare-prerequisites.cjs"
+    "prepare:prerequisites": "node scripts/prepare-prerequisites.cjs",
+    "test:installer-io": "node --test --test-concurrency=1 scripts/installer-process-test.cjs scripts/installer-io-policy-test.cjs scripts/collector-install-data-policy-test.cjs scripts/dependency-runtime-policy-test.cjs"
   },
   "devDependencies": {
     "7zip-bin": "5.2.0",

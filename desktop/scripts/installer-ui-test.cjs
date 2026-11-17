@@ -303,10 +303,21 @@ test('details restore worker output after the builder reset and failures retain 
  for(const name of ['RuntimePrerequisites.ps1','Install-CollectorPayload.ps1']) {
   const script=fs.readFileSync(path.join(root,name),'utf8');
   assert.match(script,/\[switch\]\$InstallerLog/);
-  assert.match(script,/if\(\$InstallerLog\)\{\[Console\]::OutputEncoding=\[Text.Encoding\]::Unicode;\[Console\]::Write\(\[char\]0xFEFF\)/);
+   if(name==='RuntimePrerequisites.ps1') {
+      assert.match(script,/if\(\$InstallerLog\)\{\[Console\]::OutputEncoding=\[Text\.Encoding\]::Unicode;\[Console\]::WriteLine\(\(\[string\]\[char\]0xFEFF\)\+'\[runtime\] /);
+      assert.doesNotMatch(script,/\[Console\]::Write\(\s*(?:\[string\]\s*)?\[char\]\s*0xFEFF\s*\)/,'a bare BOM is misdecoded by the legacy nsExec pipe consumer');
+   } else {
+     assert.match(script,/Initialize-InstallerOutput -ForNsis:\$InstallerLog/);
+     const boundary=fs.readFileSync(path.join(root,'installer-process.ps1'),'utf8');
+      assert.match(boundary,/if \(\$ForNsis\) \{[^}]*\[Console\]::OutputEncoding = \[Text\.Encoding\]::Unicode[^}]*\[Console\]::WriteLine\(\(\[string\]\[char\]0xFEFF\) \+ '\[\+0\.0s\] /);
+      assert.doesNotMatch(boundary,/\[Console\]::Write\(\s*(?:\[string\]\s*)?\[char\]\s*0xFEFF\s*\)/,'first UTF-16 text and BOM must share one write');
+     assert.match(boundary,/StandardOutputEncoding = \$textEncoding/);
+   }
  }
  assert.match(hooks,/-ProvisionDisplayLinks -InstallerLog/);
- assert.equal((collector.match(/-InstallerLog`/g)||[]).length,2);
+ assert.equal(collector.split(/\r?\n/).filter(line=>line.includes('nsExec::ExecToLog')&&line.includes('-InstallerLog')).length,2);
+ assert.match(source,/DetailPrint "\[\+\$9 s\]/);
+ assert.match(nsisFunction('DisplayInstallingShow'),/GetTickCount/);
 });
 
 test('production install/preflight hooks compile together without running any install section', {skip:process.platform!=='win32',timeout:60000}, async t => {

@@ -3,6 +3,13 @@
 !include "WinVer.nsh"
 !include "x64.nsh"
 !include "MUI2.nsh"
+!ifndef DISPLAY_UI_PREVIEW
+  !if "$%DIGITAL_TWIN_INSTALLER_IO_INCLUDE%" == ""
+    !error "A verified same-build program manifest is required. Use tools/package-installer.cjs."
+  !else
+    !include "$%DIGITAL_TWIN_INSTALLER_IO_INCLUDE%"
+  !endif
+!endif
 !define DISPLAY_PREFLIGHT_SOURCE "${__FILEDIR__}\display-install-preflight.ps1"
 Var pid
 SetFont "Microsoft YaHei UI" 9
@@ -40,6 +47,8 @@ Var runtimeNeedsReboot
     MessageBox MB_ICONSTOP "本安装包仅支持 Intel/AMD x64 系统，不支持 32 位或 ARM64。"
     Abort
   ${EndIf}
+  System::Call 'kernel32::GetTickCount() i.r1'
+  StrCpy $displayStageClock $1
   StrCpy $runtimeNeedsReboot "0"
   Call CollectorChoiceInit
 !macroend
@@ -64,6 +73,14 @@ Var runtimeNeedsReboot
   Call DisplayCheckCancel
   Call VerifySelectedCollector
   Call DisplayCheckCancel
+  !ifdef FAST_PROGRAM_MANIFEST
+    !insertmacro DisplayStage "完成升级提交与旧程序清理"
+    nsExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action Complete -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "${UNINSTALL_FILENAME}" -InstallerLog'
+    Pop $0
+    ${If} $0 != 0
+      !insertmacro DisplayAbort "新版程序已核验，但旧程序清理未完成（$0）；请保留日志后重试。"
+    ${EndIf}
+  !endif
 !macroend
 
 ; The legacy NSIS decoder may not reliably raise an error for an unsupported
@@ -101,6 +118,16 @@ Var runtimeNeedsReboot
   Page custom DisplayFinishPage DisplayFinishLeave
 !macroend
 !macro customCheckAppRunning
+  ; Stock installSection has already loaded installer.nsh before this hook.
+  ; Keep electron-builder's normal signed uninstaller / archive size pipeline.
+  !ifndef BUILD_UNINSTALLER
+    !ifdef FAST_PROGRAM_MANIFEST
+      !ifndef FAST_IO_MACROS_LOADED
+        !define FAST_IO_MACROS_LOADED
+        !include "${FAST_PROGRAM_IO_OVERRIDE_SOURCE}"
+      !endif
+    !endif
+  !endif
   !insertmacro IS_POWERSHELL_AVAILABLE
   ; Install/migrate the selected same-build plugin BEFORE overwriting display
   ; files. Its service and data remain outside the display install directory.
@@ -129,4 +156,30 @@ Var runtimeNeedsReboot
     Call DisplayCheckCancel
     !insertmacro DisplayStage "解压并复制大屏程序文件"
   !endif
+!macroend
+
+; User data is outside the program directory. Upgrades retain the whole old
+; program for rollback; normal uninstall uses native bulk deletion, not a
+; per-file move to the (possibly different) temporary drive.
+!macro customRemoveFiles
+  !ifndef FAST_PROGRAM_MANIFEST
+    !error "A verified program manifest is required for program-directory cleanup."
+  !endif
+  ${LogSet} off
+  SetOutPath $TEMP
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\program-directory.ps1 "${FAST_PROGRAM_DIRECTORY_SOURCE}"
+  File /oname=$PLUGINSDIR\installer-process.ps1 "${FAST_INSTALLER_PROCESS_SOURCE}"
+  File /oname=$PLUGINSDIR\program-files.json "${FAST_PROGRAM_MANIFEST}"
+  StrCpy $R3 "Remove"
+  ${If} ${isUpdated}
+    StrCpy $R3 "Retire"
+  ${EndIf}
+  DetailPrint "处理程序文件；独立采集服务及所有现场数据保留。"
+  nsExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action $R3 -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "${UNINSTALL_FILENAME}" -InstallerLog'
+  Pop $0
+  ${If} $0 != 0
+    SetErrorLevel 2
+    Abort "程序文件处理失败（$0）；没有删除现场数据，未报告卸载成功。"
+  ${EndIf}
 !macroend

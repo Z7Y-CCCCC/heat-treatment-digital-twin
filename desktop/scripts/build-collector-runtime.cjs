@@ -13,6 +13,10 @@ function sourceFingerprint(){
         if(entry.isDirectory())walk(file,relative+'/');else if(entry.isFile()){hash.update(relative+'\0');hash.update(fs.readFileSync(file));}
     }};
     walk(path.join(project,'backend'));walk(path.join(project,'shared'));
+    for (const file of ['desktop/安装采集服务.ps1','desktop/installer-process.ps1','desktop/collector-operations.ps1',
+        'desktop/collector-plugin/Install-CollectorPlugin.ps1','desktop/scripts/prepare-collector-plugin.cjs']) {
+        hash.update(file+'\0');hash.update(fs.readFileSync(path.join(project,file)));
+    }
     hash.update('backend/scripts/generate-voice.ps1\0');
     hash.update(fs.readFileSync(path.join(project,'backend/scripts/generate-voice.ps1')));
     return hash.digest('hex');

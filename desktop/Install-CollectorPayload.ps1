@@ -6,12 +6,17 @@ param(
     [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{40}$')][string]$ExpectedCommit,
     [switch]$VerifyOnly,
     [switch]$VerifyInstalledOnly,
-    [switch]$InstallerLog
+    [switch]$InstallerLog,
+    [switch]$NewEmptyData
 )
 # The NSIS installer embeds an immutable, same-build ZIP. Never download a
 # plugin at install time or pick up a previous runtime/cache from this machine.
 $ErrorActionPreference='Stop'
-if($InstallerLog){[Console]::OutputEncoding=[Text.Encoding]::Unicode;[Console]::Write([char]0xFEFF);[Console]::WriteLine('开始校验离线采集插件 SHA-256、版本和文件清单…')}
+. (Join-Path $PSScriptRoot 'installer-process.ps1')
+Initialize-InstallerOutput -ForNsis:$InstallerLog
+if($NewEmptyData -and ($VerifyOnly -or $VerifyInstalledOnly)){throw '新建空白环境不能与只读校验同时使用。'}
+if(-not $VerifyOnly){Write-InstallerMessage '开始校验离线采集插件 SHA-256、版本和文件清单…'}
+try {
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.IO.Compression
 function Get-PluginInstallRoot {
@@ -58,7 +63,7 @@ try {
     try {$manifest=$reader.ReadToEnd() | ConvertFrom-Json} finally {$reader.Dispose()}
     if($manifest.product -ne 'collector-plugin' -or $manifest.version -ne $ExpectedVersion -or $manifest.buildSourceCommit -ne $ExpectedCommit){throw '主程序和采集插件的版本或源码提交不一致。'}
     if($VerifyOnly){[pscustomobject]@{success=$true;version=$ExpectedVersion;commit=$ExpectedCommit;entries=$names.Count}|ConvertTo-Json -Compress;return}
-    if($VerifyInstalledOnly){Assert-InstalledPayload $manifest;Write-Output '安装后采集服务与同提交插件一致。';return}
+    if($VerifyInstalledOnly){Assert-InstalledPayload $manifest;Write-InstallerMessage '安装后采集服务与同提交插件一致。';return}
     if($InstallerLog){[Console]::WriteLine('校验通过，正在解压独立采集插件…')}
     if(-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装采集服务需要 Windows 管理员授权。'}
     # An administrator-only Program Files sibling, not a user-writable temp
@@ -76,14 +81,20 @@ try {
 } finally {if($zip){$zip.Dispose()};$archive.Dispose()}
 if($VerifyOnly){exit 0}
 if($InstallerLog){[Console]::WriteLine('解压完成，开始安装或升级独立采集服务；已有工程不会清空。')}
-& "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $stage 'Install-CollectorPlugin.ps1') -InstallRoot (Get-PluginInstallRoot) -SkipUserDataImport
-if($LASTEXITCODE -ne 0){throw '独立采集插件安装失败；请保留安装记录及原工程。'}
+$installArguments=@('-InstallRoot',(Get-PluginInstallRoot),'-SkipUserDataImport','-UsePreparedPayload')
+if($NewEmptyData){$installArguments+='-NewEmptyData'}
+$installCode=Invoke-InstallerPowerShell (Join-Path $stage 'Install-CollectorPlugin.ps1') $installArguments
+if($installCode -ne 0){throw ('独立采集插件安装失败（{0}）；请保留安装记录及原工程。' -f $installCode)}
 if($InstallerLog){[Console]::WriteLine('正在逐文件核对安装结果、服务版本及运行状态…')}
 Assert-InstalledPayload $manifest
-Write-Output "采集服务已安装并逐文件核对：$ExpectedVersion / $ExpectedCommit。已有机器级工程未覆盖；用户级旧工程需通过项目迁移显式导入。"
+Write-InstallerMessage "采集服务已安装并逐文件核对：$ExpectedVersion / $ExpectedCommit。已有机器级工程未覆盖；用户级旧工程需通过项目迁移显式导入。"
 
 # Delete only the exact, newly created and verified staging sibling on success.
 $resolved=[IO.Path]::GetFullPath($stage)
 if([IO.Path]::GetDirectoryName($resolved) -ne $programFiles -or [IO.Path]::GetFileName($resolved) -notmatch '^HeatTreatmentCollectorPayload-[a-f0-9]{32}$'){throw 'Unsafe staging cleanup path'}
-if((Get-Item -LiteralPath $resolved).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Linked staging cleanup rejected'}
-Remove-Item -LiteralPath $resolved -Recurse -Force
+if(Test-Path -LiteralPath $resolved){
+    if((Get-Item -LiteralPath $resolved).Attributes -band [IO.FileAttributes]::ReparsePoint){throw 'Linked staging cleanup rejected'}
+    Remove-Item -LiteralPath $resolved -Recurse -Force
+}
+
+}catch{Write-InstallerMessage ('ERROR: '+$_.Exception.Message);exit 1}

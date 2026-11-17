@@ -313,6 +313,31 @@ test('first-run dependency extraction yields to the event loop', async () => {
     }
 });
 
+
+test('dependency cache uses archive content, survives installer mtime changes, and repairs legacy or incomplete caches', async t => {
+    const f = require('./installer-test-fixtures.cjs').fixture(t, 'dependency-content-marker-');
+    const tarFile=path.join(f.directory,'backend-dependencies.tar');fs.writeFileSync(tarFile,'archive-one');
+    let extractions=0,desktop;
+    desktop=loadDesktop({userDataPath:f.directory,spawnProcess:()=>{
+        extractions++;
+        const child=new EventEmitter();
+        setImmediate(()=>{desktop.run('backendDependenciesReady = () => true;');child.emit('close',0,null);});
+        return child;
+    }});
+    desktop.app.isPackaged=true;desktop.context.testResourcePath=name=>path.join(f.directory,name);
+    desktop.run('resourcePath = testResourcePath; backendDependenciesReady = () => true; updateStartupProgress = () => {};');
+    await desktop.run('ensureBackendDependencies()');assert.equal(extractions,1);
+    const marker=path.join(f.directory,'backend-dependencies','.prepared');
+    const digest=()=> 'sha256:'+require('node:crypto').createHash('sha256').update(fs.readFileSync(tarFile)).digest('hex');
+    assert.equal(fs.readFileSync(marker,'utf8'),digest());
+    fs.utimesSync(tarFile,new Date('2030-01-01'),new Date('2030-01-01'));
+    await desktop.run('ensureBackendDependencies()');assert.equal(extractions,1,'identical copied archives must not be expanded again');
+    fs.writeFileSync(marker,new Date().toISOString());await desktop.run('ensureBackendDependencies()');assert.equal(extractions,2);
+    desktop.run('backendDependenciesReady = () => false;');await desktop.run('ensureBackendDependencies()');assert.equal(extractions,3,'matching marker must not hide missing critical modules');
+    fs.writeFileSync(tarFile,'archive-two');await desktop.run('ensureBackendDependencies()');assert.equal(extractions,4);
+    assert.equal(fs.readFileSync(marker,'utf8'),digest());
+});
+
 test('workspace startup reuses source dependencies, but installed startup cannot borrow them', async () => {
     const desktop = loadDesktop();
     desktop.run(`

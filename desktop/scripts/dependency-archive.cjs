@@ -2,12 +2,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const tar = require('tar');
+const { POLICY_VERSION, dependencyRuntimePlan } = require('./dependency-runtime-policy.cjs');
 const { prepareResourceDirectory } = require('./resource-preparation.cjs');
 const { sha256 } = require('./runtime-cache.cjs');
 
 function dependencyFingerprint(source) {
     const hash = crypto.createHash('sha256');
-    hash.update(`backend-dependencies-v1:${process.platform}:${process.arch}:${process.versions.modules}\0`);
+    hash.update(`${POLICY_VERSION}:${process.platform}:${process.arch}:${process.versions.modules}\0`);
+    hash.update(fs.readFileSync(path.join(__dirname, 'dependency-runtime-policy.cjs')));
     for (const name of ['package.json', 'package-lock.json']) {
         const filename = path.join(path.dirname(source), name);
         hash.update(fs.existsSync(filename) ? fs.readFileSync(filename) : `missing:${name}`);
@@ -32,7 +34,12 @@ async function prepareDependencyArchive(source, cache, destination, build = (out
     // Windows bsdtar can spend minutes traversing a large synced dependency
     // tree before writing a byte. Node tar streams entries with bounded jobs.
     // This is a build-only dependency; customer runtime requirements do not change.
-    return tar.c({ file: output, cwd: source, portable: true, jobs: 32 }, ['.']);
+    const plan = dependencyRuntimePlan(source);
+    // Keep all runtime code, binaries, JSON/certificates and license notices.
+    // Only non-runtime types, source maps and documentation are omitted.
+    // A fixed tar mtime avoids re-extraction solely because CI checkout times changed.
+    console.log(`后端运行依赖：${plan.retainedFiles}/${plan.sourceFiles} 个文件；省去 ${plan.omittedFiles} 个非运行文件。`);
+    return tar.c({ file: output, cwd: source, portable: true, mtime: new Date(0), jobs: 32, filter: plan.filter }, ['.']);
 }) {
     const fingerprint = dependencyFingerprint(source);
     const archive = path.join(cache, 'backend-dependencies.tar');

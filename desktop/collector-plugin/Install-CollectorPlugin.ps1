@@ -1,11 +1,17 @@
 ﻿[CmdletBinding()]
 param(
     [string]$InstallRoot = (Join-Path $(if($env:ProgramW6432){$env:ProgramW6432}else{$env:ProgramFiles}) 'HeatTreatmentCollectorPlugin'),
-    [string]$ImportDataDirectory = (Join-Path $env:APPDATA 'heat-treatment-digital-twin-desktop'),
+    [string]$ImportDataDirectory = '',
     [switch]$ResumeImportedData,
-    [switch]$SkipUserDataImport
+    [switch]$SkipUserDataImport,
+    [switch]$UsePreparedPayload,
+    [switch]$NewEmptyData
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'installer-process.ps1')
+Initialize-InstallerOutput
+if($NewEmptyData -and ($ResumeImportedData -or $ImportDataDirectory)){throw '空白安装与显式迁移互斥；原工程不会被覆盖。'}
+if($ResumeImportedData -and -not $ImportDataDirectory){throw '恢复导入必须明确提供原工程目录。'}
 if($SkipUserDataImport){$ImportDataDirectory=''}
 $source = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'
 $manifest = Get-Content -LiteralPath (Join-Path $source 'plugin-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -40,9 +46,11 @@ if (-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.Windows
     $elevatedArguments=@(
         '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',('"{0}"' -f $PSCommandPath),
         '-InstallRoot',('"{0}"' -f $InstallRoot))
-    if(-not $SkipUserDataImport){$elevatedArguments+=@('-ImportDataDirectory',('"{0}"' -f $ImportDataDirectory))}
+    if(-not $SkipUserDataImport -and $ImportDataDirectory){$elevatedArguments+=@('-ImportDataDirectory',('"{0}"' -f $ImportDataDirectory))}
     if($ResumeImportedData){$elevatedArguments+='-ResumeImportedData'}
     if($SkipUserDataImport){$elevatedArguments+='-SkipUserDataImport'}
+    if($NewEmptyData){$elevatedArguments+='-NewEmptyData'}
+    if($UsePreparedPayload){$elevatedArguments+='-UsePreparedPayload'}
     $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList $elevatedArguments
     if ($child.ExitCode -ne 0) { throw '采集插件安装失败，原始数据保留。' }
     Write-Host '采集插件已安装。重新打开大屏即可连接。'
@@ -57,12 +65,16 @@ if(Get-CimInstance Win32_Process -Filter "Name='HeatTreatmentCollectorCenter.exe
 }
 if ((Test-Path -LiteralPath (Join-Path $target '热处理数字孪生大屏.exe')) -or ($target + '\').StartsWith($source,[StringComparison]::OrdinalIgnoreCase)) { throw '请使用独立插件安装目录。' }
 if ($target -eq [IO.Path]::GetPathRoot($target).TrimEnd('\') -or ($source).StartsWith($target + '\',[StringComparison]::OrdinalIgnoreCase)) { throw '插件安装目录不能包含解压源目录或为磁盘根目录。' }
-$staging = $target + '.preparing-' + [Guid]::NewGuid().ToString('N')
-New-Item -ItemType Directory -Path $staging -Force | Out-Null
-foreach ($name in @('resources','安装采集服务.ps1','采集运行中心.cmd','collector-operations.ps1','README.md','plugin-manifest.json')) {
-    Copy-Item -LiteralPath (Join-Path $source $name) -Destination $staging -Recurse
+$staging = Get-CollectorPayloadStage $source $target -UsePreparedPayload:$UsePreparedPayload
+if(-not $UsePreparedPayload){
+    New-Item -ItemType Directory -Path $staging -ErrorAction Stop | Out-Null
+    foreach ($name in @('resources','安装采集服务.ps1','installer-process.ps1','采集运行中心.cmd','collector-operations.ps1','README.md','plugin-manifest.json')) {
+        Copy-Item -LiteralPath (Join-Path $source $name) -Destination $staging -Recurse
+    }
+    Test-PluginFiles $staging -PayloadOnly
 }
-Test-PluginFiles $staging -PayloadOnly
+# Direct use never bypasses Test-PluginFiles $source above: it publishes the
+# exact, fully hashed administrator-owned directory rather than copying it again.
 $configFile = Join-Path $env:ProgramData 'HeatTreatmentDigitalTwin\collector-service.json'
 $previousConfig = if (Test-Path -LiteralPath $configFile) { [IO.File]::ReadAllBytes($configFile) } else { $null }
 $previousService = Get-CimInstance Win32_Service -Filter "Name='HeatTreatmentCollector'"
@@ -85,8 +97,7 @@ $backup = $null
 try {
     if ($previousService -and $previousService.State -ne 'Stopped') {
         $service = Get-Service HeatTreatmentCollector
-        Stop-Service HeatTreatmentCollector -ErrorAction Stop
-        $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(60))
+        Stop-InstallerService $service -TimeoutSeconds 60
     }
     if (Test-Path -LiteralPath $target) {
         $backup = $target + '.previous-' + [Guid]::NewGuid().ToString('N')
@@ -95,22 +106,22 @@ try {
     Move-Item -LiteralPath $staging -Destination $target
     $runtimeScript=Join-Path $target 'resources\prerequisites\RuntimePrerequisites.ps1'
     if(Test-Path -LiteralPath $runtimeScript){
-        & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runtimeScript -Action Install -Component VCRedist -RuntimeRoot (Join-Path $target 'resources\prerequisites')
-        if($LASTEXITCODE -ne 0){throw '采集插件运行环境未就绪，请重启 Windows 或修复 Visual C++ x64 运行库后重试。'}
+        $runtimeCode=Invoke-InstallerPowerShell $runtimeScript @('-Action','Install','-Component','VCRedist','-RuntimeRoot',(Join-Path $target 'resources\prerequisites'))
+        if($runtimeCode -ne 0){throw '采集插件运行环境未就绪，请重启 Windows 或修复 Visual C++ x64 运行库后重试。'}
     }
-    $arguments = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $target '安装采集服务.ps1'),'-InstallRoot',$target)
-    if (-not $SkipUserDataImport -and -not $previousConfig -and -not $ResumeImportedData -and (Test-Path -LiteralPath (Join-Path $ImportDataDirectory 'data\database-config.json'))) {
+    $arguments = @('-InstallRoot',$target)
+    if($NewEmptyData){$arguments+='-NewEmptyData'}
+    if (-not $SkipUserDataImport -and -not $previousConfig -and -not $ResumeImportedData -and $ImportDataDirectory -and (Test-Path -LiteralPath (Join-Path $ImportDataDirectory 'data\database-config.json'))) {
         $arguments += @('-ImportDataDirectory',$ImportDataDirectory)
     }
-    & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @arguments
-    if ($LASTEXITCODE -ne 0) { throw "服务注册失败（$LASTEXITCODE）。" }
+    $serviceCode=Invoke-InstallerPowerShell (Join-Path $target '安装采集服务.ps1') $arguments
+    if ($serviceCode -ne 0) { throw "服务注册失败（$serviceCode）。" }
 } catch {
     $failure = $_
     try {
         $newService = Get-Service HeatTreatmentCollector -ErrorAction SilentlyContinue
         if ($newService -and $newService.Status -ne 'Stopped') {
-            Stop-Service HeatTreatmentCollector -ErrorAction Stop
-            $newService.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped,[TimeSpan]::FromSeconds(60))
+            Stop-InstallerService $newService -TimeoutSeconds 60
         }
         if ($backup -and (Test-Path -LiteralPath $backup)) {
             if (Test-Path -LiteralPath $target) { Move-Item -LiteralPath $target -Destination ($target + '.failed-' + [Guid]::NewGuid().ToString('N')) }
@@ -122,7 +133,7 @@ try {
             $current = Get-CimInstance Win32_Service -Filter "Name='HeatTreatmentCollector'"
             $result = Invoke-CimMethod -InputObject $current -MethodName Change -Arguments @{PathName=$previousService.PathName}
             if ($result.ReturnValue -ne 0) { throw '无法恢复原服务路径。' }
-            if ($wasRunning) { Start-Service HeatTreatmentCollector }
+            if ($wasRunning) { $restored=Get-Service HeatTreatmentCollector; Start-InstallerService $restored -TimeoutSeconds 900 }
         } elseif ($newService) { & "$env:SystemRoot\System32\sc.exe" delete HeatTreatmentCollector | Out-Null }
     } catch { Write-Warning "自动恢复未完成，请保留日志和旧目录：$($_.Exception.Message)" }
     throw $failure
