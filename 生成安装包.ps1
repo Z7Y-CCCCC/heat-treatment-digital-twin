@@ -522,8 +522,8 @@ if ($effectiveCompressionLevel -notmatch '^[0-9]$') {
 }
 try {
     $env:ELECTRON_BUILDER_COMPRESSION_LEVEL = $effectiveCompressionLevel
-    if ($FastPack) { Write-Host '极速打包：程序 ZIP 使用存储模式，减少压缩耗时；安装包体积会增大，全部运行及完整性检查仍执行。' -ForegroundColor Yellow }
-    Write-Host "ZIP 压缩级别：$effectiveCompressionLevel（默认 1，可通过 ELECTRON_BUILDER_COMPRESSION_LEVEL 覆盖）"
+    if ($FastPack) { Write-Host '极速打包：程序归档使用存储模式，减少压缩耗时；安装包体积会增大，全部运行及完整性检查仍执行。' -ForegroundColor Yellow }
+    Write-Host "7z 压缩级别：$effectiveCompressionLevel（默认 1，可通过 ELECTRON_BUILDER_COMPRESSION_LEVEL 覆盖）"
     Invoke-CheckedCommand -Label '压缩已验证的程序并生成 NSIS 安装包' -Executable $node -ArgumentList @(
         (Join-Path $projectDirectory 'tools/package-installer.cjs'),
         (Join-Path $outputDirectory 'win-unpacked'), $outputDirectory, $effectiveCompressionLevel, $pluginPath

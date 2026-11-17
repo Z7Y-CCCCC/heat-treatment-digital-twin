@@ -170,7 +170,9 @@ async function main() {
         atomicJson(stateFile, state);
     }
     checkRunning();
-    state.port = await freePort(state.port);
+    if (options.preferredPort !== undefined && (!Number.isInteger(options.preferredPort) || options.preferredPort < 1024 || options.preferredPort > 65486))
+        throw new Error('Invalid private MySQL preferred port');
+    state.port = await freePort(state.port || options.preferredPort);
     atomicJson(stateFile, state);
     progress('正在启动随包 MySQL 本机数据库');
     launch(executable, ['--no-defaults', `--basedir=${nativePaths.runtime}`, `--datadir=${nativeDataDir}`,

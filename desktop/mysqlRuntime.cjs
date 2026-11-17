@@ -9,7 +9,9 @@ class MysqlRuntime {
     constructor(options) { this.options = options; this.child = null; this.stopping = false; }
 
     async start() {
-        const { root, runtimeDir, nodeBinary, hostScript, dependenciesDir, templateFile, onProgress, linkDirectory } = this.options;
+        const { root, runtimeDir, nodeBinary, hostScript, dependenciesDir, templateFile, onProgress, linkDirectory, preferredPort } = this.options;
+        if (preferredPort !== undefined && (!Number.isInteger(preferredPort) || preferredPort < 1024 || preferredPort > 65486))
+            throw new Error('Invalid private MySQL preferred port');
         const configFile = path.join(root, 'data', 'database-config.json');
         if (fs.existsSync(configFile)) {
             let config;
@@ -20,7 +22,7 @@ class MysqlRuntime {
         await fs.promises.mkdir(path.join(root, 'mysql'), { recursive: true });
         await fs.promises.mkdir(path.join(root, 'logs'), { recursive: true });
         const requestFile = path.join(root, 'mysql', 'host-config.json');
-        await fs.promises.writeFile(requestFile, JSON.stringify({ root, runtimeDir, templateFile, ...(linkDirectory ? { linkDirectory } : {}) }), { mode: 0o600 });
+        await fs.promises.writeFile(requestFile, JSON.stringify({ root, runtimeDir, templateFile, ...(linkDirectory ? { linkDirectory } : {}), ...(preferredPort !== undefined ? { preferredPort } : {}) }), { mode: 0o600 });
         const log = await createRotatingLogWriter(path.join(root, 'logs'), 'mysql-host.log');
         log.on('error', error => console.error(`MySQL host log: ${error.message}`));
         const hostEnvironment = { ...process.env };

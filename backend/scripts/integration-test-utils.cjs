@@ -7,7 +7,10 @@ const { finished } = require('node:stream/promises');
 
 const BACKEND_DIR = path.resolve(__dirname, '..');
 const REPO_DIR = path.resolve(BACKEND_DIR, '..');
-const OUTPUT_DIR = path.join(REPO_DIR, 'output');
+const releaseOutput = process.env.RELEASE_TEST_OUTPUT_ROOT;
+const OUTPUT_DIR = releaseOutput
+    ? require('./release-test-output.cjs').validateReleaseTestOutput(releaseOutput, REPO_DIR)
+    : path.join(REPO_DIR, 'output');
 const testBackends = new Map();
 
 function requireTestPath(filename) {
@@ -21,9 +24,13 @@ function requireTestPath(filename) {
     // redirect cleanup or database writes into a commissioned installation.
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     const rootReal = fs.realpathSync(OUTPUT_DIR);
-    const rootRelative = path.relative(fs.realpathSync(REPO_DIR), rootReal);
-    if (!rootRelative || rootRelative === '..' || rootRelative.startsWith(`..${path.sep}`) || path.isAbsolute(rootRelative)) {
-        throw new Error('The test output directory must not link outside the workspace');
+    if (releaseOutput) {
+        require('./release-test-output.cjs').validateReleaseTestOutput(OUTPUT_DIR, REPO_DIR);
+    } else {
+        const rootRelative = path.relative(fs.realpathSync(REPO_DIR), rootReal);
+        if (!rootRelative || rootRelative === '..' || rootRelative.startsWith(`..${path.sep}`) || path.isAbsolute(rootRelative)) {
+            throw new Error('The test output directory must not link outside the workspace');
+        }
     }
     let ancestor = resolved;
     const missing = [];

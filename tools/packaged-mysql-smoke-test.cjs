@@ -114,6 +114,10 @@ async function main() {
             }
             assert.equal(activated, true, `Desktop backend/activation readiness timed out; inspect ${directory}`);
             const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            if (env.RELEASE_TEST_MYSQL_PORT) {
+                const start = Number(env.RELEASE_TEST_MYSQL_PORT);
+                assert.ok(config.port >= start && config.port < start + 50, 'Desktop fixture must stay in its separate private-MySQL port range');
+            }
             assert.equal(activated, true, 'Real activation must complete before Unity starts');
             assert.equal(config.type, 'mysql');
             connection = await mysql.createConnection({

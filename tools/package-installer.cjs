@@ -14,6 +14,10 @@ function compressionOptions(level, inherited = process.env) {
     if (key.toUpperCase() === 'ELECTRON_BUILDER_COMPRESSION_LEVEL') delete env[key];
   }
   if (level !== '0') env.ELECTRON_BUILDER_COMPRESSION_LEVEL = level;
+  // BCJ2 improves Windows PE compression in the native 7z app container.
+  // Keep fast mode genuinely stored; do not apply a binary filter to it.
+  for (const key of Object.keys(env)) if (key.toUpperCase() === 'ELECTRON_BUILDER_7Z_FILTER') delete env[key];
+  if (Number(level) >= 3) env.ELECTRON_BUILDER_7Z_FILTER = 'BCJ2';
   return { compression: level === '0' ? 'store' : 'normal', env };
 }
 
