@@ -73,7 +73,12 @@ async function repackInstaller(root, sourceRelease) {
   fs.writeFileSync(path.join(output,'packaging-resource-verification.json'),JSON.stringify(packaged.proof,null,2));
   fs.copyFileSync(plugin,path.join(output,manifest.collectorPlugin.file));
   fs.writeFileSync(installer+'.sha256.txt',`${digest.sha256}  ${installerName}\n`);
+  const startup=read(path.join(output,'installer-startup-verification.json'));
+  const installerStartup={status:startup.success?'passed':'failed',sha256:startup.sha256,realExecutable:startup.realExecutable,
+    settingsReady:startup.settingsReady,installed:startup.installed,nextClicked:startup.nextClicked,seconds:startup.seconds};
+  require('./installer-startup-smoke.cjs').assertStartupProof({version:manifest.version,sha256:digest.sha256,installerStartup});
   const newManifest={...manifest,installer,size:digest.size,sha256:digest.sha256,createdAt:new Date().toISOString(),mode:'installer-ui-only',
+    installerStartup,
     installerSourceCommit:execFileSync('git',['-C',root,'rev-parse','HEAD'],{encoding:'utf8',windowsHide:true}).trim(),
     stagingDirectory:stageRoot,packagingResourceBaseline,fullSmokeTestReused:true,compressionLevel};
   const fullBuild = timings.reusedFullBuildTimings || timings;

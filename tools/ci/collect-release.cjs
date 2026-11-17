@@ -14,6 +14,7 @@ function collectRelease(root, sourceDirectory) {
   const directory = path.resolve(directories[0]);
   const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'release-manifest.json'), 'utf8').replace(/^\uFEFF/, ''));
   const timings = JSON.parse(fs.readFileSync(path.join(directory, 'build-timings.json'), 'utf8').replace(/^\uFEFF/, ''));
+  require('../installer-startup-smoke.cjs').assertStartupProof(manifest);
   if (!timings.success || manifest.smokeTest !== 'passed' || manifest.emptySystem !== true || manifest.contentPolicy !== 'empty-v1' || manifest.mysqlBundled !== true) {
     throw new Error('Release must pass the full build and smoke test using empty-system configuration');
   }
@@ -31,7 +32,7 @@ function collectRelease(root, sourceDirectory) {
   // Strip machine-specific paths from downloadable metadata.
   const { installer: _installer, buildLog: _log, preparedBuildLog: _prepared,
     resourceBaseline: _baseline, resourceVerification: _verification, packagingResourceBaseline: _packagingBaseline, stagingDirectory: _staging,
-    sourceUserDataDirectory: _data, sourceUploadsDirectory: _uploads,
+    sourceUserDataDirectory: _data, sourceUploadsDirectory: _uploads, sourceSnapshot: _sourceSnapshot,
     collectorSmokeEvidence: _collectorEvidence, mysqlSmokeEvidence: _mysqlEvidence, ...portable } = manifest;
   if (manifest.collectorBundled === false && !manifest.collectorPlugin) throw new Error('Missing optional collector plugin');
   if (manifest.collectorPlugin) {

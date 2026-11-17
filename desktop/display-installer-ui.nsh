@@ -48,8 +48,11 @@ Function DisplayUIInit
   InitPluginsDir
   File /oname=$PLUGINSDIR\InstallerWindowChrome.dll "${__FILEDIR__}\.cache\installer-window-chrome\InstallerWindowChrome.dll"
   ; Keep the DLL loaded: its native subclasses live until this process exits.
-  System::Call '"$PLUGINSDIR\InstallerWindowChrome.dll"::Attach(p $HWNDPARENT) i.r0'
+  ; System::Call parses module names, not a shell command. Quotes become part
+  ; of the DLL name and make LoadLibrary fail even when the file exists.
+  System::Call '$PLUGINSDIR\InstallerWindowChrome.dll::Attach(p $HWNDPARENT) i.r0 ?!u'
   ${If} $0 != 1
+    SetErrorLevel 2
     MessageBox MB_ICONSTOP "安装窗口初始化失败，请重新运行安装程序。"
     Quit
   ${EndIf}

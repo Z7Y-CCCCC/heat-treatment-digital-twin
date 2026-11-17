@@ -545,6 +545,8 @@ $installer = Get-Item -LiteralPath $installerPath
 if ($installer.Length -le 0) { throw "安装包文件为空：$installerPath" }
 
 $installerHash = Get-ReleaseSha256 $installerPath
+$startupEvidence = Get-Content -LiteralPath (Join-Path $outputDirectory 'installer-startup-verification.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+if (-not $startupEvidence.success -or $startupEvidence.sha256 -ne $installerHash -or -not $startupEvidence.settingsReady -or $startupEvidence.installed -or $startupEvidence.nextClicked) { throw '最终安装 EXE 未通过真实窗口启动检查。' }
 $checksumPath = "$installerPath.sha256.txt"
 Set-Content -LiteralPath $checksumPath -Encoding UTF8 -Value "$installerHash  $installerName"
 Invoke-CheckedCommand -Label '确认构建期间程序源码未改变' -Executable $node -ArgumentList @(
@@ -560,6 +562,7 @@ $releaseManifest = [ordered]@{
     installer = $installerPath
     size = $installer.Length
     sha256 = $installerHash
+    installerStartup = [ordered]@{ status='passed'; sha256=$installerHash; realExecutable=$true; settingsReady=$true; installed=$false; nextClicked=$false; seconds=$startupEvidence.seconds }
     sourceSnapshot = $sourceSnapshot
     stagingDirectory = $outputDirectory
     mysqlBundled = $true

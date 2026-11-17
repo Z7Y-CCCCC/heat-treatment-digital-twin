@@ -23,11 +23,25 @@ function fixture(t) {
   return { root, directory, installer, manifest, save };
 }
 test('collects only verified files with portable metadata and regenerated checksum', t => {
-  const f = fixture(t); f.manifest.packagingResourceBaseline = 'C:/LOCAL/private/baseline.json'; f.save(); const out = collectRelease(f.root);
+  const f = fixture(t); f.manifest.packagingResourceBaseline = 'C:/LOCAL/private/baseline.json'; f.manifest.sourceSnapshot='C:/LOCAL/private/source.json'; f.save(); const out = collectRelease(f.root);
   assert.equal(fs.readdirSync(out).length, 4);
   assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'release-manifest.json'))).installer, 'test.exe');
   assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'release-manifest.json'))).packagingResourceBaseline, undefined);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(out, 'release-manifest.json'))).sourceSnapshot, undefined);
   assert.equal(verifyRelease(out, '').installer, 'test.exe');
+});
+
+test('v2.3.4 collection and download reject missing or mismatched real installer UI evidence', t => {
+  const f=fixture(t);f.manifest.version='2.3.4';f.save();
+  assert.throws(()=>collectRelease(f.root),/startup proof/);
+  f.manifest.installerStartup={status:'passed',sha256:f.manifest.sha256,realExecutable:true,settingsReady:true,installed:false,nextClicked:false};f.save();
+  const out=collectRelease(f.root),file=path.join(out,'release-manifest.json'),manifest=JSON.parse(fs.readFileSync(file));
+  // Missing integrated collector is a separate mandatory check for new versions.
+  assert.throws(()=>verifyRelease(out,''),/integrated collector/);
+  for(const change of [undefined,{...manifest.installerStartup,sha256:'0'.repeat(64)},{...manifest.installerStartup,status:'failed'}]){
+    fs.writeFileSync(file,JSON.stringify({...manifest,installerStartup:change}));
+    assert.throws(()=>verifyRelease(out,''),/startup proof/);
+  }
 });
 test('split release publishes independent collector bytes and checksums, rejects corruption and missing plugin', t => {
   const f = fixture(t), file = 'HeatTreatmentCollector-Plugin-2.3.1-x64.zip', data = Buffer.from('independent plugin fixture');
