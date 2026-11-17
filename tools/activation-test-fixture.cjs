@@ -13,12 +13,24 @@ function createTestIssuer(resources) {
     return privateKey;
 }
 async function activateFixture(origin, privateKey) {
-    const client = createActivationClient(origin), status = await client.status();
-    if (!status.required) return;
-    if (!status.machineId) throw new Error('Fixture machine fingerprint unavailable');
-    const signed = signLicensePayload({ licenseId: 'OWNED-SMOKE-ONLY', customer: '隔离验收', bindingVersion: 2, machineId: status.machineId,
-        issuedAt: new Date(Date.now() - 60000).toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(), features: ['dashboard'] }, privateKey);
-    await client.activate(encodeActivationCode(signed));
+    const client = createActivationClient(origin);
+    // Match production startup's bounded recovery from a transient local
+    // service restart. Never retry a rejected signature or waive activation.
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const status = await client.status();
+            if (!status.required) return;
+            if (!status.machineId) throw new Error('Fixture machine fingerprint unavailable');
+            const signed = signLicensePayload({ licenseId: 'OWNED-SMOKE-ONLY', customer: '隔离验收', bindingVersion: 2, machineId: status.machineId,
+                issuedAt: new Date(Date.now() - 60000).toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(), features: ['dashboard'] }, privateKey);
+            await client.activate(encodeActivationCode(signed));
+            if ((await client.status()).required) throw new Error('Fixture activation was not confirmed');
+            return;
+        } catch (error) {
+            if (!error.retryable || attempt === 2) throw error;
+            await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+        }
+    }
 }
 function createPackageView(sourceExecutable, directory) {
     requireTestPath(directory);
