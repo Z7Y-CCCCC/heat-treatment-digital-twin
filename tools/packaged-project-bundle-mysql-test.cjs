@@ -105,13 +105,19 @@ function launch(args) {
     const db = await databaseModule.getDb();
     assert.equal(databaseModule.getDbStatus().type, 'mysql');
     const { HistoryRetention } = require(path.join(packageBackend, 'services/historyRetention'));
-    const history = new HistoryRetention({ database: async () => db });
-    const oldMetric = await db.run("INSERT INTO metric_snapshots (snapshot_time) VALUES ('2020-01-01 00:00:00')");
+    const retentionNow = Date.now();
+    const history = new HistoryRetention({ database: async () => db, clock: () => retentionNow });
+    const oldMetric = await db.run("INSERT INTO metric_snapshots (snapshot_time, retention_until) VALUES ('2020-01-01 00:00:00', ?)", [retentionNow - 1]);
+    const legacyMetric = await db.run("INSERT INTO metric_snapshots (snapshot_time) VALUES ('2020-01-01 00:00:00')");
+    const boundaryMetric = await db.run("INSERT INTO metric_snapshots (snapshot_time, retention_until) VALUES ('2020-01-01 00:00:00', ?)", [retentionNow]);
+    const futureMetric = await db.run("INSERT INTO metric_snapshots (snapshot_time, retention_until) VALUES ('2020-01-01 00:00:00', ?)", [retentionNow + 86400000]);
     const oldEvent = await db.run("INSERT INTO event_logs (title, occurred_at) VALUES ('retention-preserve-event', '2020-01-01 00:00:00')");
     history.start();
     try {
         await history.run();
         assert.equal(await db.get('SELECT id FROM metric_snapshots WHERE id = ?', [oldMetric.insertId]), null);
+        for (const metric of [legacyMetric, boundaryMetric, futureMetric])
+            assert.ok(await db.get('SELECT id FROM metric_snapshots WHERE id = ?', [metric.insertId]), 'Permanent, boundary and future records must survive');
         assert.ok(await db.get('SELECT id FROM event_logs WHERE id = ?', [oldEvent.insertId]));
         checks.mysqlMetricRetentionPreservesEvents = true;
     } finally { await history.stop(); }
