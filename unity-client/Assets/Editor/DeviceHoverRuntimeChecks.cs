@@ -124,6 +124,7 @@ namespace HeatTreatment.DigitalTwin.Editor
                 Check(Draw() == 0, "factory switch clears the previous equipment outline");
                 Debug.Log("[DeviceHoverChecks] PASS " + checks.Count + " checks");
                 var output = Path.GetFullPath(Path.Combine(Application.dataPath, "../../output/device-hover-native-checks.json"));
+                Directory.CreateDirectory(Path.GetDirectoryName(output));
                 File.WriteAllText(output, new JObject { ["status"] = "passed", ["checks"] = checks }.ToString());
             }
             finally { foreach (var root in roots) if (root != null) Object.DestroyImmediate(root); }

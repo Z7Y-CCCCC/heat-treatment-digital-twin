@@ -5,6 +5,13 @@ const { createRequire } = require('node:module');
 const { createRunDirectory, requireTestPath } = require('../../backend/scripts/integration-test-utils.cjs');
 const cache = require('./native-build-cache.cjs');
 
+test('Unity hover checks create their evidence directory on a clean checkout', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../../unity-client/Assets/Editor/DeviceHoverRuntimeChecks.cs'), 'utf8');
+  assert.match(source, /Directory\.CreateDirectory\(Path\.GetDirectoryName\(output\)\);\s*File\.WriteAllText\(output,/);
+  assert.match(source, /if \(!value\) throw new InvalidOperationException\(message\)/);
+  assert.match(source, /finally \{ foreach \(var root in roots\)/);
+});
+
 // Execute the production entrypoints and cache with only the compiler boundary
 // mocked. All source/output/tool files belong to this disposable output tree;
 // no actual dotnet/csc, installed service, machine configuration or UI is used.
