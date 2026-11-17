@@ -377,7 +377,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             {
                 if (!_workshopEnvironmentRoots.TryGetValue(workshop.Id, out var parent)) continue;
                 if (workshop.LayoutObject["boundary"]?.Value<bool?>("enabled") == false) continue;
-                var importer = new GltfImport(new LoopbackDownloadProvider());
+                var importer = new GltfImport(new LoopbackDownloadProvider(), new ModelImportDeferAgent());
                 GameObject hall = null;
                 try
                 {

@@ -26,6 +26,7 @@ const showPermissionDenied = computed(() => protectedPaths.has(route.path)
     && adminSession.displayAuthenticated && !adminSession.permissions.view && route.path !== '/customer')
 const hasCustomerOperations = computed(() => adminSession.permissions.cast || adminSession.permissions.backup)
 let overlayAuthPoll = 0
+let overlayPreviouslyAuthorized = false
 const originalDocumentBackground = document.documentElement.style.backgroundColor
 const originalBodyBackground = document.body.style.backgroundColor
 
@@ -46,6 +47,7 @@ watch(() => adminSession.displayAuthenticated, authenticated => {
 })
 
 watch(() => [waitingForNativeOverlayAuth.value, adminSession.serviceUnavailable], ([waiting, unavailable]) => {
+    if (isNativeOverlaySurfaceRoute.value && adminSession.displayAuthenticated) overlayPreviouslyAuthorized = true
     window.clearInterval(overlayAuthPoll)
     overlayAuthPoll = 0
     if (waiting) {
@@ -57,7 +59,10 @@ watch(() => [waitingForNativeOverlayAuth.value, adminSession.serviceUnavailable]
         void nextTick(() => {
             const webview = window.chrome?.webview
             if (!webview) return
-            if (!unavailable) webview.postMessage({ type: 'host_action', action: 'show_admin', returnToDashboard: true })
+            // A cold anonymous overlay can race the other WebView's bootstrap.
+            // Only a real loss of previously confirmed access is a logout.
+            // Initial fallback/errors are owned by the host's startup barrier.
+            if (!unavailable && overlayPreviouslyAuthorized) webview.postMessage({ type: 'host_action', action: 'show_admin', returnToDashboard: true })
             webview.postMessage({ type: 'overlay_regions', viewport: { width: innerWidth, height: innerHeight }, regions: [] })
             webview.postMessage({ type: 'overlay_ready' })
         })
@@ -67,6 +72,14 @@ watch(() => [waitingForNativeOverlayAuth.value, adminSession.serviceUnavailable]
 let nativeSessionSyncGeneration = 0
 let rootDisposed = false
 let issuedNativeIdentity = ''
+// A transient first-request failure is not the final startup result. Notify the
+// host when polling really recovers, without requiring focus or a password.
+watch(() => [isNativeAdminSurfaceRoute.value, adminSession.ready, adminSession.serviceUnavailable,
+    adminSession.displayAuthenticated, adminSession.permissions.view, adminSession.permissions.launch],
+    ([native, ready, unavailable, display, view, launch]) => {
+        if (native && ready && !unavailable && display && view && launch)
+            window.chrome?.webview?.postMessage({ type: 'display_access_ready', success: true })
+    }, { immediate: true })
 watch(() => [nativeSessionIdentity.value, adminSession.serviceUnavailable], async ([identity, unavailable]) => {
     const generation = ++nativeSessionSyncGeneration
     if (!isNativeAdminSurfaceRoute.value || !adminSession.ready) return
@@ -135,11 +148,12 @@ onMounted(() => {
     startAdminSessionTracking()
     void (async () => {
         let supported = true
-        if (isNativeAdminSurfaceRoute.value) {
-            try { await bootstrapDisplayAccess() }
+        let bootstrapped = false
+        if (isNativeAdminSurfaceRoute.value && adminSession.displayStartupSupported !== true) {
+            try { await bootstrapDisplayAccess(); bootstrapped = true }
             catch { supported = false }
         }
-        await refreshAdminSession()
+        if (bootstrapped || !adminSession.ready || adminSession.serviceUnavailable) await refreshAdminSession()
         // Workspace UI can be newer than the still-running collector. Keep the
         // old sign-in entrance usable until the operator approves its update;
         // never strand that mixed-version combination behind a 0% scene cover.

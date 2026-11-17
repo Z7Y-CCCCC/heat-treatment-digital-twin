@@ -83,7 +83,9 @@ test('an unavailable overlay reports readiness without forcing the operator into
     assert.equal(f.messages.some(m=>m.action==='show_admin'),false)
     assert.equal(f.messages.some(m=>m.type==='overlay_ready'),true)
     session.serviceUnavailable=false;await settle();await settle()
-    assert.equal(f.messages.some(m=>m.action==='show_admin'),true,'confirmed logout still reveals the sign-in surface')
+    assert.equal(f.messages.some(m=>m.action==='show_admin'),false,'an anonymous cold start is not a logout and must not race display bootstrap')
+    session.displayAuthenticated=true;await settle();session.displayAuthenticated=false;await settle();await settle()
+    assert.equal(f.messages.some(m=>m.action==='show_admin'),true,'a real revocation after confirmed display access still reveals the sign-in surface')
 })
 
 test('an already delivered native identity is not reissued after a transient service warning',async t=>{
@@ -118,4 +120,11 @@ test('logout keeps the native surface and factory context on its sign-in return 
     assert.equal(f.routes.at(-1).path,'/admin')
     assert.equal(f.routes.at(-1).query.embedded,'unity');assert.equal(f.routes.at(-1).query.surface,'admin')
     assert.equal(f.routes.at(-1).query.factoryId,'factory_x');assert.equal(f.routes.at(-1).query.redirect,f.route.fullPath)
+})
+
+
+test('confirmed startup recovery re-notifies the host instead of waiting indefinitely for a password',async t=>{
+    const f=await fixture(t,async()=> 'recovered-display-ticket',{authenticated:false,displayOnly:true,serviceUnavailable:true})
+    f.messages.length=0;session.serviceUnavailable=false;await settle();await settle()
+    assert.equal(f.messages.some(m=>m.type==='display_access_ready'&&m.success===true),true)
 })

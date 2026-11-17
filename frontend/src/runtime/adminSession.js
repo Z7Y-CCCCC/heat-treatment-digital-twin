@@ -242,10 +242,17 @@ export async function refreshAdminSession() {
     refreshPromise = (async () => {
         if (pendingLock) return confirmPendingLock()
         try {
-            let data = await authRequest('/session')
-            if (data?.displayAuthenticated === false && window.chrome?.webview?.postMessage
+            const nativeDisplayOwner = window.chrome?.webview?.postMessage
                 && new URLSearchParams(window.location.search).get('embedded') === 'unity'
                 && new URLSearchParams(window.location.search).get('surface') !== 'overlay'
+            // On native cold start, obtain the display cookie before the first
+            // session read. Do not spend one round trip confirming anonymity.
+            if (!adminSession.ready && nativeDisplayOwner && adminSession.displayStartupSupported !== false) {
+                try { await bootstrapDisplayAccess() }
+                catch (error) { if (adminSession.displayStartupSupported !== false) throw error }
+            }
+            let data = await authRequest('/session')
+            if (data?.displayAuthenticated === false && nativeDisplayOwner
                 && adminSession.displayStartupSupported !== false) {
                 await bootstrapDisplayAccess()
                 data = await authRequest('/session')

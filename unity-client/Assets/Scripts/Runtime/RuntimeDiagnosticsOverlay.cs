@@ -83,9 +83,9 @@ namespace HeatTreatment.DigitalTwin.Runtime
         {
             _loadingVisible = true;
             _loadingProgress = 0.01f;
-            _loadingStep = "等待后台账户授权";
+            _loadingStep = "正在准备只读展示";
             _loadingDetail = string.IsNullOrWhiteSpace(message)
-                ? "正在切换到后台管理登录页…"
+                ? "正在连接展示服务，无需输入后台密码…"
                 : message.Trim();
             ReportLoadingProgress();
         }
@@ -95,8 +95,8 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (!busy) return;
             _loadingVisible = true;
             _loadingProgress = Mathf.Max(_loadingProgress, 0.06f);
-            _loadingStep = "正在验证后台授权";
-            _loadingDetail = "正在安全同步账户会话…";
+            _loadingStep = "正在同步展示会话";
+            _loadingDetail = "正在建立只读大屏连接…";
             ReportLoadingProgress();
         }
 
@@ -121,11 +121,11 @@ namespace HeatTreatment.DigitalTwin.Runtime
             if (!_modelErrors.Contains(message)) _modelErrors.Add(message);
         }
 
-        public void BeginLoading()
+        public void BeginLoading(float initialProgress = 0f)
         {
             ClearModelErrors();
             _loadingVisible = true;
-            _loadingProgress = 0f;
+            _loadingProgress = Mathf.Clamp01(initialProgress);
             _loadingStep = "正在初始化渲染";
             _loadingDetail = string.Empty;
             _lastReportedLoadingProgress = -1f;

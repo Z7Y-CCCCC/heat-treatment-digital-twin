@@ -25,6 +25,14 @@ namespace UnityEngine
     }
 }
 
+namespace GLTFast
+{
+    public interface IDeferAgent
+    {
+        bool ShouldDefer(); bool ShouldDefer(float duration);
+        Task BreakPoint(); Task BreakPoint(float duration);
+    }
+}
 // Only the glTFast downloader contract is needed to test the real HTTP path.
 namespace GLTFast.Loading
 {

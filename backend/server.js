@@ -623,6 +623,7 @@ app.get('/api/health', (req, res) => {
         status: 'ok',
         timestamp: new Date().toISOString(),
         runtime: require('./services/runtimeEngine').runtimeIdentity(),
+        capabilities: { displayStartup: { version: 1, passwordRequired: false, readOnly: true } },
         version: { ...loadReleaseManifest(), license },
         db: dbStatus,
         engine: engineStatus,
