@@ -131,6 +131,7 @@ function loadDesktop({ createLog, spawnProcess, userDataPath, deploymentConfig, 
             } };
             if (name === './processLifecycle.cjs') return require('../processLifecycle.cjs');
             if (name === './mysqlRuntime.cjs') return require('../mysqlRuntime.cjs');
+            if (name === './displayStartup.cjs') return require('../displayStartup.cjs');
             if (name === './serviceControl.cjs') return require('../serviceControl.cjs');
             if (name === './directoryPublish.cjs') return require('../directoryPublish.cjs');
             // Native path resolution has its own real-junction regression.
@@ -346,7 +347,7 @@ test('static startup status yields to Unity before waiting for the embedded admi
         findAvailablePort = async () => 3001;
         startDesktopControlServer = async () => {};
         startBackend = async () => { startupOrder.push('backend'); return {}; };
-        waitForHealth = async () => {};
+        waitForHealth = async () => ({ capabilities: { displayStartup: { version: 1, passwordRequired: false, readOnly: true } } });
         refreshStartupAppearanceWhenReady = async () => {};
         startDesktopSettingsSync = async () => {};
         createTray = () => {};
@@ -371,7 +372,7 @@ for (const lostNative of [false, true]) test('parallel runtime settings preserve
         initializeWritableData = () => ({ logsDir: 'unit-test-logs' });
         guardLogStream = stream => stream; startLogMaintenance = () => {};
         findAvailablePort = async () => 3001; startDesktopControlServer = async () => {};
-        startBackend = async () => ({}); waitForHealth = async () => {};
+        startBackend = async () => ({}); waitForHealth = async () => ({ capabilities: { displayStartup: { version: 1, passwordRequired: false, readOnly: true } } });
         waitForStartupActivation = async () => { startupOrder.push('activation'); await activationGate; };
         readStartupAppearance = async () => ({theme:'light'});
         applyStartupAppearance = async () => {};
@@ -452,7 +453,7 @@ test('service-connected Unity startup and exit never own or stop the collector',
         startBackend = () => { throw new Error('client must not collect'); };
         findAvailablePort = () => { throw new Error('client must not allocate backend ports'); };
         startDesktopSettingsSync = () => { throw new Error('client must not supervise server'); };
-        waitForHealth = async (url, timeoutMs, watched, hardBudget) => { remoteHealthUrl = url; remoteHealthBudget = timeoutMs; remoteHardBudget = hardBudget; };
+        waitForHealth = async (url, timeoutMs, watched, hardBudget) => { remoteHealthUrl = url; remoteHealthBudget = timeoutMs; remoteHardBudget = hardBudget; return { capabilities: { displayStartup: { version: 1, passwordRequired: false, readOnly: true } } }; };
         startNativeClient = async origin => { remoteNativeOrigin = origin; return { ready: Promise.resolve() }; };
         waitForNativeHostReady = async () => {};
         closeStartupWindow = () => {};
@@ -471,7 +472,7 @@ test('service-connected Unity startup and exit never own or stop the collector',
     assert.equal(desktop.spawnCalls, 0);
 });
 
-test('installed local collector startup advertises its bounded wait and cannot start Unity before readiness', async () => {
+for (const compatible of [true, false]) test('installed local collector startup waits for readiness and ' + (compatible ? 'accepts the current display protocol' : 'rejects an old service before Unity starts'), async () => {
     const backendOrigin = 'http://127.0.0.1:3001';
     const desktop = loadDesktop({ deploymentConfig: { mode: 'client', backendOrigin },
         startupServiceConfig: { version: 1, serviceName: 'HeatTreatmentCollector', port: 3001, backendOrigin } });
@@ -505,8 +506,15 @@ test('installed local collector startup advertises its bounded wait and cannot s
     assert.match(desktop.run('startupState.steps.find(step => step.id === "backend-health").title'), /等待本机采集服务就绪/);
     assert.match(desktop.run('startupState.steps.find(step => step.id === "backend-health").detail'), /最多 5 分钟.*不自动重启服务/);
     assert.equal(desktop.spawnCalls, 0);
-    desktop.run('releaseLocalHealth()'); await launch;
-    assert.equal(desktop.run('localNativeStarted'), true);
+    if (compatible) {
+        desktop.run('releaseLocalHealth({ capabilities: { displayStartup: { version: 1, passwordRequired: false, readOnly: true } } })'); await launch;
+        assert.equal(desktop.run('localNativeStarted'), true);
+    } else {
+        desktop.run('releaseLocalHealth({ status: \'ok\', db: { connected: true } })');
+        await assert.rejects(launch, { code: 'DISPLAY_STARTUP_UPDATE_REQUIRED' });
+        assert.equal(desktop.run('localNativeStarted'), false);
+        assert.equal(desktop.spawnCalls, 0, 'an obsolete service is neither replaced nor bypassed');
+    }
 });
 
 function isolatedHealthWait() {
