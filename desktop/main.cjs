@@ -538,7 +538,7 @@ function waitForHealth(url, timeoutMs = 30000, processToWatch = null, hardBudget
             : (deployment.mode === 'client'
                 ? `无法连接采集服务 ${url}，请检查服务端是否运行、地址与防火墙设置`
                 : '本地服务启动超时'));
-        const finish = (error = null) => {
+        const finish = (error = null, health = null) => {
             if (hardBudget) {
                 if (budgetFinished) return;
                 budgetFinished = true;
@@ -546,7 +546,7 @@ function waitForHealth(url, timeoutMs = 30000, processToWatch = null, hardBudget
                 for (const timer of retryTimers) clearTimeout(timer);
                 for (const request of activeRequests) request.destroy();
             }
-            if (error) reject(error); else resolve();
+            if (error) reject(error); else resolve(health);
         };
         // The extended local-service wait must also end if a response keeps
         // trickling bytes; the socket inactivity timer is not a total budget.
@@ -592,7 +592,7 @@ function waitForHealth(url, timeoutMs = 30000, processToWatch = null, hardBudget
                             if (deployment.mode === 'client' && (health.runtime?.role !== 'collector' || health.runtime?.owner !== 'windows-service' || health.runtime?.serviceName !== 'HeatTreatmentCollector')) {
                                 finish(new Error('连接地址不是独立采集服务，拒绝连接旧大屏内的数据进程')); return;
                             }
-                            finish(); return;
+                            finish(null, health); return;
                         }
                     } catch { /* Retry incomplete or invalid responses. */ }
                     retryAttempt();
@@ -1771,7 +1771,8 @@ async function launchApplication() {
         startupHealthPolicy.installedLocalCollector
             ? `等待 ${deployment.backendOrigin} 完成就绪（最多 5 分钟）；仅等待，不自动重启服务`
             : `等待 ${origin} 响应`);
-    await waitForHealth(`${origin}/api/health`, startupHealthPolicy.timeoutMs, initialBackendProcess, startupHealthPolicy.hardBudget);
+    const startupHealth = await waitForHealth(`${origin}/api/health`, startupHealthPolicy.timeoutMs, initialBackendProcess, startupHealthPolicy.hardBudget);
+    require('./displayStartup.cjs').assertDisplayStartupSupported(startupHealth);
     // Licensing precedes Unity, account creation and the original login flow.
     // The local collector owns the fingerprint and license even when the UI is
     // running as a normal user without write access to service data directories.
