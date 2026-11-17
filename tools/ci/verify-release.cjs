@@ -6,6 +6,8 @@ const { fileDigest } = require('../../desktop/scripts/file-digest.cjs');
 function verifyRelease(directory, expectedCommit = process.env.GITHUB_SHA, expectedRun = '') {
   const read = name => JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8').replace(/^\uFEFF/, ''));
   const manifest = read('release-manifest.json'), timings = read('build-timings.json');
+  require('../installer-startup-smoke.cjs').assertStartupProof(manifest);
+  require('../installer-extraction-smoke.cjs').assertExtractionProof(manifest);
   if (!timings.success || manifest.smokeTest !== 'passed' || manifest.emptySystem !== true || manifest.contentPolicy !== 'empty-v1' || manifest.mysqlBundled !== true)
     throw new Error('Release build and isolated launch checks must have passed');
   if (expectedCommit && manifest.commit !== expectedCommit) throw new Error('Artifact belongs to another commit');
@@ -13,7 +15,7 @@ function verifyRelease(directory, expectedCommit = process.env.GITHUB_SHA, expec
   if(manifest.collectorInstaller) {
     const integrated=manifest.collectorInstaller;
     if(integrated.mode!=='offline-selectable'||integrated.verified!==true||integrated.version!==manifest.version||integrated.commit!==manifest.buildSourceCommit||integrated.commit!==manifest.commit||integrated.sha256!==manifest.collectorPlugin?.sha256)throw Error('Integrated collector provenance does not match the installer release');
-  } else if(manifest.version==='2.3.3') throw Error('Missing integrated collector installer proof');
+  } else if(manifest.version==='2.3.3' || require('../installer-startup-smoke.cjs').requiresStartupProof(manifest.version)) throw Error('Missing integrated collector installer proof');
   const name = manifest.installer;
   if (typeof name !== 'string' || path.basename(name) !== name || /[\\/]/.test(name) || !/\.exe$/i.test(name)) throw new Error('Invalid installer name');
   const allowed = [name, `${name}.sha256.txt`, 'release-manifest.json', 'build-timings.json'].sort();

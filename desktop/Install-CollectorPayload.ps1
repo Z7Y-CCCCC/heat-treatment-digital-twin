@@ -5,11 +5,13 @@ param(
     [Parameter(Mandatory=$true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$ExpectedVersion,
     [Parameter(Mandatory=$true)][ValidatePattern('^[a-f0-9]{40}$')][string]$ExpectedCommit,
     [switch]$VerifyOnly,
-    [switch]$VerifyInstalledOnly
+    [switch]$VerifyInstalledOnly,
+    [switch]$InstallerLog
 )
 # The NSIS installer embeds an immutable, same-build ZIP. Never download a
 # plugin at install time or pick up a previous runtime/cache from this machine.
 $ErrorActionPreference='Stop'
+if($InstallerLog){[Console]::OutputEncoding=[Text.Encoding]::Unicode;[Console]::Write([char]0xFEFF);[Console]::WriteLine('开始校验离线采集插件 SHA-256、版本和文件清单…')}
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.IO.Compression
 function Get-PluginInstallRoot {
@@ -57,6 +59,7 @@ try {
     if($manifest.product -ne 'collector-plugin' -or $manifest.version -ne $ExpectedVersion -or $manifest.buildSourceCommit -ne $ExpectedCommit){throw '主程序和采集插件的版本或源码提交不一致。'}
     if($VerifyOnly){[pscustomobject]@{success=$true;version=$ExpectedVersion;commit=$ExpectedCommit;entries=$names.Count}|ConvertTo-Json -Compress;return}
     if($VerifyInstalledOnly){Assert-InstalledPayload $manifest;Write-Output '安装后采集服务与同提交插件一致。';return}
+    if($InstallerLog){[Console]::WriteLine('校验通过，正在解压独立采集插件…')}
     if(-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw '安装采集服务需要 Windows 管理员授权。'}
     # An administrator-only Program Files sibling, not a user-writable temp
     # directory, holds executable extraction. Keep failure evidence for repair.
@@ -72,8 +75,10 @@ try {
     }
 } finally {if($zip){$zip.Dispose()};$archive.Dispose()}
 if($VerifyOnly){exit 0}
+if($InstallerLog){[Console]::WriteLine('解压完成，开始安装或升级独立采集服务；已有工程不会清空。')}
 & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $stage 'Install-CollectorPlugin.ps1') -InstallRoot (Get-PluginInstallRoot) -SkipUserDataImport
 if($LASTEXITCODE -ne 0){throw '独立采集插件安装失败；请保留安装记录及原工程。'}
+if($InstallerLog){[Console]::WriteLine('正在逐文件核对安装结果、服务版本及运行状态…')}
 Assert-InstalledPayload $manifest
 Write-Output "采集服务已安装并逐文件核对：$ExpectedVersion / $ExpectedCommit。已有机器级工程未覆盖；用户级旧工程需通过项目迁移显式导入。"
 

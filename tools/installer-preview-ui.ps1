@@ -1,4 +1,4 @@
-﻿param([Parameter(Mandatory=$true)][string]$Executable,[Parameter(Mandatory=$true)][string]$OutputDirectory,[ValidateSet('normal','reboot','failure','cancel')][string]$Scenario='normal',[switch]$CaptureSurface)
+﻿param([Parameter(Mandatory=$true)][string]$Executable,[Parameter(Mandatory=$true)][string]$OutputDirectory,[ValidateSet('normal','reboot','failure','cancel','progress-cancel')][string]$Scenario='normal',[switch]$CaptureSurface)
 $ErrorActionPreference='Stop'
 $Executable=[IO.Path]::GetFullPath($Executable)
 $previewRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../output/installer-preview'))+[IO.Path]::DirectorySeparatorChar
@@ -15,6 +15,8 @@ public static class SetupPreviewNative {
  [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr h,int id);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,int msg,IntPtr w,IntPtr l);
  [DllImport("user32.dll")] public static extern bool IsWindowEnabled(IntPtr h);
+ [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+ [DllImport("user32.dll",EntryPoint="SendMessageW")] public static extern IntPtr SendNumber(IntPtr h,int msg,IntPtr w,IntPtr l);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h,int msg,IntPtr w,string text);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,System.Text.StringBuilder text,int max);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,System.Text.StringBuilder text,int max);
@@ -27,6 +29,7 @@ public static class SetupPreviewNative {
  public static string[] Texts(IntPtr h){var list=new System.Collections.Generic.List<string>();EnumChildWindows(h,(c,l)=>{var text=new System.Text.StringBuilder(2048);GetWindowText(c,text,2048);if(text.Length>0)list.Add(text.ToString());return true;},IntPtr.Zero);return list.ToArray();}
  public static string[] VisibleTexts(IntPtr h){var list=new System.Collections.Generic.List<string>();EnumChildWindows(h,(c,l)=>{if(!IsWindowVisible(c))return true;var text=new System.Text.StringBuilder(2048);GetWindowText(c,text,2048);if(text.Length>0)list.Add(text.ToString());return true;},IntPtr.Zero);return list.ToArray();}
  public static string Text(IntPtr h){var text=new System.Text.StringBuilder(2048);GetWindowText(h,text,2048);return text.ToString();}
+ public static IntPtr FindId(IntPtr h,int id){IntPtr found=IntPtr.Zero;EnumChildWindows(h,(c,l)=>{if(GetDlgCtrlID(c)==id){found=c;return false;}return true;},IntPtr.Zero);return found;}
  public static IntPtr Edit(IntPtr h){IntPtr found=IntPtr.Zero;EnumChildWindows(h,(c,l)=>{var cls=new System.Text.StringBuilder(100);GetClassName(c,cls,100);if(cls.ToString()=="Edit" && IsWindowVisible(c)){found=c;return false;}return true;},IntPtr.Zero);return found;}
  public static IntPtr CustomToggle(IntPtr h){
   IntPtr found=IntPtr.Zero;
@@ -123,6 +126,14 @@ try {
     [SetupPreviewNative]::SendMessage($edit,0xC,[IntPtr]::Zero,$invalid)|Out-Null
     if($collapsed){Set-CustomExpanded $false}
     Click '1'
+    # WM_COMMAND/nsDialogs validation can finish after the posted command on a
+    # busy build host. Wait for the REQUIRED visible error/editable state, not
+    # a fixed sleep; never treat a hidden label or a page transition as success.
+    for($validationWait=0;$validationWait -lt 50;$validationWait++){
+     $visibleErrors=[SetupPreviewNative]::VisibleTexts($handle)|Where-Object {$_ -match '^请选择|^请不要|^请为|^安装位置|^安装路径'}
+     if($visibleErrors -and [SetupPreviewNative]::Edit($handle) -ne [IntPtr]::Zero){break}
+     Start-Sleep -Milliseconds 100
+    }
     if([SetupPreviewNative]::Text([SetupPreviewNative]::GetDlgItem($handle,1037)) -ne '热处理数字孪生大屏'){throw "Invalid path entered installation: $invalid"}
     $visibleErrors=[SetupPreviewNative]::VisibleTexts($handle)|Where-Object {$_ -match '^请选择|^请不要|^请为|^安装位置|^安装路径'}
     if(-not $visibleErrors){throw "Missing visible inline validation for $invalid (collapsed=$collapsed)"}
@@ -133,11 +144,24 @@ try {
   [SetupPreviewNative]::SendMessage($edit,0xC,[IntPtr]::Zero,$original)|Out-Null
   Set-CustomExpanded $false
  }
+ # Production has an offline collector-selection page between settings and work.
+ Click '1'
+ if([SetupPreviewNative]::Text([SetupPreviewNative]::GetDlgItem($handle,1)) -ne '开始安装'){throw 'Missing collector selection page'}
  Click '1';Capture '02-installing.png'
  if([SetupPreviewNative]::Text([SetupPreviewNative]::GetDlgItem($handle,1037)) -eq '热处理数字孪生大屏'){
   throw ('Installation did not start: '+([SetupPreviewNative]::Texts($handle) -join ' | '))
  }
- for($i=0;$i -lt 200;$i++){
+ foreach($id in @(1240,1241)){
+  $button=[SetupPreviewNative]::GetDlgItem($handle,$id)
+  if(-not [SetupPreviewNative]::IsWindowVisible($button) -or -not [SetupPreviewNative]::IsWindowEnabled($button)){throw "Header button $id disappeared during installation"}
+ }
+ $details=[SetupPreviewNative]::FindId($handle,1016)
+ if(-not [SetupPreviewNative]::IsWindowVisible($details) -or [SetupPreviewNative]::SendNumber($details,0x1004,[IntPtr]::Zero,[IntPtr]::Zero).ToInt32() -lt 1){throw 'Installation details are empty or hidden'}
+ Click '1240'
+ if(-not [SetupPreviewNative]::IsIconic($handle)){throw 'Minimize did not minimize the actual window'}
+ [SetupPreviewNative]::ShowWindow($handle,9)|Out-Null
+ if($Scenario -eq 'progress-cancel'){Click '1241'}
+ for($i=0;$i -lt 300;$i++){
   $heading=[SetupPreviewNative]::Text([SetupPreviewNative]::GetDlgItem($handle,1037))
   if($heading -match '安装完成|安装未完成'){break};Start-Sleep -Milliseconds 100
  }
@@ -147,11 +171,26 @@ try {
  if($Scenario -eq 'normal' -and -not ($texts -match '大屏已准备就绪')){throw 'Missing successful completion page'}
  if($Scenario -eq 'reboot' -and -not ($texts -match '安装完成，请重启电脑')){throw 'Missing reboot-required completion page'}
  if($Scenario -eq 'reboot' -and ($texts -match '^启动热处理')){throw 'Reboot-required page must not offer launching the app'}
- if($Scenario -eq 'failure' -and ($heading -ne '安装未完成')){throw 'Failure did not remain on an error page'}
- if($Scenario -eq 'failure'){Click '2'}else{Click '1'}
+ if($Scenario -in @('failure','progress-cancel') -and ($heading -ne '安装未完成')){throw 'Failure did not remain on an error page'}
+ if($Scenario -in @('failure','progress-cancel')){
+  $logLabel=[SetupPreviewNative]::Text([SetupPreviewNative]::FindId($handle,1230))
+  if($logLabel -notmatch '日志：(.+)$'){throw 'Missing persistent log path'}
+  $logPath=$Matches[1];$log=Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
+  if($Scenario -eq 'failure' -and ($log -notmatch '中文错误详情不会丢失' -or $log -notmatch '1603')){throw 'Failure output was lost or incorrectly decoded'}
+  if($Scenario -eq 'progress-cancel' -and $log -notmatch '安装已取消'){throw 'Cancellation was not recorded'}
+  Start-Sleep -Milliseconds 1000
+  if(-not ([SetupPreviewNative]::VisibleTexts($handle)|Where-Object {$_ -match '1603|安装已取消'})){throw 'Error text vanished after completion'}
+  Click '1241'
+ }else{Click '1'}
  if(-not $child.WaitForExit(5000)){throw 'Finish/Close did not exit the preview'}
  if($Scenario -eq 'normal' -and $child.ExitCode -ne 73){throw 'The launch checkbox did not invoke the no-op launch fixture'}
  if($Scenario -ne 'normal' -and $child.ExitCode -eq 73){throw 'App launch was attempted after failure or required reboot'}
  $result=@{success=$true;scenario=$Scenario;nativeNSIS=$true;installed=$false;exitCode=$child.ExitCode;pathChecks=$pathChecks;screenshots=@('01-settings.png','02-installing.png','03-result.png');texts=$texts}
  $result|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $OutputDirectory 'result.json') -Encoding UTF8
+} catch {
+ if($handle -ne [IntPtr]::Zero -and -not $child.HasExited){
+  [SetupPreviewNative]::Controls($handle)|Set-Content -LiteralPath (Join-Path $OutputDirectory 'failure-controls.txt') -Encoding UTF8
+  Capture 'failure.png'
+ }
+ throw
 } finally { if(-not $child.HasExited){Stop-Process -Id $child.Id -Force} }

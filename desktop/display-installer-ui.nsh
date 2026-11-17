@@ -26,6 +26,32 @@ Var displayCloseMode
 Var displayCustomToggle
 Var displayBrowse
 Var displayCustomExpanded
+Var displayInstallLog
+Var displayFailure
+Var displayCancelState
+
+; Builder resets SetDetailsPrint in its section. Restore it in worker hooks.
+!macro DisplayStage TEXT
+  SetDetailsPrint listonly
+  SendMessage $mui.InstFilesPage.Text ${WM_SETTEXT} 0 "STR:${TEXT}"
+  DetailPrint "${TEXT}"
+!macroend
+
+!macro DisplayAbort TEXT
+  StrCpy $displayFailure "${TEXT}"
+  SetDetailsPrint listonly
+  DetailPrint "$displayFailure"
+  SetErrorLevel 2
+  Abort "$displayFailure"
+!macroend
+
+Function DisplayCheckCancel
+  System::Call '$PLUGINSDIR\InstallerWindowChrome.dll::IsCancelRequested() i.s ?!u'
+  Pop $displayCancelState
+  ${If} $displayCancelState == 1
+    !insertmacro DisplayAbort "安装已取消；可能保留部分程序文件，可重新运行安装。已有工程和账户不会被清空。"
+  ${EndIf}
+FunctionEnd
 
 !macro DisplayLabel X Y W H TEXT COLOR
   ${NSD_CreateLabel} ${X} ${Y} ${W} ${H} "${TEXT}"
@@ -48,8 +74,11 @@ Function DisplayUIInit
   InitPluginsDir
   File /oname=$PLUGINSDIR\InstallerWindowChrome.dll "${__FILEDIR__}\.cache\installer-window-chrome\InstallerWindowChrome.dll"
   ; Keep the DLL loaded: its native subclasses live until this process exits.
-  System::Call '"$PLUGINSDIR\InstallerWindowChrome.dll"::Attach(p $HWNDPARENT) i.r0'
+  ; System::Call parses module names, not a shell command. Quotes become part
+  ; of the DLL name and make LoadLibrary fail even when the file exists.
+  System::Call '$PLUGINSDIR\InstallerWindowChrome.dll::Attach(p $HWNDPARENT) i.r0 ?!u'
   ${If} $0 != 1
+    SetErrorLevel 2
     MessageBox MB_ICONSTOP "安装窗口初始化失败，请重新运行安装程序。"
     Quit
   ${EndIf}
@@ -219,14 +248,10 @@ Function DisplayPaintAction
 FunctionEnd
 
 Function DisplayShowClose
-  StrCpy $displayCloseMode 1
+  ; Header Close/Minimize are independent native controls (1241/1240).
+  ; NSIS hides/disables its own Cancel button while installing.
   GetDlgItem $0 $HWNDPARENT 2
-  SendMessage $0 ${WM_SETTEXT} 0 "STR:×"
-  EnableWindow $0 1
-  ShowWindow $0 ${SW_SHOW}
-  System::Call 'user32::SetWindowPos(p r0, p 0, i 0, i 0, i 0, i 0, i 0x53)'
-  StrCpy $displayActionId 2
-  Call DisplayPaintAction
+  ShowWindow $0 ${SW_HIDE}
 FunctionEnd
 
 Function DisplaySettingsPage
@@ -444,9 +469,21 @@ Function DisplayInstallingShow
   System::Call 'uxtheme::SetWindowTheme(p r0, p 0, p 0)'
   SendMessage $mui.InstFilesPage.Text ${WM_SETTEXT} 0 "STR:复制程序文件"
   SetDetailsPrint listonly
+  SetDetailsView show
+  StrCpy $displayFailure ""
+  System::Call 'kernel32::GetCurrentProcessId() i.r0'
+  System::Call 'kernel32::GetTickCount() i.r1'
+  StrCpy $displayInstallLog "$TEMP\HeatTreatmentDigitalTwin-install-$0-$1.log"
+  System::Call '$PLUGINSDIR\InstallerWindowChrome.dll::BeginInstall(p $mui.InstFilesPage, w "$displayInstallLog") i.r0 ?!u'
+  ${If} $0 != 1
+    MessageBox MB_ICONSTOP "无法创建安装日志，安装未开始。请检查临时目录的写入权限后重试。"
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
   SetCtlColors $mui.InstFilesPage.Text "233E52" "FFFFFF"
   SendMessage $mui.InstFilesPage.Text ${WM_SETFONT} $displayFont 1
   GetDlgItem $0 $mui.InstFilesPage 1230
+  SendMessage $0 ${WM_SETTEXT} 0 "STR:日志：$displayInstallLog"
   SetCtlColors $0 "6D8798" "FFFFFF"
   System::Call 'uxtheme::SetWindowTheme(p $mui.InstFilesPage.ProgressBar, w "", w "")'
   SendMessage $mui.InstFilesPage.ProgressBar 0x409 0 0xA08E00
@@ -475,6 +512,10 @@ Function DisplayFinishPage
     !insertmacro DisplayLabel 0 0 412u 15u "安装完成，请重启电脑后从桌面打开大屏。" "233E52"
     !insertmacro DisplayLabel 0 20u 412u 15u "不会自动重启电脑。" "8394A5"
     StrCpy $displayLaunch ""
+  ${ElseIf} $displayCancelState == 1
+    !insertmacro MUI_HEADER_TEXT "安装已结束" "按取消请求不启动大屏"
+    !insertmacro DisplayLabel 0 0 412u 20u "安装步骤已经结束；已收到取消请求，不会自动启动大屏。" "233E52"
+    StrCpy $displayLaunch ""
   ${Else}
     !insertmacro MUI_HEADER_TEXT "安装完成" "大屏已准备就绪"
     !insertmacro DisplayLabel 0 0 412u 14u "安装完成。首次打开后，完成激活并登录账户。" "233E52"
@@ -491,6 +532,11 @@ Function DisplayFinishPage
 FunctionEnd
 
 Function DisplayFinishLeave
+  System::Call '$PLUGINSDIR\InstallerWindowChrome.dll::IsCancelRequested() i.s ?!u'
+  Pop $displayCancelState
+  ${If} $displayCancelState == 1
+    Return
+  ${EndIf}
   ${If} $displayLaunch != ""
     ${NSD_GetState} $displayLaunch $0
     ${If} $0 == ${BST_CHECKED}
@@ -502,12 +548,21 @@ FunctionEnd
 ; MUI's instfiles LEAVE callback runs when the installation thread completes.
 ; .onInstFailed runs only while exiting and is too late to repair the error UI.
 Function DisplayInstallingLeave
+  System::Call '$PLUGINSDIR\InstallerWindowChrome.dll::IsCancelRequested() i.s ?!u'
+  Pop $displayCancelState
+  System::Call '$PLUGINSDIR\InstallerWindowChrome.dll::EndInstall() ?!u'
   IfAbort 0 display_install_ok
+  SetAutoClose false
+  SetErrorLevel 2
+  SetDetailsView show
+  ${If} $displayFailure != ""
+    SendMessage $mui.InstFilesPage.Text ${WM_SETTEXT} 0 "STR:$displayFailure"
+  ${EndIf}
   !insertmacro MUI_HEADER_TEXT "安装未完成" "请查看失败原因后重新安装"
   GetDlgItem $0 $HWNDPARENT 1037
   SetCtlColors $0 "C13F55" "FFFFFF"
   GetDlgItem $0 $mui.InstFilesPage 1230
-  SendMessage $0 ${WM_SETTEXT} 0 "STR:安装未完成；已有工程与账户保留。"
+  SendMessage $0 ${WM_SETTEXT} 0 "STR:日志：$displayInstallLog"
   GetDlgItem $0 $HWNDPARENT 1
   ShowWindow $0 ${SW_HIDE}
   GetDlgItem $0 $HWNDPARENT 2

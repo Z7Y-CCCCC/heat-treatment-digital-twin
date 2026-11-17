@@ -6,10 +6,11 @@ const crypto = require('node:crypto');
 const C = { BUTTON: 0x80, EDIT: 0x81, STATIC: 0x82 };
 const control = (id, cls, x, y, w, h, text = '', style = 0x50020000, ex = 0) => ({ id, cls, x, y, w, h, text, style, ex });
 const layout = {
-  version: 7,
+  version: 8,
   font: 'Microsoft YaHei UI', fontSize: 9,
   dialogs: [
-    { id: 105, w: 460, h: 358, style: 0x800800c4, ex: 0x00040000, controls: [
+    // No DS_MODALFRAME: even a captionless dialog otherwise gets a white rim.
+    { id: 105, w: 460, h: 358, style: 0x80080044, ex: 0x00040000, controls: [
       // MUI-required controls and placeholders remain native and keyboard-accessible.
       control(3, C.BUTTON, 0, 0, 0, 0, '', 0x40010000),
       control(1, C.BUTTON, 155, 249, 150, 28, '', 0x50010001),
@@ -30,9 +31,9 @@ const layout = {
     { id: 106, w: 412, h: 88, style: 0x40000440, controls: [
       control(1027, C.BUTTON, 0, 72, 68, 14, '查看详情', 0x50010000),
       control(1004, 'msctls_progress32', 0, 20, 412, 5, '', 0x50000001),
-      control(1006, C.STATIC, 0, 0, 412, 15, '', 0x50004080),
-      control(1016, 'SysListView32', 0, 31, 412, 36, '', 0x40814005),
-      control(1230, C.STATIC, 80, 73, 332, 13, '运行环境随安装包自动配置', 0x50020002),
+      control(1006, C.STATIC, 0, 0, 412, 18, '', 0x50000000),
+      control(1016, 'SysListView32', 0, 31, 412, 43, '', 0x40814005),
+      control(1230, C.STATIC, 0, 78, 412, 10, '安装日志将保留在临时目录', 0x50004080),
     ] },
   ],
 };

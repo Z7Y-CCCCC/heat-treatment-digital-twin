@@ -42,7 +42,7 @@ async function repackInstaller(root, sourceRelease) {
   const beginning=performance.now();
   const read = file => JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
   const manifest = read(path.join(sourceRelease,'release-manifest.json'));
-  const compressionLevel=process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL || manifest.compressionLevel || '1';
+  const compressionLevel=process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL || require('../desktop/scripts/release-compression-policy.cjs').DEFAULT_MAIN_LEVEL;
   if (!/^[0-9]$/.test(compressionLevel)) throw Error('ELECTRON_BUILDER_COMPRESSION_LEVEL must be a digit from 0 to 9');
   const timings = read(path.join(sourceRelease,'build-timings.json'));
   if (!timings.success) throw Error('Source release did not finish successfully');
@@ -73,7 +73,13 @@ async function repackInstaller(root, sourceRelease) {
   fs.writeFileSync(path.join(output,'packaging-resource-verification.json'),JSON.stringify(packaged.proof,null,2));
   fs.copyFileSync(plugin,path.join(output,manifest.collectorPlugin.file));
   fs.writeFileSync(installer+'.sha256.txt',`${digest.sha256}  ${installerName}\n`);
+  const startup=read(path.join(output,'installer-startup-verification.json'));
+  const installerStartup={status:startup.success?'passed':'failed',sha256:startup.sha256,realExecutable:startup.realExecutable,
+    settingsReady:startup.settingsReady,installed:startup.installed,nextClicked:startup.nextClicked,seconds:startup.seconds};
+  require('./installer-startup-smoke.cjs').assertStartupProof({version:manifest.version,sha256:digest.sha256,installerStartup});
   const newManifest={...manifest,installer,size:digest.size,sha256:digest.sha256,createdAt:new Date().toISOString(),mode:'installer-ui-only',
+    installerStartup,
+    installerExtraction:{...read(path.join(output,'installer-extraction-verification.json')),status:'passed'},
     installerSourceCommit:execFileSync('git',['-C',root,'rev-parse','HEAD'],{encoding:'utf8',windowsHide:true}).trim(),
     stagingDirectory:stageRoot,packagingResourceBaseline,fullSmokeTestReused:true,compressionLevel};
   const fullBuild = timings.reusedFullBuildTimings || timings;
