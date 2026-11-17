@@ -29,7 +29,7 @@ async function runChecks(executable, pluginResources, output) {
   // Separate 50-port search ranges remove the check-then-bind race while all
   // real cold-start/restart, activation, migration and cleanup checks overlap.
   const results=await Promise.allSettled([
-    check('collector','collector-service-smoke-test.cjs',[pluginResources]),
+    check('collector','collector-service-smoke-test.cjs',[pluginResources,'--frontend='+require('./collector-smoke-frontend.cjs').releaseFrontend(executable)]),
     check('first-launch','packaged-mysql-smoke-test.cjs',[executable]),
     check('project-migration','packaged-project-bundle-mysql-test.cjs',[executable])
   ]);

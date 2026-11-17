@@ -9,6 +9,23 @@ const { COLLECTOR_FILES } = require('./prepare-display-distribution.cjs');
 const { RESOURCE_NAMES, prepareCollectorPlugin } = require('./prepare-collector-plugin.cjs');
 const { collectorAvailable } = require('../../backend/services/runtimeEngine');
 const root = path.resolve(__dirname, '../..');
+
+test('clean release collector verification uses this build UI and never a stale developer dist',t=>{
+ const {releaseFrontend,resolveSmokeFrontend}=require('../../tools/collector-smoke-frontend.cjs');
+ const directory=fs.mkdtempSync(path.join(os.tmpdir(),'collector-ui-input-'));
+ t.after(()=>{assert.equal(path.dirname(directory),fs.realpathSync(os.tmpdir()));fs.rmSync(directory,{recursive:true,force:true});});
+ const plugin=path.join(directory,'collector-plugin/resources');fs.mkdirSync(plugin,{recursive:true});
+ const stale=path.join(directory,'frontend/dist');fs.mkdirSync(stale,{recursive:true});fs.writeFileSync(path.join(stale,'index.html'),'wrong developer output');
+ const executable=path.join(directory,'win-unpacked/热处理数字孪生大屏.exe'),frontend=releaseFrontend(executable);
+ assert.equal(frontend,path.join(directory,'win-unpacked/resources/frontend'));
+ assert.throws(()=>resolveSmokeFrontend(plugin,frontend),/不能回退到开发目录/);
+ fs.mkdirSync(frontend,{recursive:true});fs.writeFileSync(path.join(frontend,'index.html'),'this release only');
+ assert.equal(resolveSmokeFrontend(plugin,frontend),frontend);
+ assert.throws(()=>resolveSmokeFrontend(plugin),/不能回退到开发目录/,'the independent collector must not acquire a UI to hide a test-input error');
+ const smoke=fs.readFileSync(path.join(root,'tools/collector-service-smoke-test.cjs'),'utf8');
+ assert.doesNotMatch(smoke,/path\.join\(project,\s*'frontend',\s*'dist'\)/);
+ assert.match(smoke,/startDisplayGateway\(\{ backendOrigin, frontendDir \}\)/);
+});
 test('main installer excludes the collector implementation, binaries and service registration', () => {
     const build = require('../package.json').build;
     const backend = build.extraResources.find(r => r.to === 'backend');

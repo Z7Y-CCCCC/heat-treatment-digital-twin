@@ -3,6 +3,18 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 const {ensurePrerequisites,evaluatePrerequisites,runPrerequisiteCheck,LINKS}=require('../prerequisites.cjs');
 const {execFileSync}=require('node:child_process');
 const ready={supported:true,build:19045,architecture:'AMD64',webView2:{ready:true,version:'120.0'},vcRedist:{ready:true,version:'14.40'}};
+
+test('only signed public runtimes use a stable cache outside disposable CI checkouts',()=>{
+    const {prerequisiteCache,PACKAGES}=require('./prepare-prerequisites.cjs');
+    const base=path.resolve(os.tmpdir(),'fixture-localappdata');
+    assert.equal(prerequisiteCache(base),path.join(base,'HeatTreatmentDigitalTwinBuild','runtime-prerequisites-v1'));
+    for(const value of ['', 'relative'])assert.throws(()=>prerequisiteCache(value),/absolute LOCALAPPDATA/);
+    assert.deepEqual(PACKAGES.map(p=>p.name),['vc_redist.x64.exe','MicrosoftEdgeWebView2RuntimeInstallerX64.exe']);
+    const source=fs.readFileSync(path.join(__dirname,'prepare-prerequisites.cjs'),'utf8');
+    assert.match(source,/verifyMicrosoft\(previous\);try\{fs\.copyFileSync\(previous,file,fs\.constants\.COPYFILE_EXCL\)/);
+    assert.match(source,/fs\.copyFileSync\(file,staged\)/);
+    assert.match(source,/const publisher=verifyMicrosoft\(staged\),proof=fileDigest\(staged\)/,'cache hits still verify signatures and complete bytes AFTER copying to this build');
+});
 test('supported environment does not ask to install anything or contact a download site',async()=>{
     const result=await ensurePrerequisites({run:async()=>ready,dialog:{showMessageBox(){throw Error('unexpected prompt')}},shell:{openExternal(){throw Error('unexpected network')}}});assert.equal(result,ready);
 });

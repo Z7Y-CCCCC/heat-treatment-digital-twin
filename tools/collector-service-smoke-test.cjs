@@ -11,6 +11,10 @@ const { createTestIssuer, activateFixture } = require('./activation-test-fixture
 
 const source = path.resolve(process.argv[2] || 'desktop/resources');
 const project = path.resolve(__dirname, '..');
+// The collector is deliberately UI-free. Bind its gateway check to this
+// build's actual display payload, never a leftover developer frontend/dist.
+const frontendArgument=process.argv.find(arg=>arg.startsWith('--frontend='))?.slice('--frontend='.length);
+const frontendDir=require('./collector-smoke-frontend.cjs').resolveSmokeFrontend(source,frontendArgument);
 const sourceHost = fs.existsSync(path.join(source, 'collector-service', 'HeatTreatmentCollector.exe'))
     ? path.join(source, 'collector-service') : path.join(project, 'desktop', '.cache', 'collector-service');
 let child;
@@ -23,7 +27,7 @@ let child;
     const testIssuer = createTestIssuer(resources);
     for (const name of ['runtime', 'mysql', 'ffmpeg', 'backend', 'shared']) {
         let from = path.join(source, name);
-        if (!fs.existsSync(from)) from = name === 'frontend' ? path.join(project, 'frontend', 'dist') : path.join(project, name);
+        if (!fs.existsSync(from)) from = path.join(project, name);
         fs.symlinkSync(from, path.join(resources, name), 'junction');
     }
     fs.symlinkSync(sourceHost, path.join(resources, 'collector-service'), 'junction');
@@ -72,7 +76,7 @@ let child;
                 if (child.exitCode !== null) throw new Error(`Service host failed: ${stdout}\n${stderr}\n${run}`);
                 return stdout.includes('COLLECTOR_SERVICE_READY');
             }, 900000, 'service worker ready', 300);
-            gateway = await require('../desktop/displayGateway.cjs').startDisplayGateway({ backendOrigin, frontendDir: path.join(project,'frontend','dist') });
+            gateway = await require('../desktop/displayGateway.cjs').startDisplayGateway({ backendOrigin, frontendDir });
             assert.equal((await fetch(gateway.origin+'/admin')).status,200,'UI belongs to the display gateway, not collector');
             await activateFixture(gateway.origin, testIssuer);
             const config = JSON.parse(fs.readFileSync(path.join(root, 'data', 'database-config.json'), 'utf8'));
