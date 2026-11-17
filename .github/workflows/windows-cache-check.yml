@@ -1,0 +1,47 @@
+name: Windows cache roundtrip
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+jobs:
+  cache:
+    runs-on: [self-hosted, Windows, X64, digital-twin-release]
+    timeout-minutes: 10
+    steps:
+      # No build and no cleanup of application resources. Only public fixture
+      # bytes under this job's RUNNER_TEMP enter this diagnostic cache.
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
+      - name: Verify and export cache codec tools
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: node tools/ci/cache-compression.cjs
+      - name: Create public cache fixture
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'cache-compression-probe'
+          if (Test-Path -LiteralPath $fixture) { throw 'Refusing to overwrite a cache fixture' }
+          New-Item -ItemType Directory -Path $fixture | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $fixture 'probe.bin'), [Convert]::FromBase64String('AAECA/8='))
+      - uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/cache-compression-probe
+          key: windows-codec-probe-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Remove only the known fixture file before real restoration
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: Remove-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'cache-compression-probe/probe.bin')
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/cache-compression-probe
+          key: windows-codec-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
+      - name: Verify bytes restored from the GitHub cache service
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: |
+          $file = Join-Path $env:RUNNER_TEMP 'cache-compression-probe/probe.bin'
+          if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($file)) -cne 'AAECA/8=') { throw 'Restored cache bytes differ' }
+          Write-Host 'Actual GitHub cache save/download/restore and byte comparison passed.'

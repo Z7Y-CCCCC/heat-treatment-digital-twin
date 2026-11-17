@@ -105,6 +105,9 @@ jobs:
           lfs: true
           clean: true
           persist-credentials: false
+      - name: Verify Windows cache compression before restoring any cache
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: node tools/ci/cache-compression.cjs
       - uses: actions/setup-node@v4
         with:
           node-version: 22.13.1

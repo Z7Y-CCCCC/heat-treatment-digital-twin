@@ -46,3 +46,25 @@ test('workflow loads trust after Node setup and before any costly build; no key 
   const loader = fs.readFileSync(path.join(__dirname, 'release-environment.cjs'), 'utf8');
   assert.doesNotMatch(loader, /generateKeyPair|LICENSE_ENFORCE|license-private-key\.pem/);
 });
+
+test('Windows cache compression requires the complete Git toolchain and precedes both cache consumers',t=>{
+  const {compressionDirectory}=require('./cache-compression.cjs');
+  const root=createRunDirectory('cache-tools-test'),git=path.join(root,'Git with spaces','cmd','git.exe'),bin=path.resolve(path.dirname(git),'../usr/bin');
+  fs.mkdirSync(path.dirname(git),{recursive:true});fs.mkdirSync(bin,{recursive:true});fs.writeFileSync(git,'fixture');
+  for(const name of ['tar.exe','sh.exe'])fs.writeFileSync(path.join(bin,name),'fixture');
+  assert.throws(()=>compressionDirectory([git]),/tar\/gzip\/sh/);fs.writeFileSync(path.join(bin,'gzip.exe'),'fixture');
+  assert.equal(compressionDirectory(['relative/git.exe',git]),bin);
+  const source=fs.readFileSync(path.resolve(__dirname,'../../.github/workflows/release.yml'),'utf8').split('  package:')[1];
+  const start=source.indexOf('node tools/ci/cache-compression.cjs');assert.ok(start>=0);
+  for(const consumer of ['uses: actions/setup-node@v4','uses: actions/cache@v4'])assert.ok(start<source.indexOf(consumer));
+});
+
+test('actual Git tar invokes gzip on a minimal Windows PATH and restores binary/Unicode content',{skip:process.platform!=='win32'},()=>{
+  const {configureCacheCompression}=require('./cache-compression.cjs');
+  const directory=createRunDirectory('cache-codec-real-test'),githubPath=path.join(directory,'github-path.txt');
+  const env={...process.env,RUNNER_TEMP:directory,GITHUB_PATH:githubPath};
+  for(const key of Object.keys(env))if(key.toLowerCase()==='path')delete env[key];
+  env.PATH=path.join(process.env.SystemRoot,'System32');
+  const result=configureCacheCompression(env);
+  assert.equal(result.roundtripPassed,true);assert.equal(fs.readFileSync(githubPath,'utf8'),result.directory+'\n');
+});
