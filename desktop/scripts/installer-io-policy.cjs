@@ -33,11 +33,11 @@ function programManifest(unpacked) {
     }
     return { schema:1, product:'display', directories, entries };
 }
-function validateStockInstallerTemplates(main, section, archive, uninstaller) {
+function validateStockInstallerTemplates(main, section, archive, uninstaller, common) {
     const includes = section.indexOf('!include installer.nsh');
     const guard = section.indexOf('!insertmacro CHECK_APP_RUNNING');
     const install = section.indexOf('!insertmacro installApplicationFiles');
-    if (main.split('!include "installSection.nsh"').length !== 2 || includes < 0 || guard <= includes || install <= guard ||
+    if (!common?.includes('!define UNINSTALL_FILENAME "Uninstall ${PRODUCT_FILENAME}.exe"') || main.split('!include "installSection.nsh"').length !== 2 || includes < 0 || guard <= includes || install <= guard ||
         !archive.includes('!macro extractUsing7za FILE') || !uninstaller.includes('!ifmacrodef customRemoveFiles'))
         throw Error('Unsupported stock NSIS templates: review the I/O hooks rather than fall back');
 }
@@ -52,7 +52,7 @@ function createInstallerIoPolicy(root, unpacked, output) {
     if (packageJson.build?.nsis?.script) throw Error('Custom NSIS main scripts bypass the verified uninstaller pipeline');
     const template = path.join(root, 'desktop/node_modules/app-builder-lib/templates/nsis');
     const load = name => fs.readFileSync(path.join(template, name), 'utf8');
-    validateStockInstallerTemplates(load('installer.nsi'), load('installSection.nsh'), load('include/extractAppPackage.nsh'), load('uninstaller.nsh'));
+    validateStockInstallerTemplates(load('installer.nsi'), load('installSection.nsh'), load('include/extractAppPackage.nsh'), load('uninstaller.nsh'), load('common.nsh'));
     fs.mkdirSync(output, { recursive: true });
     const manifest = path.join(output, 'program-files.json'), include = path.join(output, 'installer-io-policy.nsh');
     const content = JSON.stringify(programManifest(unpacked));

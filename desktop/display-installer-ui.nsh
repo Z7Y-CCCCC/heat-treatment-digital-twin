@@ -41,6 +41,8 @@ Var displayStageClock
   DetailPrint "[+$9 s] ${TEXT}"
 !macroend
 
+; Builder prepends this include before common.nsh defines UNINSTALL_FILENAME.
+; PRODUCT_FILENAME is a command-line define; use the verified stock spelling.
 !macro DisplayAbort TEXT
   StrCpy $displayFailure "${TEXT}"
   !ifdef FAST_PROGRAM_MANIFEST
@@ -49,7 +51,7 @@ Var displayStageClock
     File /oname=$PLUGINSDIR\program-directory.ps1 "${FAST_PROGRAM_DIRECTORY_SOURCE}"
     File /oname=$PLUGINSDIR\installer-process.ps1 "${FAST_INSTALLER_PROCESS_SOURCE}"
     File /oname=$PLUGINSDIR\program-files.json "${FAST_PROGRAM_MANIFEST}"
-    nsExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action Rollback -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "${UNINSTALL_FILENAME}" -InstallerLog'
+    nsExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action Rollback -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "Uninstall ${PRODUCT_FILENAME}.exe" -InstallerLog'
     Pop $0
   !endif
   SetDetailsPrint listonly
