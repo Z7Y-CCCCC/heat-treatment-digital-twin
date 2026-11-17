@@ -12,7 +12,9 @@ $env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+(Join-Path $env:ProgramFiles
 $ProgressPreference='SilentlyContinue'
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-if($InstallerLog){[Console]::OutputEncoding=[Text.Encoding]::Unicode;[Console]::Write([char]0xFEFF)}
+$OutputEncoding=[Text.UTF8Encoding]::new($false)
+# Keep the BOM in the same write as ASCII-led text for legacy nsExec detection.
+if($InstallerLog){[Console]::OutputEncoding=[Text.Encoding]::Unicode;[Console]::WriteLine(([string][char]0xFEFF)+'[runtime] Microsoft 运行环境检查日志')}
 function Read-Value([string]$Key,[string]$Name) {
     $base=$null;$child=$null
     try {

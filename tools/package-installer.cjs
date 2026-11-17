@@ -24,10 +24,12 @@ function compressionOptions(level, inherited = process.env) {
 function buildInstaller(root, unpacked, output, level, collectorArchive) {
   require('../desktop/scripts/build-installer-window-chrome.cjs').buildInstallerChrome();
   const options = compressionOptions(level);
+  const io = require('../desktop/scripts/installer-io-policy.cjs').createInstallerIoPolicy(root, unpacked, output);
   const commit = require('node:child_process').execFileSync('git', ['rev-parse','HEAD'], {cwd:root,encoding:'utf8',windowsHide:true}).trim();
   if(process.env.GITHUB_SHA && process.env.GITHUB_SHA !== commit) throw Error('Release checkout does not match the requested source commit');
   const payload = require('./collector-installer-payload.cjs').preparePayload(collectorArchive, output, {version:require(path.join(root,'desktop/package.json')).version,commit});
   options.env.DIGITAL_TWIN_COLLECTOR_PAYLOAD_INCLUDE = payload.include;
+  options.env.DIGITAL_TWIN_INSTALLER_IO_INCLUDE = io.include;
   execFileSync(process.execPath, [path.join(root, 'desktop/node_modules/electron-builder/out/cli/cli.js'),
     '--projectDir', path.join(root, 'desktop'), '--prepackaged', unpacked, '--win', 'nsis', '--x64',
     `--config.directories.output=${output}`, `--config.compression=${options.compression}`],

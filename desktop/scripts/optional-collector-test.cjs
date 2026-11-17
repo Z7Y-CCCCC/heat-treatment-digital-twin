@@ -75,7 +75,7 @@ test('collector plugin gets an independent, complete resource tree without Unity
     fs.writeFileSync(path.join(source,'backend','scripts','do-not-ship-test.cjs'),'must not ship');
     for (const name of COLLECTOR_FILES) fs.writeFileSync(path.join(source,'backend','services',name),name);
     fs.writeFileSync(path.join(source,'desktop','package.json'),'{"version":"2.3.2"}');
-    for (const name of ['安装采集服务.ps1','采集运行中心.cmd','collector-operations.ps1']) fs.copyFileSync(path.join(root,'desktop',name),path.join(source,'desktop',name));
+    for (const name of ['安装采集服务.ps1','installer-process.ps1','采集运行中心.cmd','collector-operations.ps1']) fs.copyFileSync(path.join(root,'desktop',name),path.join(source,'desktop',name));
     fs.cpSync(path.join(root,'desktop','collector-plugin'),path.join(source,'desktop','collector-plugin'),{recursive:true});
     const target=prepareCollectorPlugin(display,path.join(directory,'plugin'),source);
     assert.equal(fs.existsSync(path.join(target,'resources','native-client')),false);
@@ -86,6 +86,7 @@ test('collector plugin gets an independent, complete resource tree without Unity
     const manifest=JSON.parse(fs.readFileSync(path.join(target,'plugin-manifest.json')));
     assert.ok(manifest.files.length>10); assert.ok(manifest.files.every(f => f.sha256.length===64 && !f.path.includes('..')));
     assert.ok(manifest.files.some(f => f.path === 'resources/backend/scripts/generate-voice.ps1'));
+    assert.ok(manifest.files.some(f => f.path === 'installer-process.ps1'), 'The shared child-process boundary must be shipped and hashed');
     assert.throws(() => prepareCollectorPlugin(display,target,source),/must be new/);
 });
 

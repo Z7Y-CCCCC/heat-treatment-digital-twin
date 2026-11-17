@@ -6,6 +6,9 @@ Var collectorDisplayRadio
 Var collectorServiceRadio
 Var collectorExisting
 Var collectorInstalled
+Var collectorNewEmpty
+Var collectorNewEmptyApplied
+Var collectorEmptyCheckbox
 !ifndef DISPLAY_UI_PREVIEW
   !if "$%DIGITAL_TWIN_COLLECTOR_PAYLOAD_INCLUDE%" == ""
     !error "A verified same-build collector payload is required. Use the full release build."
@@ -16,6 +19,8 @@ Var collectorInstalled
 Function CollectorChoiceInit
   StrCpy $collectorChoice "0"
   StrCpy $collectorInstalled "0"
+  StrCpy $collectorNewEmpty "0"
+  StrCpy $collectorNewEmptyApplied "0"
   StrCpy $collectorExisting "0"
   !ifndef DISPLAY_UI_PREVIEW
     ClearErrors
@@ -46,6 +51,23 @@ Function CollectorChoiceInit
       ${EndIf}
       StrCpy $collectorChoice $1
     ${EndIf}
+    ClearErrors
+    ${GetOptions} $0 "/NEWEMPTY=" $1
+    ${IfNot} ${Errors}
+      ${If} $1 != "0"
+      ${AndIf} $1 != "1"
+        MessageBox MB_ICONSTOP "/NEWEMPTY 只能为 0 或 1。"
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+      StrCpy $collectorNewEmpty $1
+      ${If} $collectorNewEmpty == "1"
+      ${AndIf} $collectorChoice != "1"
+        MessageBox MB_ICONSTOP "新建空白现场须同时选择本机采集（/WITHCOLLECTOR=1）；旧工程不会删除。"
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+    ${EndIf}
   !endif
 FunctionEnd
 
@@ -69,14 +91,43 @@ Function CollectorChoicePage
   ${EndIf}
   ${If} $collectorExisting == "1"
     EnableWindow $collectorDisplayRadio 0
-    !insertmacro DisplayLabel 0 29u 412u 20u "已装采集服务：同步更新期间短暂停采；保留工程、模型、账号及授权。" "8394A5"
+    !insertmacro DisplayLabel 0 29u 412u 20u "检测到已有现场：默认升级保留模型、PLC、账号及授权；需要空白现场请勾选下方。" "8394A5"
   ${Else}
-    !insertmacro DisplayLabel 0 29u 412u 20u "采集插件已随包提供，无需另行下载。关闭大屏不停止采集。" "8394A5"
+    !insertmacro DisplayLabel 0 29u 412u 20u "新电脑首次安装为空现场；不会自动导入本机旧工程。关闭大屏不停止采集。" "8394A5"
   ${EndIf}
+  ${NSD_CreateCheckbox} 0 55u 412u 13u "新建空白现场（旧工程原目录保留，不删除模型或 PLC 配置）"
+  Pop $collectorEmptyCheckbox
+  ${If} $collectorNewEmpty == "1"
+    ${NSD_Check} $collectorEmptyCheckbox
+  ${EndIf}
+  !insertmacro DisplayLabel 0 73u 412u 26u "出厂仅包含 7 个视角的组件布局。模型、PLC、设备、账号及业务记录均需另行配置。" "8394A5"
+  ${NSD_OnClick} $collectorDisplayRadio CollectorDataChanged
+  ${NSD_OnClick} $collectorServiceRadio CollectorDataChanged
+  Call CollectorDataToggle
   nsDialogs::Show
 FunctionEnd
 
+Function CollectorDataChanged
+  Pop $0
+  Call CollectorDataToggle
+FunctionEnd
+
+Function CollectorDataToggle
+  ${NSD_GetState} $collectorServiceRadio $0
+  ${If} $0 == ${BST_CHECKED}
+    EnableWindow $collectorEmptyCheckbox 1
+  ${Else}
+    EnableWindow $collectorEmptyCheckbox 0
+    ${NSD_Uncheck} $collectorEmptyCheckbox
+  ${EndIf}
+FunctionEnd
+
 Function CollectorChoiceLeave
+  StrCpy $collectorNewEmpty "0"
+  ${NSD_GetState} $collectorEmptyCheckbox $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $collectorNewEmpty "1"
+  ${EndIf}
   ${NSD_GetState} $collectorServiceRadio $0
   StrCpy $collectorChoice "0"
   ${If} $0 == ${BST_CHECKED}
@@ -101,20 +152,29 @@ Function InstallSelectedCollector
     Return
   ${EndIf}
   Call DisplayCheckCancel
-  !insertmacro DisplayStage "校验并安装同版本采集插件（保留已有机器级工程）"
+  StrCpy $R3 ""
+  ${If} $collectorNewEmpty == "1"
+  ${AndIf} $collectorNewEmptyApplied != "1"
+    StrCpy $R3 "-NewEmptyData"
+    !insertmacro DisplayStage "校验插件并新建空白现场（旧工程不删除）"
+  ${Else}
+    !insertmacro DisplayStage "校验并安装同版本采集插件（保留已有机器级工程）"
+  ${EndIf}
   InitPluginsDir
   ; ZIP is already compressed. Store it verbatim, exactly like builder's own
   ; application archive; this also permits independent final-EXE hash checks.
   SetCompress off
   File /oname=$PLUGINSDIR\collector-plugin.zip "${COLLECTOR_PAYLOAD_ZIP}"
   SetCompress auto
+  File /oname=$PLUGINSDIR\installer-process.ps1 "${__FILEDIR__}\installer-process.ps1"
   File /oname=$PLUGINSDIR\Install-CollectorPayload.ps1 "${__FILEDIR__}\Install-CollectorPayload.ps1"
-  nsExec::ExecToLog /TIMEOUT=1200000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Install-CollectorPayload.ps1" -ArchivePath "$PLUGINSDIR\collector-plugin.zip" -ExpectedSha256 "${COLLECTOR_PAYLOAD_SHA256}" -ExpectedVersion "${COLLECTOR_BUILD_VERSION}" -ExpectedCommit "${COLLECTOR_BUILD_COMMIT}" -InstallerLog`
+  nsExec::ExecToLog /TIMEOUT=1200000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Install-CollectorPayload.ps1" -ArchivePath "$PLUGINSDIR\collector-plugin.zip" -ExpectedSha256 "${COLLECTOR_PAYLOAD_SHA256}" -ExpectedVersion "${COLLECTOR_BUILD_VERSION}" -ExpectedCommit "${COLLECTOR_BUILD_COMMIT}" -InstallerLog $R3`
   Pop $0
   ${If} $0 != 0
     !insertmacro DisplayAbort "采集插件安装失败（返回：$0），已停止继续安装大屏。具体错误保留在详情和日志中。"
   ${EndIf}
   StrCpy $collectorInstalled "1"
+  StrCpy $collectorNewEmptyApplied "1"
   Call DisplayCheckCancel
 FunctionEnd
 Function VerifySelectedCollector

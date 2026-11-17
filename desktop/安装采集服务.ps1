@@ -5,9 +5,13 @@ param(
     [string]$DataRoot = (Join-Path $env:ProgramData 'HeatTreatmentDigitalTwin\collector'),
     [string]$ImportDataDirectory,
     [switch]$Uninstall,
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [switch]$NewEmptyData
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'installer-process.ps1')
+Initialize-InstallerOutput
+if($NewEmptyData -and ($Uninstall -or $ImportDataDirectory)){throw '空白安装不能与卸载或导入同时执行。'}
 if($CheckOnly -and $Uninstall) { throw '预检不能同时执行卸载。' }
 $serviceName = 'HeatTreatmentCollector'
 if ($Uninstall -and -not $CheckOnly -and -not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -18,13 +22,12 @@ $machineDirectory = Join-Path $env:ProgramData 'HeatTreatmentDigitalTwin'
 $configFile = Join-Path $machineDirectory 'collector-service.json'
 $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 function Invoke-ServiceCommand([string[]]$Arguments) {
-    & "$env:SystemRoot\System32\sc.exe" @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "Windows 服务配置失败（$LASTEXITCODE）" }
+    $code = Invoke-InstallerProcess -FilePath (Join-Path $env:SystemRoot 'System32\sc.exe') -ArgumentList $Arguments -NativeOutput
+    if ($code -ne 0) { throw "Windows 服务配置失败（$code）" }
 }
 if ($Uninstall) {
     if ($service -and $service.Status -ne 'Stopped') {
-        Stop-Service -Name $serviceName -ErrorAction Stop
-        $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(60))
+        Stop-InstallerService $service -TimeoutSeconds 60
     }
     if ($service) { Invoke-ServiceCommand @('delete', $serviceName) }
     Write-Host "已移除采集服务；现场数据保留在 $DataRoot，未删除。"
@@ -45,10 +48,10 @@ foreach ($required in @($hostExe, (Join-Path $resourcesDirectory 'collector-serv
 }
 if (Test-Path -LiteralPath $configFile) {
     $existing = Get-Content -LiteralPath $configFile -Raw -Encoding UTF8 | ConvertFrom-Json
-    $DataRoot = [string]$existing.root
     $Port = [int]$existing.port
 }
-$dataDirectory = [IO.Path]::GetFullPath($DataRoot)
+if($NewEmptyData -and (Get-Content -LiteralPath $distributionFile -Raw -Encoding UTF8 | ConvertFrom-Json).contentPolicy -ne 'empty-v1'){throw '空白安装必须使用经过空数据门禁的发行包。'}
+$dataDirectory = Resolve-CollectorDataRoot $machineDirectory $DataRoot ([string]$existing.root) -NewEmptyData:$NewEmptyData
 if ($dataDirectory -eq [IO.Path]::GetPathRoot($dataDirectory)) { throw '服务数据目录不能是磁盘根目录。' }
 $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
 $portAvailable=$true
@@ -69,8 +72,7 @@ if ($ImportDataDirectory) {
 if (-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw '安装采集服务需要 Windows 管理员授权。' }
 # Validate resources and configuration before stopping a working installation.
 if ($service -and $service.Status -ne 'Stopped') {
-    Stop-Service -Name $serviceName -ErrorAction Stop
-    $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(60))
+    Stop-InstallerService $service -TimeoutSeconds 60
 }
 $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
 try { $probe.Start() } catch { throw "端口 $Port 已被占用，未注册新服务。请先处理端口冲突。" } finally { $probe.Stop() }
@@ -116,7 +118,7 @@ if (-not $service) {
 } else {
     # Win32_Service avoids native-shell quoting corruption for Chinese paths.
     $instance = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
-    $changed = Invoke-CimMethod -InputObject $instance -MethodName Change -Arguments @{PathName=$binaryPath;StartMode='Automatic'}
+    $changed = Invoke-CimMethod -InputObject $instance -MethodName Change -Arguments @{PathName=$binaryPath;StartMode='Automatic';DisplayName='热处理数字孪生 · PLC采集服务'}
     if ($changed.ReturnValue -ne 0) { throw "更新服务路径失败：$($changed.ReturnValue)" }
 }
 Invoke-ServiceCommand @('config', $serviceName, 'obj=', 'NT AUTHORITY\LocalService')
@@ -144,13 +146,14 @@ $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Secu
 $security.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
 Set-Acl -LiteralPath $machineDirectory -AclObject $security
 $serviceGrant = 'NT SERVICE\{0}:(OI)(CI)M' -f $serviceName
-& "$env:SystemRoot\System32\icacls.exe" $dataDirectory '/inheritance:r' '/grant:r' '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' $serviceGrant
-if ($LASTEXITCODE -ne 0) { throw '无法设置服务数据目录权限。' }
+$aclCode = Invoke-InstallerProcess -FilePath (Join-Path $env:SystemRoot 'System32\icacls.exe') -NativeOutput -ArgumentList @($dataDirectory,'/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F',$serviceGrant)
+if ($aclCode -ne 0) { throw '无法设置服务数据目录权限。' }
 $linksDirectory = Join-Path $machineDirectory 'mysql-links'
 New-Item -ItemType Directory -Force -Path $linksDirectory | Out-Null
-& "$env:SystemRoot\System32\icacls.exe" $linksDirectory '/grant:r' $serviceGrant
-if ($LASTEXITCODE -ne 0) { throw '无法设置 MySQL 兼容路径权限。' }
-Start-Service -Name $serviceName
+$aclCode = Invoke-InstallerProcess -FilePath (Join-Path $env:SystemRoot 'System32\icacls.exe') -NativeOutput -ArgumentList @($linksDirectory,'/grant:r',$serviceGrant)
+if ($aclCode -ne 0) { throw '无法设置 MySQL 兼容路径权限。' }
+$startingService=Get-Service -Name $serviceName
+Start-InstallerService $startingService -TimeoutSeconds 900
 $readyDeadline = (Get-Date).AddMinutes(15)
 do {
     try {

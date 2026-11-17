@@ -59,10 +59,11 @@ test('real NSIS compilation embeds exactly the version-bound ZIP, independently 
 test('the real shared app-running hook compiles in the uninstaller namespace without installing a collector', {skip:process.platform!=='win32'},async t=>{
  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'collector-uninstall-nsis-'));t.after(()=>fs.rmSync(tmp,{recursive:true,force:true}));
  const include=path.join(root,'desktop/node_modules/app-builder-lib/templates/nsis/include');
+ const io=require('./installer-test-fixtures.cjs').createInstallerIoFixture(tmp);
  const source=`Unicode true\nName "Uninstall hook compile fixture"\nOutFile "${path.join(tmp,'fixture.exe')}"\nRequestExecutionLevel user\n!define BUILD_UNINSTALLER\n!define PRODUCT_NAME "Fixture"\n!define VERSION "2.3.3"\n!include LogicLib.nsh\nVar PowerShellPath\n!macro IS_POWERSHELL_AVAILABLE\nStrCpy $PowerShellPath "$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe"\n!macroend\n!macro _CHECK_APP_RUNNING\nDetailPrint "Underlying app-running guard remains present"\n!macroend\n!addincludedir "${include}"\n!include "${path.join(root,'desktop/display-installer.nsh')}"\n!insertmacro MUI_LANGUAGE "English"\nSection\nSectionEnd\nSection "Uninstall"\n!insertmacro customCheckAppRunning\nSectionEnd\n`;
  const file=path.join(tmp,'fixture.nsi');fs.writeFileSync(file,source);
  const tool=await require('./nsis-toolchain.cjs').nsisToolchain();
- execFileSync(tool.path,['/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env},stdio:'pipe'});
+ execFileSync(tool.path,['/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env,DIGITAL_TWIN_INSTALLER_IO_INCLUDE:io.include},stdio:'pipe'});
  assert.ok(fs.statSync(path.join(tmp,'fixture.exe')).size>0);
  const hook=read('desktop/display-installer.nsh').split('!macro customCheckAppRunning')[1].split('!macroend')[0];
  assert.match(hook,/!ifndef BUILD_UNINSTALLER[^!]*Call DisplayCheckCancel[\s\S]*Call InstallSelectedCollector[\s\S]*!endif/);

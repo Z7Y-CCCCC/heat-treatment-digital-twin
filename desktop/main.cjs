@@ -391,22 +391,17 @@ async function ensureBackendDependencies() {
     const stagingDir = path.join(root, `backend-dependencies.preparing-${process.pid}`);
     const markerFile = path.join(targetDir, '.prepared');
 
+    // Compare content, not installer/copy mtime. Identical dependency payloads
+    // survive later upgrades without expanding thousands of files again.
+    const archiveHash = await new Promise((resolve, reject) => {
+        const digest = require('node:crypto').createHash('sha256');
+        const stream = fs.createReadStream(tarFile);
+        stream.on('data', chunk => digest.update(chunk));
+        stream.on('error', reject); stream.on('end', () => resolve(digest.digest('hex')));
+    });
     let needsExtract = true;
-    if (fs.existsSync(markerFile)) {
-        try {
-            const preparedTime = new Date(fs.readFileSync(markerFile, 'utf8').trim()).getTime();
-            if (fs.existsSync(tarFile)) {
-                const tarStat = fs.statSync(tarFile);
-                if (preparedTime >= tarStat.mtime.getTime()) {
-                    needsExtract = !backendDependenciesReady(targetDir);
-                }
-            } else {
-                needsExtract = false;
-            }
-        } catch (e) {
-            needsExtract = true;
-        }
-    }
+    try { needsExtract = fs.readFileSync(markerFile, 'utf8').trim() !== 'sha256:' + archiveHash || !backendDependenciesReady(targetDir); }
+    catch { /* Missing/legacy/corrupt markers must not bypass extraction. */ }
 
     if (needsExtract) {
         updateStartupProgress('resources', 10, '正在准备首次运行环境', '正在解压后端依赖，窗口保持可响应');
@@ -428,7 +423,7 @@ async function ensureBackendDependencies() {
             if (!backendDependenciesReady(stagingDir)) {
                 throw new Error('依赖包解压完成，但关键模块不完整');
             }
-            await fs.promises.writeFile(path.join(stagingDir, '.prepared'), new Date().toISOString(), 'utf8');
+            await fs.promises.writeFile(path.join(stagingDir, '.prepared'), 'sha256:' + archiveHash, 'utf8');
             await publishDirectory(stagingDir, targetDir);
         } catch (error) {
             try { await retryFilesystem(() => fs.promises.rm(stagingDir, { recursive: true, force: true })); }

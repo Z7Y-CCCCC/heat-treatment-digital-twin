@@ -40,7 +40,7 @@ function prepareCollectorPlugin(displayResources, destination, source = project)
     const runtimes=JSON.parse(fs.readFileSync(path.join(depSource,'manifest.json'),'utf8'));
     fs.writeFileSync(path.join(depTarget,'manifest.json'),JSON.stringify({files:runtimes.files.filter(file=>file.name==='vc_redist.x64.exe')},null,2));
 
-    for (const name of ['安装采集服务.ps1', '采集运行中心.cmd', 'collector-operations.ps1']) fs.copyFileSync(path.join(source, 'desktop', name), path.join(destination, name));
+    for (const name of ['安装采集服务.ps1', 'installer-process.ps1', '采集运行中心.cmd', 'collector-operations.ps1']) fs.copyFileSync(path.join(source, 'desktop', name), path.join(destination, name));
     for (const name of ['Install-CollectorPlugin.ps1', '安装采集插件.cmd', 'README.md']) fs.copyFileSync(path.join(source, 'desktop', 'collector-plugin', name), path.join(destination, name));
     fs.writeFileSync(path.join(destination, 'plugin-manifest.json'), JSON.stringify({ product: 'collector-plugin', version: require(path.join(source, 'desktop', 'package.json')).version, buildSourceCommit: buildCommit(source),
         files: inventory(destination) }, null, 2));
