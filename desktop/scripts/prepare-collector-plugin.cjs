@@ -4,6 +4,10 @@ const path = require('node:path');
 const { fileDigest } = require('./file-digest.cjs');
 const { COLLECTOR_FILES } = require('./prepare-display-distribution.cjs');
 const project = path.resolve(__dirname, '../..');
+function buildCommit(source) {
+    if (/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA || '')) return process.env.GITHUB_SHA;
+    try { return require('node:child_process').execFileSync('git',['rev-parse','HEAD'],{cwd:source,windowsHide:true,stdio:['ignore','pipe','ignore'],encoding:'utf8'}).trim(); } catch { return ''; }
+}
 // Independent service distribution, no Unity, Electron or WebView binary.
 const RESOURCE_NAMES = ['backend', 'backend-dependencies.tar', 'runtime', 'mysql', 'shared', 'licensing', 'templates', 'ffmpeg'];
 function inventory(root) {
@@ -38,7 +42,7 @@ function prepareCollectorPlugin(displayResources, destination, source = project)
 
     for (const name of ['安装采集服务.ps1', '采集运行中心.cmd', 'collector-operations.ps1']) fs.copyFileSync(path.join(source, 'desktop', name), path.join(destination, name));
     for (const name of ['Install-CollectorPlugin.ps1', '安装采集插件.cmd', 'README.md']) fs.copyFileSync(path.join(source, 'desktop', 'collector-plugin', name), path.join(destination, name));
-    fs.writeFileSync(path.join(destination, 'plugin-manifest.json'), JSON.stringify({ product: 'collector-plugin', version: require(path.join(source, 'desktop', 'package.json')).version,
+    fs.writeFileSync(path.join(destination, 'plugin-manifest.json'), JSON.stringify({ product: 'collector-plugin', version: require(path.join(source, 'desktop', 'package.json')).version, buildSourceCommit: buildCommit(source),
         files: inventory(destination) }, null, 2));
     return destination;
 }

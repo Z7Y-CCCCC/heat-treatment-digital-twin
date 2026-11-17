@@ -6,14 +6,14 @@ const crypto = require('node:crypto');
 const C = { BUTTON: 0x80, EDIT: 0x81, STATIC: 0x82 };
 const control = (id, cls, x, y, w, h, text = '', style = 0x50020000, ex = 0) => ({ id, cls, x, y, w, h, text, style, ex });
 const layout = {
-  version: 6,
+  version: 7,
   font: 'Microsoft YaHei UI', fontSize: 9,
   dialogs: [
     { id: 105, w: 460, h: 358, style: 0x800800c4, ex: 0x00040000, controls: [
       // MUI-required controls and placeholders remain native and keyboard-accessible.
       control(3, C.BUTTON, 0, 0, 0, 0, '', 0x40010000),
       control(1, C.BUTTON, 155, 249, 150, 28, '', 0x50010001),
-      control(2, C.BUTTON, 430, 7, 22, 20, '×', 0x50010000),
+      control(2, C.BUTTON, 438, 0, 22, 20, '×', 0x50010000),
       control(1018, C.STATIC, 24, 289, 412, 50, '', 0x40020004),
       control(1044, C.STATIC, 24, 249, 412, 88, '', 0x40020004),
       control(1036, C.STATIC, 0, 0, 460, 230, '', 0x5400020e),

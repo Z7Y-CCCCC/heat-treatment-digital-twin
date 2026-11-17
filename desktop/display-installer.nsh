@@ -14,6 +14,7 @@ Var runtimeNeedsReboot
 !define MUI_INSTFILESPAGE_PROGRESSBAR "colored"
 !define MUI_FINISHPAGE_NOREBOOTSUPPORT
 !include "${__FILEDIR__}\display-installer-ui.nsh"
+!include "${__FILEDIR__}\collector-installer.nsh"
 
 !macro customHeader
   ShowInstDetails hide
@@ -25,6 +26,7 @@ Var runtimeNeedsReboot
 
 !macro customWelcomePage
   Page custom DisplaySettingsPage DisplaySettingsLeave
+  Page custom CollectorChoicePage CollectorChoiceLeave
 !macroend
 
 !macro customInit
@@ -39,6 +41,7 @@ Var runtimeNeedsReboot
     Abort
   ${EndIf}
   StrCpy $runtimeNeedsReboot "0"
+  Call CollectorChoiceInit
 !macroend
 
 !macro customPageAfterChangeDir
@@ -59,6 +62,7 @@ Var runtimeNeedsReboot
     MessageBox MB_ICONSTOP "运行环境尚未就绪，未启动大屏。$\r$\n$1$\r$\n可重新运行安装程序，或从 Microsoft 官网安装 WebView2 / Visual C++ x64 运行库。"
     Abort
   ${EndIf}
+  Call VerifySelectedCollector
 !macroend
 
 !macro customFinishPage
@@ -78,9 +82,9 @@ Var runtimeNeedsReboot
 !macroend
 !macro customCheckAppRunning
   !insertmacro IS_POWERSHELL_AVAILABLE
-  ; The display installer never installs/stops/removes a collector. Refuse an
-  ; in-place upgrade of the old bundled service until its independent plugin
-  ; has been migrated, rather than deleting binaries under a running service.
+  ; Install/migrate the selected same-build plugin BEFORE overwriting display
+  ; files. Its service and data remain outside the display install directory.
+  Call InstallSelectedCollector
   InitPluginsDir
   File /oname=$PLUGINSDIR\display-install-preflight.ps1 "${DISPLAY_PREFLIGHT_SOURCE}"
   nsExec::ExecToStack /TIMEOUT=20000 `"$PowerShellPath" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\display-install-preflight.ps1" -InstallRoot "$INSTDIR"`

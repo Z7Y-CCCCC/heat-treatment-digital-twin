@@ -1,6 +1,7 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),{execFileSync}=require('node:child_process');
 const {version}=require('../package.json');
+require('./build-installer-window-chrome.cjs').buildInstallerChrome();
 const scenario=process.argv.find(value=>value.startsWith('--scenario='))?.split('=')[1] || 'normal';
 if(!['normal','reboot','failure','cancel'].includes(scenario))throw Error('Unknown preview scenario');
 const root=path.resolve(__dirname,'../..'),output=process.env.INSTALLER_PREVIEW_DIR
@@ -31,6 +32,7 @@ InstallDir "$PROGRAMFILES64\\热处理数字孪生大屏"
 ShowInstDetails hide
 Function .onInit
   StrCpy $LANGUAGE 2052
+  Call CollectorChoiceInit
   StrCpy $runtimeNeedsReboot "${scenario==='reboot'?'1':'0'}"
 FunctionEnd
 Section

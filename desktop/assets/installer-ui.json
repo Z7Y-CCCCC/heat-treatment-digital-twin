@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "font": "Microsoft YaHei UI",
   "fontSize": 9,
   "dialogs": [
@@ -35,8 +35,8 @@
         {
           "id": 2,
           "cls": 128,
-          "x": 430,
-          "y": 7,
+          "x": 438,
+          "y": 0,
           "w": 22,
           "h": 20,
           "text": "×",
@@ -241,5 +241,5 @@
       ]
     }
   ],
-  "sha256": "2f56236478c85b211b6121553b154947137e0d2a5a7ecc4be5e81b2a78f31eab"
+  "sha256": "02eb64ea898ab7f67c2cbe22dab71a9e183117e62c3320f50b3052c92fd76436"
 }

@@ -1,0 +1,3 @@
+LIBRARY InstallerWindowChrome
+EXPORTS
+    Attach=_Attach@4

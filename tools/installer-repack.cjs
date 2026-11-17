@@ -63,7 +63,7 @@ async function repackInstaller(root, sourceRelease) {
     packaged = await verifyNsisTree(root,unpacked,read(manifest.packagingResourceBaseline || manifest.resourceBaseline));
   });
   await stage('确认复用资源仍为空系统',()=>execFileSync(process.execPath,[path.join(root,'desktop/scripts/verify-empty-install.cjs'),path.join(unpacked,'resources')],{windowsHide:true,stdio:'inherit'}));
-  await stage('只重压 NSIS 安装界面',()=>buildInstaller(root,unpacked,output,compressionLevel));
+  await stage('只重压 NSIS 安装界面',()=>buildInstaller(root,unpacked,output,compressionLevel,plugin));
   const installerName=`热处理数字孪生大屏-安装包-${manifest.version}-x64.exe`, installer=path.join(output,installerName), digest=fileDigest(installer);
   // Check the immutable source again after packaging, not merely beforehand.
   await stage('确认重压没有改写已验证程序',()=>verifyTree(unpacked,packaged.snapshot));
