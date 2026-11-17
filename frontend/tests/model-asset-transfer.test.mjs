@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { parse } from 'vue/compiler-sfc'
 import { parse as parseTemplate } from '@vue/compiler-dom'
-import { assetActionChoices, checkedActionChoices, updateOptionsFor, importReady, toggleAssetAction, assetUpdateSummary } from '../src/views/admin/utils/modelAssetTransfer.js'
+import { ASSET_MODULES, assetActionChoices, checkedActionChoices, updateOptionsFor, importReady, toggleAssetAction, assetUpdateSummary } from '../src/views/admin/utils/modelAssetTransfer.js'
 const file = new URL('../src/views/admin/components/ModelAssetTransfer.vue', import.meta.url)
 const source = await readFile(file, 'utf8'), descriptor = parse(source).descriptor, ast = parseTemplate(descriptor.template.content)
 const all = node => [node, ...(node.children || []).flatMap(all)]
@@ -92,4 +92,14 @@ test('version restore requires an explicit selected version and submits a verifi
   assert.match(source, /aria-label="确认回退版本"/)
   assert.match(source, /恢复所选资产版本，现场绑定保持不变/)
   assert.match(source, /data-version-id="version.versionId\|\|version.id"/)
+})
+
+
+test('loading ports are a fourth independent portable module and the export UI exposes it',()=>{
+  assert.equal(ASSET_MODULES.find(module=>module.id==='ports')?.label,'进出料口设置')
+  assert.deepEqual(updateOptionsFor('asset',['ports'],['door'],['door']),{targetId:'asset',modules:['ports']})
+  assert.equal(assetUpdateSummary({actions:[],portsChanged:true}),'更新进出料口设置')
+  assert.match(source,/id:'ports',label:'仅进出料口设置'/)
+  assert.match(source,/modules:\[exportMode.value\]/)
+  assert.match(source,/\['inspection','ports','model'\].includes\(id\)/)
 })

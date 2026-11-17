@@ -1,7 +1,8 @@
 export const ASSET_MODULES = [
   { id: 'actions', label: '动作' },
   { id: 'inspection', label: '拆解布局' },
-  { id: 'model', label: '模型文件' }
+  { id: 'model', label: '模型文件' },
+  { id: 'ports', label: '进出料口设置' }
 ]
 
 export function assetActionChoices(model) {
@@ -56,5 +57,5 @@ export function assetUpdateSummary(plan) {
   const actions = Array.isArray(plan.actions) ? plan.actions : []
   const added = actions.filter(action => action?.kind === 'add').length
   const replaced = actions.filter(action => action?.kind === 'replace').length
-  return [added ? `新增 ${added}` : '', replaced ? `更新 ${replaced}` : '', plan.inspectionChanged ? '更新布局' : '', plan.modelChanged ? '更新模型' : ''].filter(Boolean).join(' · ') || '内容一致'
+  return [added ? `新增 ${added}` : '', replaced ? `更新 ${replaced}` : '', plan.inspectionChanged ? '更新布局' : '', plan.modelChanged ? '更新模型' : '', plan.portsChanged ? '更新进出料口设置' : ''].filter(Boolean).join(' · ') || '内容一致'
 }

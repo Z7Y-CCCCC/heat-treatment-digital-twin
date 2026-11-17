@@ -117,10 +117,12 @@ let server, db;
     };
     const owner = await browser('/admin-auth/setup', { password }); assert.equal(owner.status, 200, JSON.stringify(owner.data));
     const credentials = { Cookie: owner.response.headers.getSetCookie().map(value => value.split(';')[0]).join('; '), 'X-CSRF-Token': owner.data.csrfToken };
+    const scopedCredentials = {};
     for (const [username, grant] of [['models_editor', { models: { view: true, edit: true } }], ['layout_editor', { 'disassembly-layout': { view: true, edit: true } }]]) {
         assert.equal((await browser('/admin-auth/users', { username, password, role: 'viewer', permissions: { view: false }, pagePermissions: grant }, credentials)).status, 201);
         const login = await browser('/admin-auth/login', { username, password }); assert.equal(login.status, 200);
         const auth = { ...browserHeaders, Cookie: login.response.headers.getSetCookie().map(value => value.split(';')[0]).join('; '), 'X-CSRF-Token': login.data.csrfToken };
+        scopedCredentials[username] = auth;
         const beforeDenied = db.prepare('SELECT metadata FROM models WHERE id=?').get(targetId).metadata;
         if (username === 'models_editor') {
             const trustedPlan = await upload('inspect', fixtures.layout, layoutOptions); assert.equal(trustedPlan.status, 200);
@@ -151,6 +153,61 @@ let server, db;
     assert.equal(incompatible.status, 400); assert.equal(incompatible.data.code, 'ASSET_NODE_INCOMPATIBLE');
     assert.equal(db.prepare('SELECT metadata FROM models WHERE id=?').get(plain.data.model.id).metadata, plain.data.model.metadata);
     checks.push('model replacement rejects missing existing layout/port node references before writes, even on a model without motion assets');
+    // Model-local loading ports form their own portable, reversible module.
+    const portsOptions = { targetId, modules: ['ports'] };
+    const ports = { version: 1, inlet: { position: [-.6, 0, .2], direction: [0, 0, 1], nodeName: 'Door',
+        region: { version: 1, corners: [[-.9,0,.2],[-.3,0,.2],[-.3,.6,.2],[-.9,.6,.2]], surfaceNormal: [0,0,1], nodeName: 'Door' } },
+        outlet: { position: [.6, 0, -.2], direction: [0, 0, -1], nodeName: 'Fan' } };
+    const portsFile = await writePackage(path.join(directory, 'ports-only-input.zip'), visibleGlb(), { loadingPorts: ports });
+    const portsBefore = JSON.parse(db.prepare('SELECT metadata FROM models WHERE id=?').get(targetId).metadata);
+    const portsCheck = await upload('inspect', portsFile, portsOptions); assert.equal(portsCheck.status, 200, JSON.stringify(portsCheck.data));
+    assert.equal(portsCheck.data.contentCapabilities.ports, true); assert.equal(portsCheck.data.updatePlan.portsChanged, true);
+    assert.equal((await upload('import', portsFile, portsOptions, portsCheck.data, crypto.randomUUID(), scopedCredentials.layout_editor)).status, 403);
+    const portsSaved = await upload('import', portsFile, portsOptions, portsCheck.data, crypto.randomUUID(), scopedCredentials.models_editor);
+    assert.equal(portsSaved.status, 201, JSON.stringify(portsSaved.data)); assert.deepEqual(portsSaved.data.updatedModules, ['ports']);
+    const withPorts = JSON.parse(portsSaved.data.model.metadata);
+    assert.deepEqual(withPorts.loadingPorts, ports);
+    for (const key of ['inspection','disassemblyLayout','partBindings','motionAuthoring','preserveFixture']) assert.deepEqual(withPorts[key], portsBefore[key]);
+    const { resolveLoadingPort } = require('../../shared/loadingPorts.cjs');
+    for (const id of ['fresh-device-a','fresh-device-b']) assert.deepEqual(resolveLoadingPort(portsSaved.data.model, { id, instance_config: {} }, 'inlet').position, ports.inlet.position);
+    const customRegion = { ...ports.inlet.region, corners: ports.inlet.region.corners.map(p => [p[0]+2,p[1],p[2]]) };
+    assert.deepEqual(resolveLoadingPort(portsSaved.data.model, { instance_config: { loadingPortOverrides: { version: 1, inlet: { offset:[0,0,0],yawDegrees:0,region:customRegion },outlet:null } } }, 'inlet').position, [1.4,0,.2]);
+    const portsExport = await fetch(origin+'/api/models/asset-export', { method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({modelIds:[targetId],modules:['ports']}) });
+    assert.equal(portsExport.status,200); const portsExportFile=path.join(directory,'ports-only-export.zip');fs.writeFileSync(portsExportFile,Buffer.from(await portsExport.arrayBuffer()));
+    const portablePorts=await single.readAsset(portsExportFile);
+    assert.deepEqual(Object.keys(portablePorts.manifest.model.metadata).sort(),['assetSupplement','loadingPorts']);
+    assert.deepEqual(portablePorts.manifest.model.metadata.loadingPorts,ports);assert.equal(portablePorts.entries.has('motion.glb'),false);
+    const autoPreview=await upload('inspect',portsExportFile);assert.deepEqual(autoPreview.data.supplement.modules,['ports']);
+    assert.equal((await upload('import',portsExportFile,null,autoPreview.data)).status,400,'ports supplement needs an explicit existing target');
+    const absentPorts=await upload('inspect',fixtures.fan,portsOptions);assert.equal(absentPorts.status,400);assert.equal(absentPorts.data.code,'ASSET_MODULE_MISSING');
+    const notPorts=await upload('inspect',fixtures.layout,layoutOptions);assert.equal(notPorts.status,200);assert.equal(notPorts.data.updatePlan.portsChanged,false);
+    const portsHistory=await request('/'+targetId+'/asset-history');assert.deepEqual(portsHistory.data.versions[0].modules,['ports']);
+    const portsRestored=await request('/'+targetId+'/asset-history/'+portsHistory.data.versions[0].id+'/restore','POST',{revision:portsHistory.data.revision});
+    assert.equal(portsRestored.status,200,JSON.stringify(portsRestored.data));assert.deepEqual(JSON.parse(portsRestored.data.model.metadata).loadingPorts,portsBefore.loadingPorts);
+    const emptyPorts={version:1,inlet:null,outlet:null};
+    const clearFile=await writePackage(path.join(directory,'explicit-empty-ports.zip'),visibleGlb(),{loadingPorts:emptyPorts});
+    const clearCheck=await upload('inspect',clearFile,portsOptions);assert.equal(clearCheck.status,200);
+    const cleared=await upload('import',clearFile,portsOptions,clearCheck.data);assert.equal(cleared.status,201);assert.deepEqual(JSON.parse(cleared.data.model.metadata).loadingPorts,emptyPorts);
+    const clearHistory=await request('/'+targetId+'/asset-history');const undoClear=await request('/'+targetId+'/asset-history/'+clearHistory.data.versions[0].id+'/restore','POST',{revision:clearHistory.data.revision});
+    assert.equal(undoClear.status,200);assert.deepEqual(JSON.parse(undoClear.data.model.metadata).loadingPorts,portsBefore.loadingPorts);
+    // Restoring a previously unconfigured model must restore omission, not
+    // manufacture defaults or delete any other independently saved module.
+    const unconfiguredSource=visibleGlb('ports-absent-original'),unconfiguredFile=await writePackage(path.join(directory,'no-port-original.zip'),unconfiguredSource,{});
+    const noPortCheck=await upload('inspect',unconfiguredFile),noPort=await upload('import',unconfiguredFile,null,noPortCheck.data);assert.equal(noPort.status,201);
+    const noPortOptions={targetId:noPort.data.model.id,modules:['ports']},newPortFile=await writePackage(path.join(directory,'first-port-setup.zip'),unconfiguredSource,{loadingPorts:ports});
+    const firstPortCheck=await upload('inspect',newPortFile,noPortOptions);assert.equal(firstPortCheck.status,200);assert.equal((await upload('import',newPortFile,noPortOptions,firstPortCheck.data)).status,201);
+    const noPortHistory=await request('/'+noPort.data.model.id+'/asset-history');
+    const undoFirst=await request('/'+noPort.data.model.id+'/asset-history/'+noPortHistory.data.versions[0].id+'/restore','POST',{revision:noPortHistory.data.revision});assert.equal(undoFirst.status,200);
+    assert.equal(Object.hasOwn(JSON.parse(undoFirst.data.model.metadata),'loadingPorts'),false);
+    const absentExport=await fetch(origin+'/api/models/asset-export',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({modelIds:[noPort.data.model.id],modules:['ports']})});assert.equal(absentExport.status,400);
+    const baseAsset=await single.readAsset(portsFile);
+    for(const value of [null,{version:1,inlet:{...ports.inlet,direction:[0,1,0]},outlet:null},{...ports,inlet:{...ports.inlet,pointId:'site-point'}},{...ports,inlet:{...ports.inlet,region:{...ports.inlet.region,nodeName:'MissingNode'}}}]){
+        const invalid=structuredClone(baseAsset.manifest);invalid.model.metadata={loadingPorts:value};baseAsset.entries.set('manifest.json',Buffer.from(JSON.stringify(invalid)));
+        const file=path.join(directory,'bad-ports-'+crypto.randomUUID()+'.zip');await single.writeZip(file,baseAsset.entries);
+        const before=db.prepare('SELECT metadata FROM models WHERE id=?').get(targetId).metadata;
+        assert.equal((await upload('inspect',file,portsOptions)).status,400);assert.equal(db.prepare('SELECT metadata FROM models WHERE id=?').get(targetId).metadata,before);
+    }
+    checks.push('ports-only package carries root-local positions/directions/regions, updates with model permission, restores independently, preserves all peer modules and device overrides, and rejects absent/invalid/site-bound or missing-node data');
     assert.deepEqual(db.prepare('SELECT * FROM devices ORDER BY id').all(), deviceBefore);
     checks.push('source mismatch/private target/invalid export scopes rejected; partial export includes only selected assets and requires explicit target; all device/PLC records unchanged');
     fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify({ success: true, checks, directory }, null, 2)); console.log(JSON.stringify({ success: true, checks, directory }, null, 2));

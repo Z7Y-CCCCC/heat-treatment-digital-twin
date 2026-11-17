@@ -86,9 +86,9 @@ async function choose(event, updating = false) {
       if (operation.value === 'import' && (legacyUpdate || preview.supplement)) {
         operation.value = 'update'
         updateTargetId.value = legacyUpdate ? preview.importDecision.targetId : props.selectedId
-        updateModules.value = preview.supplement?.modules?.includes('actions') === false ? preview.supplement.modules.filter(id => id === 'inspection') : ['actions']
+        updateModules.value = preview.supplement?.modules?.includes('actions') === false ? preview.supplement.modules.filter(id => ['inspection','ports','model'].includes(id)) : ['actions']
       }
-      if (operation.value === 'update' && preview.supplement?.modules?.includes('actions') === false) updateModules.value = preview.supplement.modules.filter(id => id === 'inspection')
+      if (operation.value === 'update' && preview.supplement?.modules?.includes('actions') === false) updateModules.value = preview.supplement.modules.filter(id => ['inspection','ports','model'].includes(id))
       const options = JSON.stringify(currentOptions.value)
       const data = operation.value === 'update' && updateTargetId.value && updateModules.value.length ? await request('inspect',row) : preview
       if (!disposed) { row.checked = data; row.actionChoices = checkedActionChoices(data); row.inspectedOptions = options; row.status = 'ready' }
@@ -137,7 +137,7 @@ async function exportAssets() {
     const multiple = rows.value.length > 1, partial = exportMode.value !== 'full', post = multiple || partial
     const response = await adminFetch(post ? `${API_BASE}/models/asset-export` : `${API_BASE}/models/${encodeURIComponent(rows.value[0].id)}/asset-export`,{
       method:post ? 'POST' : 'GET',signal:controller.signal,headers:headers(post),
-      ...(post ? {body:JSON.stringify({modelIds:rows.value.map(row => row.id),...(partial ? {modules:exportMode.value === 'actions' ? ['actions'] : ['inspection'],...(exportMode.value === 'actions' && exportActionIds.value.length ? {actionIds:exportActionIds.value} : {})} : {})})} : {})
+      ...(post ? {body:JSON.stringify({modelIds:rows.value.map(row => row.id),...(partial ? {modules:[exportMode.value],...(exportMode.value === 'actions' && exportActionIds.value.length ? {actionIds:exportActionIds.value} : {})} : {})})} : {})
     })
     if (!response.ok) throw Error((await response.json()).error || '导出失败')
     const blob = await response.blob(); if (disposed) return
@@ -196,7 +196,7 @@ function effectLabel(item) {
       <div class="package-dialog-body">
         <template v-if="operation==='export'&&!message">
           <div class="package-model-field"><ModelActionPicker v-model="exportIds" :models="models" :disabled="busy" /></div>
-          <fieldset class="asset-module-options"><legend>导出范围</legend><label v-for="mode in [{id:'full',label:'完整资产'},{id:'actions',label:'仅动作'},{id:'inspection',label:'仅拆解布局'}]" :key="mode.id" :class="{active:exportMode===mode.id}"><input v-model="exportMode" type="radio" name="asset-export-mode" :value="mode.id" :disabled="busy||(mode.id!=='full'&&exportIds.length!==1)" />{{ mode.label }}</label></fieldset>
+          <fieldset class="asset-module-options"><legend>导出范围</legend><label v-for="mode in [{id:'full',label:'完整资产'},{id:'actions',label:'仅动作'},{id:'inspection',label:'仅拆解布局'},{id:'ports',label:'仅进出料口设置'}]" :key="mode.id" :class="{active:exportMode===mode.id}"><input v-model="exportMode" type="radio" name="asset-export-mode" :value="mode.id" :disabled="busy||(mode.id!=='full'&&exportIds.length!==1)" />{{ mode.label }}</label></fieldset>
           <fieldset v-if="exportMode==='actions'&&exportActions.length" class="asset-action-choices"><legend>动作 <small>不选则导出全部</small></legend><label v-for="action in exportActions" :key="action.id"><input v-model="exportActionIds" type="checkbox" :value="action.id" :disabled="busy" :aria-label="`导出动作 ${action.label}`" :data-export-action-id="action.id" /><span>{{ action.label }}</span></label></fieldset>
         </template>
         <template v-if="operation==='update'&&!message">
@@ -211,6 +211,7 @@ function effectLabel(item) {
             <p v-if="row.checked.updatePlan.conflicts?.length" class="asset-conflict" role="status">同名动作需勾选替换</p>
           </template>
           <template v-else-if="operation==='import'&&row.checked">
+            <div v-if="row.checked.contentCapabilities?.ports" class="asset-action-tags"><span>进出料口设置</span></div>
             <p v-if="!row.checked.isCollection" class="package-import-decision">{{ effectLabel(row.checked) }}</p>
             <div v-if="row.checked.actions?.length" class="asset-action-tags"><span v-for="action in row.checked.actions" :key="action.id">{{ action.label }}</span></div>
             <details v-if="row.checked.isCollection" class="collection-models" :open="rows.length===1"><summary>{{ row.checked.models.length }} 个模型</summary><ul><li v-for="item in row.checked.models" :key="item.model.id"><strong>{{ item.model.name }}</strong><small>{{ effectLabel(item) }}</small></li></ul></details>
