@@ -4,13 +4,15 @@ param(
     [ValidateSet('All','WebView2','VCRedist')][string]$Component='All',
     [string]$RuntimeRoot='',
     [string]$ReportPath,
-    [switch]$ProvisionDisplayLinks
+    [switch]$ProvisionDisplayLinks,
+    [switch]$InstallerLog
 )
 if(-not $RuntimeRoot){$RuntimeRoot=Join-Path $PSScriptRoot 'resources\prerequisites'}
 $env:PSModulePath=(Join-Path $PSHOME 'Modules')+';'+(Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules')
 $ProgressPreference='SilentlyContinue'
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+if($InstallerLog){[Console]::OutputEncoding=[Text.Encoding]::Unicode;[Console]::Write([char]0xFEFF)}
 function Read-Value([string]$Key,[string]$Name) {
     $base=$null;$child=$null
     try {
@@ -38,6 +40,7 @@ function Inspect-Environment {
         observedAt=[DateTime]::UtcNow.ToString('o') }
 }
 function Install-VerifiedRuntime([string]$Name,[string]$Filename,[string[]]$Arguments) {
+    if($InstallerLog){[Console]::WriteLine("正在校验 $Name 离线文件及 Microsoft 签名…")}
     $manifest=Get-Content -LiteralPath (Join-Path $RuntimeRoot 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $expected=$manifest.files | Where-Object name -eq $Filename | Select-Object -First 1
     $file=Join-Path $RuntimeRoot $Filename
@@ -49,6 +52,7 @@ function Install-VerifiedRuntime([string]$Name,[string]$Filename,[string[]]$Argu
     $options=@{FilePath=$file;ArgumentList=$Arguments;PassThru=$true;WindowStyle='Hidden'}
     if(-not $admin){$options.Verb='RunAs'}
     $child=Start-Process @options
+    if($InstallerLog){[Console]::WriteLine("正在安装 $Name；最多等待 4 分钟，不会自动重启电脑。")}
     if(-not $child.WaitForExit(240000)){throw "$Name 安装超时，请查看 Windows 安装日志后重试。"}
     if($child.ExitCode -eq 3010){return $true}
     if($child.ExitCode -notin @(0,1638)){throw "$Name 安装失败（$($child.ExitCode)），请从 Microsoft 官网修复后重试。"}
@@ -75,6 +79,7 @@ try {
     $before=Inspect-Environment
     $reboot=$false
     if($Action -eq 'Install') {
+        if($InstallerLog){[Console]::WriteLine('检查 WebView2 / Visual C++ x64 当前状态…')}
         if(-not $before.supported){throw '需要 Windows 10 1809 或更新版本 / Windows 11，且为 Intel/AMD x64 系统；不支持 32 位、ARM64 或 Windows S 模式。'}
         if($Component -in @('All','VCRedist') -and -not $before.vcRedist.ready){$reboot=(Install-VerifiedRuntime 'Visual C++ x64 运行库' 'vc_redist.x64.exe' @('/install','/quiet','/norestart')) -or $reboot}
         if($Component -in @('All','WebView2') -and -not $before.webView2.ready){$reboot=(Install-VerifiedRuntime 'WebView2 Runtime' 'MicrosoftEdgeWebView2RuntimeInstallerX64.exe' @('/silent','/install')) -or $reboot}

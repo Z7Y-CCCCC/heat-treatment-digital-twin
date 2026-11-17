@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto'), os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { layout, dialogResource } = require('./installer-layout.cjs');
 const root = path.resolve(__dirname, '..');
@@ -266,4 +266,86 @@ test('native installer-only chrome compiles and its actual shared geometry passe
  const native=fs.readFileSync(path.join(root,'installer-window-chrome.c'),'utf8');
  assert.match(native,/WM_NCHITTEST/);assert.match(native,/return HTTRANSPARENT/);assert.match(native,/return HTCAPTION/);assert.match(native,/CreateRoundRectRgn/);assert.match(native,/SetWindowRgn/);assert.match(native,/WM_DPICHANGED/);
  assert.doesNotMatch(native,/SendInput|mouse_event|keybd_event|CreateProcess|ShellExecute/);
+});
+
+test('borderless frame has no modal rim and independent close/minimize survive installation', () => {
+ const frame=layout.dialogs.find(d=>d.id===105);
+ assert.equal(frame.style & 0x80,0,'DS_MODALFRAME adds a white non-client rim');
+ const native=fs.readFileSync(path.join(root,'installer-window-chrome.c'),'utf8');
+ assert.match(native,/#define MINIMIZE_ID 1240/);assert.match(native,/#define CLOSE_ID 1241/);
+ assert.match(native,/ShowWindow\(window,SW_MINIMIZE\)/);
+ assert.match(native,/msg==WM_CLOSE&&InterlockedCompareExchange\(&busy/);
+ assert.match(native,/InterlockedExchange\(&cancelRequested,1\)/);
+ assert.doesNotMatch(native,/TerminateProcess|TerminateThread|ExitProcess/);
+ assert.match(nsisFunction('DisplayCheckCancel'),/IsCancelRequested[\s\S]*DisplayAbort/);
+ for(const hook of ['customCheckAppRunning','customInstall']) {
+  const body=hooks.split(`!macro ${hook}`)[1].split('!macroend')[0];
+  assert.match(body,/Call DisplayCheckCancel/);assert.match(body,/!insertmacro DisplayStage/);
+ }
+});
+
+test('details restore worker output after the builder reset and failures retain UTF-8 evidence', () => {
+ assert.match(hooks,/ShowInstDetails show/);
+ assert.match(source,/!macro DisplayStage TEXT\s+SetDetailsPrint listonly/);
+ assert.match(nsisFunction('DisplayInstallingShow'),/SetDetailsView show[\s\S]*BeginInstall/);
+ assert.match(nsisFunction('DisplayInstallingLeave'),/EndInstall[\s\S]*SetAutoClose false[\s\S]*SetDetailsView show/);
+ assert.match(source,/!macro DisplayAbort TEXT[\s\S]*DetailPrint "\$displayFailure"[\s\S]*SetErrorLevel 2[\s\S]*Abort "\$displayFailure"/);
+ const native=fs.readFileSync(path.join(root,'installer-window-chrome.c'),'utf8');
+ assert.match(native,/LVM_INSERTITEMW\|\|msg==LVM_SETITEMTEXTW/);
+ assert.match(native,/WideCharToMultiByte\(CP_UTF8/);assert.match(native,/CREATE_NEW/);assert.match(native,/FlushFileBuffers/);
+ const collector=fs.readFileSync(path.join(root,'collector-installer.nsh'),'utf8');
+ assert.match(hooks,/nsExec::ExecToLog \/TIMEOUT=510000/);
+ assert.match(collector,/nsExec::ExecToLog \/TIMEOUT=1200000/);
+ assert.match(collector,/nsExec::ExecToLog \/TIMEOUT=180000/);
+ const preview=fs.readFileSync(path.join(__dirname,'installer-preview.cjs'),'utf8');
+ assert.match(preview,/SetDetailsPrint none\s+!insertmacro DisplayStage/,'fixture must reproduce real builder behavior');
+ assert.match(preview,/DisplayAbort.*1603/);
+ for(const name of ['RuntimePrerequisites.ps1','Install-CollectorPayload.ps1']) {
+  const script=fs.readFileSync(path.join(root,name),'utf8');
+  assert.match(script,/\[switch\]\$InstallerLog/);
+  assert.match(script,/if\(\$InstallerLog\)\{\[Console\]::OutputEncoding=\[Text.Encoding\]::Unicode;\[Console\]::Write\(\[char\]0xFEFF\)/);
+ }
+ assert.match(hooks,/-ProvisionDisplayLinks -InstallerLog/);
+ assert.equal((collector.match(/-InstallerLog`/g)||[]).length,2);
+});
+
+test('production install/preflight hooks compile together without running any install section', {skip:process.platform!=='win32',timeout:60000}, async t => {
+ const directory=fs.mkdtempSync(path.join(os.tmpdir(),'installer-hooks-compile-'));
+ t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+ const script=`Unicode true
+Name "Installer hook compile fixture"
+OutFile "${path.join(directory,'NeverRun.exe')}"
+RequestExecutionLevel user
+!include LogicLib.nsh
+!define DISPLAY_UI_PREVIEW
+!define PRODUCT_NAME "Fixture"
+!define VERSION "2.3.4"
+!addincludedir "${path.join(root,'node_modules/app-builder-lib/templates/nsis/include')}"
+!include "${path.join(root,'display-installer.nsh')}"
+Var PowerShellPath
+!macro IS_POWERSHELL_AVAILABLE
+StrCpy $PowerShellPath "$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe"
+!macroend
+!macro _CHECK_APP_RUNNING
+DetailPrint "Retained app-running guard"
+!macroend
+Function InstallSelectedCollector
+FunctionEnd
+Function VerifySelectedCollector
+FunctionEnd
+!insertmacro customWelcomePage
+!insertmacro customPageAfterChangeDir
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro customFinishPage
+!insertmacro MUI_LANGUAGE "SimpChinese"
+!insertmacro customHeader
+Section
+!insertmacro customCheckAppRunning
+!insertmacro customInstall
+SectionEnd
+`;
+ const file=path.join(directory,'fixture.nsi');fs.writeFileSync(file,script);
+ const tool=await require('./nsis-toolchain.cjs').nsisToolchain();
+ execFileSync(tool.path,['/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env},stdio:'pipe'});
+ assert.ok(fs.statSync(path.join(directory,'NeverRun.exe')).size>0);
 });

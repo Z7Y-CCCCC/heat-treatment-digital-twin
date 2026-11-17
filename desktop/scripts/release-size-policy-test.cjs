@@ -29,3 +29,15 @@ test('private MySQL port ranges reject invalid values before writing any fixture
   for(const port of [0,1023,65487,'33107',NaN])await assert.rejects(new MysqlRuntime({preferredPort:port}).start(),/Invalid private MySQL preferred port/);
   assert.equal(compressionOptions('1').env.ELECTRON_BUILDER_7Z_FILTER,undefined,'low-cost default must not enable the slow BCJ2 profile');
 });
+
+test('normal builds and repacks automatically share measured fast compression defaults',()=>{
+ const policy=require('./release-compression-policy.cjs');
+ assert.equal(policy.DEFAULT_MAIN_LEVEL,'2');
+ for(const [cpu,threads] of [[1,1],[2,2],[8,8],[32,8]])assert.deepEqual(policy.collectorCompressionArgs(cpu),['-mx=3',`-mmt=${threads}`]);
+ assert.equal(compressionOptions(policy.DEFAULT_MAIN_LEVEL).env.ELECTRON_BUILDER_7Z_FILTER,undefined,'do not enable BCJ2 at the measured default');
+ const build=fs.readFileSync(path.resolve(__dirname,'../../生成安装包.ps1'),'utf8');
+ assert.match(build,/DEFAULT_MAIN_LEVEL.*release-compression-policy\.cjs/);
+ const repack=fs.readFileSync(path.resolve(__dirname,'../../tools/installer-repack.cjs'),'utf8');
+ assert.match(repack,/release-compression-policy\.cjs.*DEFAULT_MAIN_LEVEL/);
+ assert.doesNotMatch(repack,/manifest\.compressionLevel \|\| '1'/,'an old package must not silently restore obsolete defaults');
+});

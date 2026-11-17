@@ -1,3 +1,6 @@
 LIBRARY InstallerWindowChrome
 EXPORTS
     Attach=_Attach@4
+    BeginInstall=_BeginInstall@8
+    IsCancelRequested=_IsCancelRequested@0
+    EndInstall=_EndInstall@0

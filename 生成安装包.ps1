@@ -516,14 +516,16 @@ Invoke-CheckedCommand -Label '单独压缩可选采集插件' -Executable $node 
 $pluginHash = Get-ReleaseSha256 $pluginPath
 
 $previousCompressionLevel = [Environment]::GetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', 'Process')
-$effectiveCompressionLevel = if ($FastPack) { '0' } elseif ([string]::IsNullOrWhiteSpace($previousCompressionLevel)) { '1' } else { $previousCompressionLevel }
+$defaultCompressionLevel = & $node -p "require(process.argv[1]).DEFAULT_MAIN_LEVEL" (Join-Path $desktopDirectory 'scripts/release-compression-policy.cjs')
+if ($LASTEXITCODE -ne 0) { throw '读取默认压缩规则失败。' }
+$effectiveCompressionLevel = if ($FastPack) { '0' } elseif ([string]::IsNullOrWhiteSpace($previousCompressionLevel)) { [string]$defaultCompressionLevel } else { $previousCompressionLevel }
 if ($effectiveCompressionLevel -notmatch '^[0-9]$') {
     throw 'ELECTRON_BUILDER_COMPRESSION_LEVEL 必须为 0 到 9 的单个数字。'
 }
 try {
     $env:ELECTRON_BUILDER_COMPRESSION_LEVEL = $effectiveCompressionLevel
     if ($FastPack) { Write-Host '极速打包：程序归档使用存储模式，减少压缩耗时；安装包体积会增大，全部运行及完整性检查仍执行。' -ForegroundColor Yellow }
-    Write-Host "7z 压缩级别：$effectiveCompressionLevel（默认 1，可通过 ELECTRON_BUILDER_COMPRESSION_LEVEL 覆盖）"
+    Write-Host "7z 压缩级别：$effectiveCompressionLevel（默认 $defaultCompressionLevel，可通过 ELECTRON_BUILDER_COMPRESSION_LEVEL 覆盖）"
     Invoke-CheckedCommand -Label '压缩已验证的程序并生成 NSIS 安装包' -Executable $node -ArgumentList @(
         (Join-Path $projectDirectory 'tools/package-installer.cjs'),
         (Join-Path $outputDirectory 'win-unpacked'), $outputDirectory, $effectiveCompressionLevel, $pluginPath
@@ -555,6 +557,8 @@ Invoke-CheckedCommand -Label '确认构建期间程序源码未改变' -Executab
 Invoke-CheckedCommand -Label '确认版权说明与已验证程序一致' -Executable $node -ArgumentList @(
     (Join-Path $projectDirectory 'tools/verify-generated-notice.cjs'), $projectDirectory, (Join-Path $outputDirectory 'win-unpacked')
 )
+$extractionEvidence = Get-Content -LiteralPath (Join-Path $outputDirectory 'installer-extraction-verification.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+if (-not $extractionEvidence.success -or $extractionEvidence.sha256 -ne $installerHash -or -not $extractionEvidence.nativeNsisDecoder -or $extractionEvidence.installed) { throw '最终 EXE 未通过原生 NSIS 解压及逐文件核验。' }
 $releaseManifest = [ordered]@{
     version = $version
     buildSourceCommit = $buildSourceCommit
@@ -563,6 +567,7 @@ $releaseManifest = [ordered]@{
     size = $installer.Length
     sha256 = $installerHash
     installerStartup = [ordered]@{ status='passed'; sha256=$installerHash; realExecutable=$true; settingsReady=$true; installed=$false; nextClicked=$false; seconds=$startupEvidence.seconds }
+    installerExtraction = [ordered]@{ status='passed'; sha256=$installerHash; nativeNsisDecoder=$true; installed=$false; filesVerified=$extractionEvidence.filesVerified; payloadSha256=$extractionEvidence.payloadSha256; treeSha256=$extractionEvidence.treeSha256; decoderSha256=$extractionEvidence.decoderSha256; seconds=$extractionEvidence.seconds }
     sourceSnapshot = $sourceSnapshot
     stagingDirectory = $outputDirectory
     mysqlBundled = $true

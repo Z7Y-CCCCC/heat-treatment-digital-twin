@@ -35,6 +35,7 @@ function buildInstaller(root, unpacked, output, level, collectorArchive) {
   const installer = path.join(output, `热处理数字孪生大屏-安装包-${require(path.join(root,'desktop/package.json')).version}-x64.exe`);
   const proof = require('./installer-startup-smoke.cjs').verifyInstallerStartup(installer, path.join(output, 'installer-startup-verification.json'));
   console.log('Actual final installer settings page verified:', JSON.stringify(proof));
+  execFileSync(process.execPath,[path.join(root,'tools/installer-extraction-smoke.cjs'),installer,unpacked,path.join(output,'installer-extraction-verification.json')],{windowsHide:true,stdio:'inherit',env:options.env});
 }
 if (require.main === module) {
   const [unpacked, output, level, collectorArchive] = process.argv.slice(2);

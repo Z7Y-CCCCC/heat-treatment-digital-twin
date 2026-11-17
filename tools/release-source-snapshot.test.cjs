@@ -2,7 +2,7 @@
 const {test}=require('node:test'), assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {execFileSync}=require('node:child_process');
-const {sourceSnapshot,verifySource}=require('./release-source-snapshot.cjs');
+const {sourceSnapshot,sourceSnapshotAsync,digestSourceFile,verifySource}=require('./release-source-snapshot.cjs');
 test('cached releases bind uncommitted Chinese sources and the complete file set',t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'release-input-test-'));
   t.after(()=>{const relative=path.relative(os.tmpdir(),root);if(!relative.startsWith('release-input-test-')||relative.includes(path.sep))throw Error('Unsafe fixture cleanup');fs.rmSync(root,{recursive:true,force:true});});
@@ -24,4 +24,21 @@ test('cached releases bind uncommitted Chinese sources and the complete file set
   fs.writeFileSync(file,'uncommitted local change');
   const added=path.join(root,'frontend','新增.js');fs.writeFileSync(added,'new');assert.throws(()=>verifySource(root,original),/inputs changed/);
   fs.unlinkSync(added);fs.unlinkSync(file);assert.throws(()=>verifySource(root,original),/inputs changed/);
+});
+
+test('bounded parallel source hashing preserves the exact serial fingerprint and detects content/file-set changes',async t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'release-input-test-'));
+ t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ execFileSync('git',['-C',root,'init'],{windowsHide:true,stdio:'ignore'});
+ fs.mkdirSync(path.join(root,'frontend/src'),{recursive:true});
+ fs.writeFileSync(path.join(root,'.gitignore'),'frontend/.env*\n');
+ for(let i=0;i<24;i++)fs.writeFileSync(path.join(root,'frontend/src',`中文-${i}.js`),Buffer.alloc(1024*(i+1),i));
+ fs.writeFileSync(path.join(root,'frontend/.env.local'),'VITE_TEST=fixture');
+ const original=sourceSnapshot(root);
+ for(const concurrency of [1,2,8,16])assert.deepEqual(await sourceSnapshotAsync(root,{concurrency}),original);
+ for(const concurrency of [0,17,1.5])await assert.rejects(sourceSnapshotAsync(root,{concurrency}),/concurrency/);
+ const file=path.join(root,'frontend/src/中文-0.js');
+ assert.deepEqual(await digestSourceFile(file),require('../desktop/scripts/file-digest.cjs').fileDigest(file));
+ fs.writeFileSync(file,'changed');assert.notEqual((await sourceSnapshotAsync(root)).sha256,original.sha256);
+ fs.unlinkSync(file);assert.notEqual((await sourceSnapshotAsync(root)).files.length,original.files.length);
 });

@@ -17,7 +17,7 @@ Var runtimeNeedsReboot
 !include "${__FILEDIR__}\collector-installer.nsh"
 
 !macro customHeader
-  ShowInstDetails hide
+  ShowInstDetails show
   ; Loaded after the language files: their old SimSun default must not replace
   ; the UI font. SetFont before MUI_LANGUAGE is silently overridden by the NLF.
   SetFont /LANG=2052 "Microsoft YaHei UI" 9
@@ -50,19 +50,39 @@ Var runtimeNeedsReboot
 !macroend
 
 !macro customInstall
-  SendMessage $mui.InstFilesPage.Text ${WM_SETTEXT} 0 "STR:准备 Microsoft 运行环境"
+  Call DisplayCheckCancel
+  !insertmacro DisplayStage "准备 Microsoft 运行环境"
   DetailPrint "正在检查 WebView2 和 Visual C++ 运行环境…"
-  nsExec::ExecToStack /TIMEOUT=510000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\prerequisites\RuntimePrerequisites.ps1" -Action Install -ProvisionDisplayLinks -RuntimeRoot "$INSTDIR\resources\prerequisites" -ReportPath "$TEMP\HeatTreatmentDigitalTwin-runtime-setup.json"`
+  nsExec::ExecToLog /TIMEOUT=510000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\prerequisites\RuntimePrerequisites.ps1" -Action Install -ProvisionDisplayLinks -InstallerLog -RuntimeRoot "$INSTDIR\resources\prerequisites" -ReportPath "$TEMP\HeatTreatmentDigitalTwin-runtime-setup.json"`
   Pop $0
-  Pop $1
   ${If} $0 == 3010
     StrCpy $runtimeNeedsReboot "1"
     DetailPrint "运行环境已安装，需要重新启动 Windows；不会自动重启电脑。"
   ${ElseIf} $0 != 0
-    MessageBox MB_ICONSTOP "运行环境尚未就绪，未启动大屏。$\r$\n$1$\r$\n可重新运行安装程序，或从 Microsoft 官网安装 WebView2 / Visual C++ x64 运行库。"
-    Abort
+    !insertmacro DisplayAbort "运行环境配置失败（返回：$0），未启动大屏。详情及日志保留在下方；可重新运行安装程序。"
   ${EndIf}
+  Call DisplayCheckCancel
   Call VerifySelectedCollector
+  Call DisplayCheckCancel
+!macroend
+
+; The legacy NSIS decoder may not reliably raise an error for an unsupported
+; archive stream. Never report success with missing executables/dependencies.
+!macro customFiles_x64
+  Call DisplayCheckCancel
+  !insertmacro DisplayStage "核验解压后的程序和运行环境文件"
+  !insertmacro DisplayRequireFile "$INSTDIR\${PRODUCT_NAME}.exe"
+  !insertmacro DisplayRequireFile "$INSTDIR\resources\runtime\node.exe"
+  !insertmacro DisplayRequireFile "$INSTDIR\resources\backend\server.js"
+  !insertmacro DisplayRequireFile "$INSTDIR\resources\native-client\HeatTreatmentDigitalTwin.exe"
+  !insertmacro DisplayRequireFile "$INSTDIR\resources\native-client\AdminHost\HeatTreatmentAdminHost.exe"
+  !insertmacro DisplayRequireFile "$INSTDIR\resources\prerequisites\RuntimePrerequisites.ps1"
+!macroend
+
+!macro DisplayRequireFile FILE
+  ${IfNot} ${FileExists} "${FILE}"
+    !insertmacro DisplayAbort "程序文件解压不完整：${FILE}。安装已停止，请查看日志，不会启动损坏的程序。"
+  ${EndIf}
 !macroend
 
 !macro customFinishPage
@@ -85,7 +105,11 @@ Var runtimeNeedsReboot
   ; Install/migrate the selected same-build plugin BEFORE overwriting display
   ; files. Its service and data remain outside the display install directory.
   !ifndef BUILD_UNINSTALLER
+    Call DisplayCheckCancel
+    !insertmacro DisplayStage "检查正在运行的程序与采集服务"
     Call InstallSelectedCollector
+    Call DisplayCheckCancel
+    !insertmacro DisplayStage "检查升级条件（不会清空已有工程）"
   !endif
   InitPluginsDir
   File /oname=$PLUGINSDIR\display-install-preflight.ps1 "${DISPLAY_PREFLIGHT_SOURCE}"
@@ -93,8 +117,16 @@ Var runtimeNeedsReboot
   Pop $0
   Pop $1
   ${If} $0 != 0
+    !ifdef BUILD_UNINSTALLER
     MessageBox MB_ICONSTOP "$1"
     Abort
+    !else
+      !insertmacro DisplayAbort "升级条件检查失败（返回：$0）：$1"
+    !endif
   ${EndIf}
   !insertmacro _CHECK_APP_RUNNING
+  !ifndef BUILD_UNINSTALLER
+    Call DisplayCheckCancel
+    !insertmacro DisplayStage "解压并复制大屏程序文件"
+  !endif
 !macroend

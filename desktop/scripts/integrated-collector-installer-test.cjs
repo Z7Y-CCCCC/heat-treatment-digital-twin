@@ -9,7 +9,8 @@ test('offline selection is visible and existing collectors cannot silently retai
  assert.match(ui,/collectorExisting == "1"[\s\S]*EnableWindow \$collectorDisplayRadio 0/);
  assert.match(ui,/WITHCOLLECTOR=/);assert.match(ui,/COLLECTOR_PAYLOAD_SHA256/);assert.match(ui,/COLLECTOR_BUILD_COMMIT/);
  const guard=hooks.split('!macro customCheckAppRunning')[1];assert.ok(guard.indexOf('Call InstallSelectedCollector')<guard.indexOf('display-install-preflight.ps1'));
- assert.match(ui,/\$collectorChoice != "1"[\s\S]*Return/);assert.match(ui,/\$0 != 0[\s\S]*SetErrorLevel 2[\s\S]*Abort/);
+ assert.match(ui,/\$collectorChoice != "1"[\s\S]*Return/);assert.match(ui,/\$0 != 0[\s\S]*!insertmacro DisplayAbort/);
+ const common=read('desktop/display-installer-ui.nsh');assert.match(common,/!macro DisplayAbort TEXT[\s\S]*SetErrorLevel 2[\s\S]*Abort "\$displayFailure"/);
  assert.doesNotMatch(ui,/https?:|Download|Uninstall|Delete-Service/);
 });
 test('the verified collector ZIP is created before NSIS and the actual embedded bytes are checked',()=>{
@@ -49,7 +50,7 @@ test('real NSIS compilation embeds exactly the version-bound ZIP, independently 
  fs.writeFileSync(path.join(tmp,'plugin-manifest.json'),JSON.stringify({product:'collector-plugin',version:'2.3.3',buildSourceCommit:commit,files:[]}));
  execFileSync(require('7zip-bin').path7za,['a','-tzip',archive,'plugin-manifest.json'],{cwd:tmp,windowsHide:true,stdio:'ignore'});
  const {preparePayload,verifyEmbeddedPayload}=require('../../tools/collector-installer-payload.cjs');const payload=preparePayload(archive,tmp,{version:'2.3.3',commit});
- const source=`Unicode true\nName "Collector compile fixture"\nOutFile "${path.join(tmp,'fixture.exe')}"\nRequestExecutionLevel user\n!include LogicLib.nsh\n!include FileFunc.nsh\n!include nsDialogs.nsh\n!macro DisplayLabel X Y W H TEXT COLOR\n\u0024{NSD_CreateLabel} \u0024{X} \u0024{Y} \u0024{W} \u0024{H} \u0024{TEXT}\nPop $0\n!macroend\n!include "${path.join(root,'desktop/collector-installer.nsh')}"\nFunction DisplayRefreshFonts\nFunctionEnd\nFunction DisplayShowClose\nFunctionEnd\nFunction DisplayPaintPrimary\nFunctionEnd\nSection\nCall CollectorChoiceInit\nCall CollectorChoicePage\nCall CollectorChoiceLeave\nCall InstallSelectedCollector\nCall VerifySelectedCollector\nSectionEnd\n`;
+ const source=`Unicode true\nName "Collector compile fixture"\nOutFile "${path.join(tmp,'fixture.exe')}"\nRequestExecutionLevel user\n!include LogicLib.nsh\n!include FileFunc.nsh\n!include nsDialogs.nsh\n!macro DisplayStage TEXT\nDetailPrint "\u0024{TEXT}"\n!macroend\n!macro DisplayAbort TEXT\nSetErrorLevel 2\nAbort "\u0024{TEXT}"\n!macroend\nFunction DisplayCheckCancel\nFunctionEnd\n!macro DisplayLabel X Y W H TEXT COLOR\n\u0024{NSD_CreateLabel} \u0024{X} \u0024{Y} \u0024{W} \u0024{H} \u0024{TEXT}\nPop $0\n!macroend\n!include "${path.join(root,'desktop/collector-installer.nsh')}"\nFunction DisplayRefreshFonts\nFunctionEnd\nFunction DisplayShowClose\nFunctionEnd\nFunction DisplayPaintPrimary\nFunctionEnd\nSection\nCall CollectorChoiceInit\nCall CollectorChoicePage\nCall CollectorChoiceLeave\nCall InstallSelectedCollector\nCall VerifySelectedCollector\nSectionEnd\n`;
  const file=path.join(tmp,'fixture.nsi');fs.writeFileSync(file,source);
  const tool=await require('./nsis-toolchain.cjs').nsisToolchain();const compiled=spawnSync(tool.path,['/WX','/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env,DIGITAL_TWIN_COLLECTOR_PAYLOAD_INCLUDE:payload.include},encoding:'utf8'});assert.equal(compiled.status,0,compiled.stdout+compiled.stderr);
  assert.equal(verifyEmbeddedPayload(path.join(tmp,'fixture.exe'),archive,tmp).success,true);
@@ -64,6 +65,6 @@ test('the real shared app-running hook compiles in the uninstaller namespace wit
  execFileSync(tool.path,['/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env},stdio:'pipe'});
  assert.ok(fs.statSync(path.join(tmp,'fixture.exe')).size>0);
  const hook=read('desktop/display-installer.nsh').split('!macro customCheckAppRunning')[1].split('!macroend')[0];
- assert.match(hook,/!ifndef BUILD_UNINSTALLER\s+Call InstallSelectedCollector\s+!endif/);
+ assert.match(hook,/!ifndef BUILD_UNINSTALLER[^!]*Call DisplayCheckCancel[\s\S]*Call InstallSelectedCollector[\s\S]*!endif/);
  assert.match(hook,/!insertmacro _CHECK_APP_RUNNING/);
 });

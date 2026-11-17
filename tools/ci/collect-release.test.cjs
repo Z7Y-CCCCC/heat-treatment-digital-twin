@@ -35,6 +35,7 @@ test('v2.3.4 collection and download reject missing or mismatched real installer
   const f=fixture(t);f.manifest.version='2.3.4';f.save();
   assert.throws(()=>collectRelease(f.root),/startup proof/);
   f.manifest.installerStartup={status:'passed',sha256:f.manifest.sha256,realExecutable:true,settingsReady:true,installed:false,nextClicked:false};f.save();
+  f.manifest.installerExtraction={status:'passed',sha256:f.manifest.sha256,nativeNsisDecoder:true,installed:false,filesVerified:1,payloadSha256:'a'.repeat(64),treeSha256:'b'.repeat(64),decoderSha256:'c'.repeat(64)};f.save();
   const out=collectRelease(f.root),file=path.join(out,'release-manifest.json'),manifest=JSON.parse(fs.readFileSync(file));
   // Missing integrated collector is a separate mandatory check for new versions.
   assert.throws(()=>verifyRelease(out,''),/integrated collector/);
