@@ -6,33 +6,33 @@ const crypto = require('node:crypto');
 const C = { BUTTON: 0x80, EDIT: 0x81, STATIC: 0x82 };
 const control = (id, cls, x, y, w, h, text = '', style = 0x50020000, ex = 0) => ({ id, cls, x, y, w, h, text, style, ex });
 const layout = {
-  version: 4,
+  version: 6,
   font: 'Microsoft YaHei UI', fontSize: 9,
   dialogs: [
-    { id: 105, w: 460, h: 275, style: 0x80c800c4, ex: 0x00000100, controls: [
+    { id: 105, w: 460, h: 358, style: 0x800800c4, ex: 0x00040000, controls: [
       // MUI-required controls and placeholders remain native and keyboard-accessible.
       control(3, C.BUTTON, 0, 0, 0, 0, '', 0x40010000),
-      control(1, C.BUTTON, 336, 238, 98, 24, '', 0x50010001),
-      control(2, C.BUTTON, 336, 238, 98, 24, '', 0x50010000),
-      control(1018, C.STATIC, 174, 91, 260, 132, '', 0x40020004),
-      control(1044, C.STATIC, 174, 91, 260, 132, '', 0x40020004),
-      control(1036, C.STATIC, 0, 0, 150, 275, '', 0x5000020e),
-      control(1035, C.STATIC, 18, 62, 114, 15, 'DIGITAL TWIN'),
+      control(1, C.BUTTON, 155, 249, 150, 28, '', 0x50010001),
+      control(2, C.BUTTON, 430, 7, 22, 20, '×', 0x50010000),
+      control(1018, C.STATIC, 24, 289, 412, 50, '', 0x40020004),
+      control(1044, C.STATIC, 24, 249, 412, 88, '', 0x40020004),
+      control(1036, C.STATIC, 0, 0, 460, 230, '', 0x5400020e),
+      control(1035, C.STATIC, 24, 60, 412, 13, 'HEAT TREATMENT / DIGITAL TWIN', 0x50020001),
       control(1045, C.STATIC, 0, 0, 0, 0, '', 0x40020000),
       control(1256, C.STATIC, 0, 0, 0, 0, '', 0x40020000),
       control(1028, C.STATIC, 0, 0, 0, 0, '', 0x40020000),
-      control(1034, C.STATIC, 18, 244, 114, 15, '连接 · 监控 · 可视化'),
-      control(1037, C.STATIC, 174, 29, 260, 25),
-      control(1038, C.STATIC, 174, 62, 260, 17),
-      control(1039, C.STATIC, 18, 21, 110, 33, 'DT'),
-      control(1220, C.STATIC, 174, 245, 155, 12),
+      control(1034, C.STATIC, 260, 345, 176, 10, '连接 · 监控 · 可视化', 0x50020002),
+      control(1037, C.STATIC, 24, 80, 412, 25, '', 0x50020001),
+      control(1038, C.STATIC, 24, 115, 412, 17, '', 0x50020001),
+      control(1039, C.STATIC, 205, 17, 50, 37, 'DT', 0x50020001),
+      control(1220, C.STATIC, 24, 345, 210, 10),
     ] },
-    { id: 106, w: 260, h: 132, style: 0x40000440, controls: [
-      control(1027, C.BUTTON, 0, 91, 68, 18, '查看详情', 0x50010000),
-      control(1004, 'msctls_progress32', 0, 36, 260, 9, '', 0x50000001),
-      control(1006, C.STATIC, 0, 2, 260, 23, '', 0x50004080),
-      control(1016, 'SysListView32', 0, 70, 260, 60, '', 0x40814005),
-      control(1230, C.STATIC, 0, 58, 260, 16, '运行环境随安装包自动配置'),
+    { id: 106, w: 412, h: 88, style: 0x40000440, controls: [
+      control(1027, C.BUTTON, 0, 72, 68, 14, '查看详情', 0x50010000),
+      control(1004, 'msctls_progress32', 0, 20, 412, 5, '', 0x50000001),
+      control(1006, C.STATIC, 0, 0, 412, 15, '', 0x50004080),
+      control(1016, 'SysListView32', 0, 31, 412, 36, '', 0x40814005),
+      control(1230, C.STATIC, 80, 73, 332, 13, '运行环境随安装包自动配置', 0x50020002),
     ] },
   ],
 };

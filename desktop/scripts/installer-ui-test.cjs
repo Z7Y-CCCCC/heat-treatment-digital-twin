@@ -2,13 +2,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const { layout, dialogResource } = require('./installer-layout.cjs');
 const root = path.resolve(__dirname, '..');
 const source = fs.readFileSync(path.join(root, 'display-installer-ui.nsh'), 'utf8');
 const hooks = fs.readFileSync(path.join(root, 'display-installer.nsh'), 'utf8');
 const pkg = require('../package.json');
-test('custom installer illustration and stock uninstaller sidebar use their own required dimensions', () => {
-  for (const [name, width, height] of [['installer-art.bmp',600,1100],['installer-sidebar.bmp',164,314]]) {
+test('wide installer hero and stock uninstaller sidebar use their own required dimensions', () => {
+  for (const [name, width, height] of [['installer-art.bmp',1024,625],['installer-sidebar.bmp',164,314]]) {
     const data=fs.readFileSync(path.join(root,'assets',name));
     assert.equal(data.readInt32LE(18),width); assert.equal(data.readInt32LE(22),height);
   }
@@ -46,9 +47,10 @@ test('all native controls fit the client area at 100%, 125%, 150% and 200% scale
     assert.ok(Math.round((c.y + c.h) * scale) <= Math.round(d.h * scale), `vertical overflow: ${d.id}/${c.id}`);
   }
   const d = layout.dialogs.find(d => d.id === 105);
-  const page = d.controls.find(c => c.id === 1018), action = d.controls.find(c => c.id === 1);
-  assert.ok(page.y + page.h < action.y, 'page content must not overlap the main action');
-  assert.ok(d.w <= 460 && d.h <= 275, 'keep the illustrated wizard bounded');
+  const page = d.controls.find(c => c.id === 1018), action = d.controls.find(c => c.id === 1), hero = d.controls.find(c => c.id === 1036);
+  assert.ok(hero.y + hero.h < action.y && action.y + action.h < page.y, 'hero, central primary action and optional path settings must not overlap');
+  assert.equal(action.x + action.w / 2, d.w / 2, 'the quick-install action is centered');
+  assert.ok(d.w <= 460 && d.h <= 360, 'keep the compact illustrated wizard bounded');
 });
 test('primary action stays a native default pushbutton with keyboard and accessible text', () => {
   const next = layout.dialogs[0].controls.find(c => c.id === 1);
@@ -113,4 +115,139 @@ test('Chinese and English language files cannot silently restore the old dialog 
     const body = source.split(`Function ${page}`)[1].split('FunctionEnd')[0];
     assert.match(body, /Call DisplayRefreshFonts/);
   }
+});
+
+function nsisFunction(name) {
+  const body = source.split(`Function ${name}\n`)[1]?.split('FunctionEnd')[0]
+    || source.split(`Function ${name}\r\n`)[1]?.split('FunctionEnd')[0];
+  assert.ok(body, `Missing NSIS function ${name}`);
+  return body;
+}
+
+// Execute only the stack/text/visibility instructions used by the three
+// settings helpers. No NSIS process, Win32 window or installation is involved.
+function runSettingsHelper(name, state) {
+  let active = true;
+  for (const original of nsisFunction(name).split(/\r?\n/)) {
+    const line = original.trim();
+    if (!line || line.startsWith(';')) continue;
+    if (line === '${If} $displayCustomExpanded == 0') { active = Number(state.vars.displayCustomExpanded) === 0; continue; }
+    if (line === '${Else}') { active = !active; continue; }
+    if (line === '${EndIf}') { active = true; continue; }
+    if (!active) continue;
+    let match;
+    if ((match = /^Call (\w+)$/.exec(line))) runSettingsHelper(match[1], state);
+    else if (line === 'Exch $0') { const text = state.stack.pop(); state.stack.push(state.vars[0]); state.vars[0] = text; }
+    else if (line === 'Pop $0') { assert.ok(state.stack.length, 'NSIS callback/error stack must not underflow'); state.vars[0] = state.stack.pop(); }
+    else if ((match = /^StrCpy \$(\w+) (\d+)$/.exec(line))) state.vars[match[1]] = Number(match[2]);
+    else if ((match = /^ShowWindow \$(\w+) \$\{(SW_SHOW|SW_HIDE)\}$/.exec(line))) state.visible[match[1]] = match[2] === 'SW_SHOW';
+    else if ((match = /^SendMessage \$(\w+) \$\{WM_SETTEXT\} 0 "STR:(.*)"$/.exec(line))) state.text[match[1]] = match[2].replace('$0', state.vars[0]);
+    else assert.fail(`Unmodeled settings instruction: ${line}`);
+  }
+}
+
+test('every rejected path reopens editable settings and displays its error without corrupting the NSIS stack', () => {
+  const validation = nsisFunction('DisplaySettingsLeave');
+  const errors = [...validation.matchAll(/Push "([^"]+)"\s+Call DisplayShowPathError\s+Abort/g)].map(m => m[1]);
+  assert.equal(errors.length, 7, 'all seven rejection branches must use the common error helper');
+  assert.equal((validation.match(/^\s*Abort\s*$/gm) || []).length, errors.length);
+  assert.doesNotMatch(validation, /SendMessage \$displayPathError/, 'no hidden-label-only error branch may remain');
+  for (const initiallyExpanded of [false, true]) for (const message of errors) {
+    const state = { vars: { 0: 'C:\\Windows', displayCustomExpanded: Number(initiallyExpanded) }, visible: {}, text: {}, stack: [message] };
+    runSettingsHelper('DisplayShowPathError', state);
+    assert.equal(state.vars.displayCustomExpanded, 1);
+    for (const control of ['displayPathPanel', 'displayPath', 'displayBrowse', 'displayPathError']) assert.equal(state.visible[control], true, control);
+    assert.equal(state.text.displayPathError, message);
+    assert.equal(state.text.displayCustomToggle, '收起设置 ▴');
+    assert.equal(state.vars[0], 'C:\\Windows', 'the error helper preserves the caller path');
+    assert.deepEqual(state.stack, []);
+    state.stack.push('toggle HWND');
+    runSettingsHelper('DisplayToggleCustom', state);
+    assert.equal(state.vars.displayCustomExpanded, 0, 'only an explicit user toggle collapses settings');
+    state.stack.push('toggle HWND');
+    runSettingsHelper('DisplayToggleCustom', state);
+    assert.equal(state.vars.displayCustomExpanded, 1);
+    assert.deepEqual(state.stack, []);
+  }
+});
+
+const harnessFile = path.resolve(root, '../tools/installer-preview-ui.ps1');
+const harness = fs.readFileSync(harnessFile, 'utf8');
+test('preview normal flow expands the real link and verifies visible errors after expanded and collapsed submissions', () => {
+  const normal = harness.split("if($Scenario -eq 'normal'){")[1].split("Click '1';Capture")[0];
+  assert.ok(normal.indexOf('Set-CustomExpanded $true') < normal.indexOf('$edit=[SetupPreviewNative]::Edit($handle)'));
+  assert.match(normal, /foreach\(\$collapsed in @\(\$false,\$true\)\)/);
+  assert.match(normal, /if\(\$collapsed\)\{Set-CustomExpanded \$false\}/);
+  assert.match(normal, /VisibleTexts\(\$handle\)/);
+  assert.doesNotMatch(normal, /::Texts\(\$handle\)/, 'hidden labels cannot satisfy inline-validation checks');
+  assert.match(normal, /Rejected path settings remained collapsed/);
+  assert.match(harness, /var parent=GetParent\(link\);var id=GetDlgCtrlID\(link\)/);
+  assert.match(harness, /PostMessage\(parent,0x111,new IntPtr\(id & 0xffff\),link\)/);
+  assert.match(harness, /parent==root/);
+});
+
+function nativeHelper(name) {
+  const code = harness.split("Add-Type @'")[1].split("'@")[0];
+  const match = new RegExp(`public static [\\w\\[\\]]+ ${name}\\(`).exec(code);
+  assert.ok(match, `Missing native helper ${name}`);
+  let end = code.indexOf('{', match.index), depth = 1;
+  while (depth && ++end < code.length) { if (code[end] === '{') depth++; else if (code[end] === '}') depth--; }
+  assert.equal(depth, 0);
+  return code.slice(match.index, end + 1);
+}
+
+test('PowerShell expansion helper and actual C# link routing run against pure mocks with no native calls', { skip: process.platform !== 'win32' }, () => {
+  const directory = fs.mkdtempSync(path.join(path.resolve(root, '../output'), 'installer-ui-state-'));
+  const temp = path.join(directory, 'Temp'); fs.mkdirSync(temp);
+  const methods = ['VisibleTexts', 'Text', 'Edit', 'CustomToggle', 'ClickCustomToggle'].map(nativeHelper).join('\n');
+  const mock = `using System;using System.Text;public static class SetupPreviewNative {
+public delegate bool EnumProc(IntPtr h,IntPtr l);
+public static bool Expanded,ErrorVisible,BadParent;public static int Posts;public static IntPtr LastParent;
+public static bool EnumChildWindows(IntPtr h,EnumProc callback,IntPtr l){foreach(var id in new[]{2,3,4})if(!callback(new IntPtr(id),l))break;return true;}
+public static bool IsWindowVisible(IntPtr h){return h.ToInt32()==2 || (h.ToInt32()==3 && Expanded) || (h.ToInt32()==4 && ErrorVisible);}
+public static bool IsWindowEnabled(IntPtr h){return true;}
+public static int GetClassName(IntPtr h,StringBuilder text,int max){text.Append(h.ToInt32()==2?"Button":h.ToInt32()==3?"Edit":"Static");return text.Length;}
+public static int GetWindowText(IntPtr h,StringBuilder text,int max){text.Append(h.ToInt32()==2?(Expanded?"收起设置 ▴":"自定义安装 ▾"):h.ToInt32()==3?@"C:\fixture":"请选择本机磁盘上的完整安装路径。");return text.Length;}
+public static int GetWindowLongW(IntPtr h,int index){return 0xb;}
+public static IntPtr GetParent(IntPtr h){return new IntPtr(BadParent?1:10);}
+public static int GetDlgCtrlID(IntPtr h){return 1437;}
+public static bool PostMessage(IntPtr h,int message,IntPtr w,IntPtr l){if(h!=new IntPtr(10) || message!=0x111 || w!=new IntPtr(1437) || l!=new IntPtr(2))throw new Exception("Link notification used the wrong parent or ID");LastParent=h;Posts++;Expanded=!Expanded;return true;}
+${methods}
+}`;
+  assert.doesNotMatch(mock, /DllImport|user32\.dll/);
+  const quote = value => "'" + value.replace(/'/g, "''") + "'";
+  const script = `$ErrorActionPreference='Stop'
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile(${quote(harnessFile)},[ref]$tokens,[ref]$errors)
+if($errors.Count){throw ($errors|Out-String)}
+$function=$ast.Find({param($a) $a -is [Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq 'Set-CustomExpanded'},$true)
+if(-not $function){throw 'Missing PowerShell expansion helper'}
+. ([scriptblock]::Create($function.Extent.Text))
+Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(mock).toString('base64')}')))
+$handle=[IntPtr]1;$checks=0
+function Check($condition,$message){if(-not $condition){throw $message};$script:checks++}
+Set-CustomExpanded $true
+Check ([SetupPreviewNative]::Expanded -and [SetupPreviewNative]::Posts -eq 1) 'Opening custom settings failed'
+Set-CustomExpanded $true
+Check ([SetupPreviewNative]::Posts -eq 1) 'An already-expanded error state was accidentally toggled'
+Check ([SetupPreviewNative]::Edit($handle) -ne [IntPtr]::Zero) 'Expanded settings are not editable'
+Set-CustomExpanded $false
+Check (-not [SetupPreviewNative]::Expanded -and [SetupPreviewNative]::Posts -eq 2) 'Collapsing custom settings failed'
+Check ([SetupPreviewNative]::LastParent -eq [IntPtr]10) 'The link was sent to the root instead of the nsDialogs child'
+[SetupPreviewNative]::BadParent=$true;$blocked=$false
+try{Set-CustomExpanded $true}catch{$blocked=$true}
+Check ($blocked -and [SetupPreviewNative]::Posts -eq 2) 'A root-parent link notification was not rejected'
+[SetupPreviewNative]::BadParent=$false
+Check (-not ([SetupPreviewNative]::VisibleTexts($handle) -match '^请选择')) 'A hidden validation label counted as visible'
+[SetupPreviewNative]::ErrorVisible=$true
+Check ([SetupPreviewNative]::VisibleTexts($handle) -match '^请选择') 'A visible validation label was not found'
+@{success=$true;checks=$checks;nativeCalls=0;uiStarted=$false}|ConvertTo-Json -Compress
+`;
+  const file = path.join(directory, 'mock.ps1'); fs.writeFileSync(file, '\ufeff' + script);
+  const env = { ...process.env };
+  for (const key of ['TEMP', 'TMP']) { for (const old of Object.keys(env)) if (old.toUpperCase() === key) delete env[old]; env[key] = temp; }
+  const result = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', file], { windowsHide: true, encoding: 'utf8', env, timeout: 30000 });
+  const evidence = JSON.parse(result.trim());
+  assert.equal(evidence.success, true); assert.equal(evidence.checks, 8); assert.equal(evidence.nativeCalls, 0); assert.equal(evidence.uiStarted, false);
+  fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(evidence, null, 2));
 });

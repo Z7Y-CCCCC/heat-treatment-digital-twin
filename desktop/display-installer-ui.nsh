@@ -20,6 +20,12 @@ Var displayActionId
 Var displayBrandIcon
 Var displaySidebarBitmap
 Var displayBrandFont
+Var displayButtonFont
+Var displayCloseBitmap
+Var displayCloseMode
+Var displayCustomToggle
+Var displayBrowse
+Var displayCustomExpanded
 
 !macro DisplayLabel X Y W H TEXT COLOR
   ${NSD_CreateLabel} ${X} ${Y} ${W} ${H} "${TEXT}"
@@ -33,8 +39,12 @@ Function DisplayUIInit
   SetCtlColors $HWNDPARENT "233E52" "FFFFFF"
   ; Native NSIS font creation keeps the current language charset and DPI.
   CreateFont $displayFont "Microsoft YaHei UI" 10 400
-  CreateFont $displayTitleFont "Microsoft YaHei UI" 16 700
+  CreateFont $displayTitleFont "Microsoft YaHei UI" 20 700
   CreateFont $displaySmallFont "Microsoft YaHei UI" 9 400
+  CreateFont $displayButtonFont "Microsoft YaHei UI" 12 600
+  ; A normal Win32 dialog remains keyboard-accessible, with a compact custom
+  ; Cancel button replacing the stock caption. Older Windows ignores this hint.
+  System::Call 'dwmapi::DwmSetWindowAttribute(p $HWNDPARENT, i 33, *i 2, i 4)'
   !ifdef DISPLAY_UI_PREVIEW
     System::Call 'user32::GetDC(p $HWNDPARENT) p.r0'
     System::Call 'gdi32::SelectObject(p r0, p $displayFont) p.r1'
@@ -61,7 +71,7 @@ Function DisplayUIInit
   GetDlgItem $0 $HWNDPARENT 1037
   SendMessage $0 ${WM_SETFONT} $displayTitleFont 1
   GetDlgItem $0 $HWNDPARENT 1038
-  SetCtlColors $0 "6D8798" "FFFFFF"
+  SetCtlColors $0 "B9DFE7" transparent
   GetDlgItem $0 $HWNDPARENT 1220
   SendMessage $0 ${WM_SETTEXT} 0 "STR:v${VERSION}   ·   Windows x64"
   SetCtlColors $0 "7C95A5" "FFFFFF"
@@ -69,7 +79,7 @@ Function DisplayUIInit
   GetDlgItem $0 $HWNDPARENT 3
   ShowWindow $0 ${SW_HIDE}
   GetDlgItem $0 $HWNDPARENT 2
-  ShowWindow $0 ${SW_HIDE}
+  Call DisplayShowClose
 FunctionEnd
 
 Function DisplayPaintSidebar
@@ -91,7 +101,7 @@ Function DisplayPaintSidebar
   System::Call 'gdi32::SelectObject(p R8, p R9) p.r0'
   System::Call 'gdi32::SetStretchBltMode(p R8, i 4)'
   System::Call 'gdi32::SetBrushOrgEx(p R8, i 0, i 0, p 0)'
-  System::Call 'gdi32::StretchBlt(p R8, i 0, i 0, i R2, i R3, p R6, i 0, i 0, i 600, i 1100, i 0xCC0020)'
+  System::Call 'gdi32::StretchBlt(p R8, i 0, i 0, i R2, i R3, p R6, i 0, i 0, i 1024, i 625, i 0xCC0020)'
   System::Call 'gdi32::SelectObject(p R8, p r0)'
   System::Call 'gdi32::SelectObject(p R6, p R7)'
   System::Call 'gdi32::DeleteDC(p R8)'
@@ -112,19 +122,20 @@ Function DisplayPaintSidebar
   GetDlgItem $0 $HWNDPARENT 1034
   ShowWindow $0 ${SW_SHOW}
   SendMessage $0 ${WM_SETFONT} $displaySmallFont 1
-  SetCtlColors $0 "9FB6CD" transparent
+  SetCtlColors $0 "8394A5" "FFFFFF"
 FunctionEnd
 
 Function DisplayRefreshFonts
+  ; The supplied image owns its title/tagline. Keep MUI status text available
+  ; internally without drawing duplicate live labels over the artwork.
   GetDlgItem $0 $HWNDPARENT 1035
-  SendMessage $0 ${WM_SETTEXT} 0 "STR:DIGITAL TWIN"
-  ShowWindow $0 ${SW_SHOW}
-  ; NSIS assigns the language font after .onGUIInit; apply typography on each
-  ; page as well, so the Chinese NLF's legacy SimSun cannot win that race.
+  ShowWindow $0 ${SW_HIDE}
   GetDlgItem $0 $HWNDPARENT 1037
-  SendMessage $0 ${WM_SETFONT} $displayTitleFont 1
+  ShowWindow $0 ${SW_HIDE}
   GetDlgItem $0 $HWNDPARENT 1038
-  SendMessage $0 ${WM_SETFONT} $displayFont 1
+  ShowWindow $0 ${SW_HIDE}
+  GetDlgItem $0 $HWNDPARENT 1039
+  ShowWindow $0 ${SW_HIDE}
   GetDlgItem $0 $HWNDPARENT 1220
   SendMessage $0 ${WM_SETFONT} $displaySmallFont 1
 FunctionEnd
@@ -149,10 +160,20 @@ Function DisplayPaintAction
   System::Call 'gdi32::CreateCompatibleDC(p R4) p.R5'
   System::Call 'gdi32::CreateCompatibleBitmap(p R4, i R2, i R3) p.R6'
   System::Call 'gdi32::SelectObject(p R5, p R6) p.R7'
-  System::Call 'gdi32::CreateSolidBrush(i 0xFFFFFF) p.R8'
+  ${If} $displayActionId == 2
+  ${AndIf} $displayCloseMode == 1
+    System::Call 'gdi32::CreateSolidBrush(i 0x573B11) p.R8'
+  ${Else}
+    System::Call 'gdi32::CreateSolidBrush(i 0xFFFFFF) p.R8'
+  ${EndIf}
   System::Call 'user32::FillRect(p R5, p R1, p R8)'
   System::Call 'gdi32::DeleteObject(p R8)'
-  System::Call 'gdi32::CreateSolidBrush(i 0xC87525) p.R8'
+  ${If} $displayActionId == 2
+  ${AndIf} $displayCloseMode == 1
+    System::Call 'gdi32::CreateSolidBrush(i 0x573B11) p.R8'
+  ${Else}
+    System::Call 'gdi32::CreateSolidBrush(i 0xA08E00) p.R8'
+  ${EndIf}
   System::Call 'gdi32::SelectObject(p R5, p R8) p.R9'
   System::Call 'gdi32::GetStockObject(i 8) p.s'
   Pop $0
@@ -164,7 +185,7 @@ Function DisplayPaintAction
   System::Call 'gdi32::SelectObject(p R5, p r1)'
   System::Call 'gdi32::SelectObject(p R5, p R9)'
   System::Call 'gdi32::DeleteObject(p R8)'
-  System::Call 'gdi32::SelectObject(p R5, p $displayFont) p.R8'
+  System::Call 'gdi32::SelectObject(p R5, p $displayButtonFont) p.R8'
   System::Call 'gdi32::SetTextColor(p R5, i 0xFFFFFF)'
   System::Call 'gdi32::SetBkMode(p R5, i 1)'
   System::Call 'user32::GetWindowTextW(p R0, t.R9, i ${NSIS_MAX_STRLEN})'
@@ -174,11 +195,30 @@ Function DisplayPaintAction
   System::Call 'gdi32::DeleteDC(p R5)'
   System::Call 'user32::ReleaseDC(p R0, p R4)'
   SendMessage $R0 ${BM_SETIMAGE} ${IMAGE_BITMAP} $R6
-  ${If} $displayPrimaryBitmap != ""
-    System::Call 'gdi32::DeleteObject(p $displayPrimaryBitmap)'
+  ${If} $displayActionId == 2
+  ${AndIf} $displayCloseMode == 1
+    ${If} $displayCloseBitmap != ""
+      System::Call 'gdi32::DeleteObject(p $displayCloseBitmap)'
+    ${EndIf}
+    StrCpy $displayCloseBitmap $R6
+  ${Else}
+    ${If} $displayPrimaryBitmap != ""
+      System::Call 'gdi32::DeleteObject(p $displayPrimaryBitmap)'
+    ${EndIf}
+    StrCpy $displayPrimaryBitmap $R6
   ${EndIf}
-  StrCpy $displayPrimaryBitmap $R6
   System::Free $R1
+FunctionEnd
+
+Function DisplayShowClose
+  StrCpy $displayCloseMode 1
+  GetDlgItem $0 $HWNDPARENT 2
+  SendMessage $0 ${WM_SETTEXT} 0 "STR:×"
+  EnableWindow $0 1
+  ShowWindow $0 ${SW_SHOW}
+  System::Call 'user32::SetWindowPos(p r0, p 0, i 0, i 0, i 0, i 0, i 0x53)'
+  StrCpy $displayActionId 2
+  Call DisplayPaintAction
 FunctionEnd
 
 Function DisplaySettingsPage
@@ -187,17 +227,21 @@ Function DisplaySettingsPage
   GetDlgItem $0 $HWNDPARENT 1
   SendMessage $0 ${WM_SETTEXT} 0 "STR:立即安装"
   Call DisplayPaintPrimary
-  GetDlgItem $0 $HWNDPARENT 2
-  ShowWindow $0 ${SW_HIDE}
+  Call DisplayShowClose
   nsDialogs::Create 1018
   Pop $0
   SetCtlColors $0 "233E52" "FFFFFF"
-  !insertmacro DisplayLabel 0 0 260u 18u "欢迎使用数字化工厂工作台" "233E52"
-  !insertmacro DisplayLabel 0 31u 260u 16u "安装位置" "6D8798"
-  ${NSD_CreateLabel} 0 53u 260u 29u ""
+  StrCpy $displayCustomExpanded 0
+  !insertmacro DisplayLabel 0 0 300u 14u "自动配置运行环境 · 升级保留已有工程" "8394A5"
+  ${NSD_CreateLink} 316u 0 96u 14u "自定义安装 ▾"
+  Pop $displayCustomToggle
+  SendMessage $displayCustomToggle ${WM_SETFONT} $displaySmallFont 1
+  SetCtlColors $displayCustomToggle "008EA0" "FFFFFF"
+  ${NSD_OnClick} $displayCustomToggle DisplayToggleCustom
+  ${NSD_CreateLabel} 0 18u 412u 18u ""
   Pop $displayPathPanel
   SetCtlColors $displayPathPanel "F3F6FA" "F3F6FA"
-  ${NSD_CreateDirRequest} 9u 60u 191u 16u "$INSTDIR"
+  ${NSD_CreateDirRequest} 7u 19u 355u 16u "$INSTDIR"
   Pop $displayPath
   SendMessage $displayPath ${WM_SETFONT} $displayFont 1
   SetCtlColors $displayPath "364154" "F3F6FA"
@@ -205,19 +249,56 @@ Function DisplaySettingsPage
   IntOp $1 $1 & 0xFFFFFDFF
   System::Call 'user32::SetWindowLongW(p $displayPath, i -20, i r1)'
   System::Call 'user32::SetWindowPos(p $displayPath, p 0, i 0, i 0, i 0, i 0, i 0x37)'
-  ${NSD_CreateLink} 210u 59u 46u 18u "更改"
-  Pop $0
-  SendMessage $0 ${WM_SETFONT} $displayFont 1
-  SetCtlColors $0 "2575C8" "F3F6FA"
-  ${NSD_OnClick} $0 DisplayBrowsePath
-  ${NSD_CreateLabel} 0 84u 260u 18u ""
+  ${NSD_CreateLink} 371u 19u 37u 16u "更改"
+  Pop $displayBrowse
+  SendMessage $displayBrowse ${WM_SETFONT} $displaySmallFont 1
+  SetCtlColors $displayBrowse "008EA0" "F3F6FA"
+  ${NSD_OnClick} $displayBrowse DisplayBrowsePath
+  ${NSD_CreateLabel} 0 37u 412u 12u ""
   Pop $displayPathError
   SetCtlColors $displayPathError "C13F55" "FFFFFF"
   SendMessage $displayPathError ${WM_SETFONT} $displaySmallFont 1
   System::Call 'user32::SetWindowPos(p $displayPathPanel, p 1, i 0, i 0, i 0, i 0, i 0x13)'
-  !insertmacro DisplayLabel 0 107u 260u 16u "自动配置运行环境 · 升级保留已有工程" "6D8798"
+  ShowWindow $displayPathPanel ${SW_HIDE}
+  ShowWindow $displayPath ${SW_HIDE}
+  ShowWindow $displayBrowse ${SW_HIDE}
+  ShowWindow $displayPathError ${SW_HIDE}
   ${NSD_OnChange} $displayPath DisplayPathChanged
   nsDialogs::Show
+FunctionEnd
+
+Function DisplayToggleCustom
+  Pop $0
+  ${If} $displayCustomExpanded == 0
+    Call DisplayExpandCustomSettings
+  ${Else}
+    StrCpy $displayCustomExpanded 0
+    SendMessage $displayCustomToggle ${WM_SETTEXT} 0 "STR:自定义安装 ▾"
+    ShowWindow $displayPathPanel ${SW_HIDE}
+    ShowWindow $displayPath ${SW_HIDE}
+    ShowWindow $displayBrowse ${SW_HIDE}
+    ShowWindow $displayPathError ${SW_HIDE}
+  ${EndIf}
+FunctionEnd
+
+; Also callable from validation: unlike the click callback, this helper does
+; not pop a notification handle or collapse settings that are already open.
+Function DisplayExpandCustomSettings
+  StrCpy $displayCustomExpanded 1
+  SendMessage $displayCustomToggle ${WM_SETTEXT} 0 "STR:收起设置 ▴"
+  ShowWindow $displayPathPanel ${SW_SHOW}
+  ShowWindow $displayPath ${SW_SHOW}
+  ShowWindow $displayBrowse ${SW_SHOW}
+  ShowWindow $displayPathError ${SW_SHOW}
+FunctionEnd
+
+; Consume the error text while preserving the caller's path register. Every
+; rejected path must leave both its explanation and editable settings visible.
+Function DisplayShowPathError
+  Exch $0
+  Call DisplayExpandCustomSettings
+  SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:$0"
+  Pop $0
 FunctionEnd
 
 Function DisplayPathChanged
@@ -242,12 +323,15 @@ Function DisplayBrowsePath
 FunctionEnd
 
 Function DisplaySettingsLeave
+  ; Keep invalid-path messages visible even when the optional settings were
+  ; collapsed before the user pressed the primary action.
   ${NSD_GetText} $displayPath $0
   StrCpy $1 $0 3
   StrCpy $2 $0 2 1
   ${If} $0 == ""
   ${OrIf} $2 != ":\"
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:请选择本机磁盘上的完整安装路径。"
+    Push "请选择本机磁盘上的完整安装路径。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   ; Win32 normalization also supports a new, not-yet-created folder. The NSIS
@@ -255,7 +339,8 @@ Function DisplaySettingsLeave
   System::Call 'kernel32::GetFullPathNameW(w r0, i ${NSIS_MAX_STRLEN}, w.r3, p 0) i.r1'
   ${If} $1 == 0
   ${OrIf} $1 >= ${NSIS_MAX_STRLEN}
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:安装路径无效，请重新选择。"
+    Push "安装路径无效，请重新选择。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   StrCpy $0 $3
@@ -267,12 +352,14 @@ Function DisplaySettingsLeave
   ${EndIf}
   System::Call 'shlwapi::PathGetDriveNumberW(w r0) i.r1'
   ${If} $1 < 0
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:请选择本机磁盘上的完整安装路径。"
+    Push "请选择本机磁盘上的完整安装路径。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   System::Call 'shlwapi::PathIsPrefixW(w "$WINDIR", w r0) i.r1'
   ${If} $1 != 0
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:请不要将程序安装到 Windows 系统目录中。"
+    Push "请不要将程序安装到 Windows 系统目录中。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   System::Call 'shlwapi::PathIsRootW(w r0) i.r1'
@@ -282,21 +369,24 @@ Function DisplaySettingsLeave
   ${OrIf} $0 == "$PROGRAMFILES64"
   ${OrIf} $0 == "$COMMONFILES64"
   ${OrIf} $0 == "$PROFILE"
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:请为程序选择独立文件夹，不要直接安装到磁盘或系统目录。"
+    Push "请为程序选择独立文件夹，不要直接安装到磁盘或系统目录。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   System::Call 'kernel32::GetFileAttributesW(w r0) i.r1'
   ${If} $1 != -1
     IntOp $2 $1 & 0x10
     ${If} $2 == 0
-      SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:安装位置是一个文件，请选择独立文件夹。"
+      Push "安装位置是一个文件，请选择独立文件夹。"
+      Call DisplayShowPathError
       Abort
     ${EndIf}
   ${EndIf}
   Call DisplayProductDirectory
   StrLen $1 $0
   ${If} $1 > 180
-    SendMessage $displayPathError ${WM_SETTEXT} 0 "STR:安装路径过长，请选择较短的文件夹名称。"
+    Push "安装路径过长，请选择较短的文件夹名称。"
+    Call DisplayShowPathError
     Abort
   ${EndIf}
   StrCpy $INSTDIR $0
@@ -320,6 +410,15 @@ FunctionEnd
 Function DisplayInstallingShow
   !insertmacro MUI_HEADER_TEXT "正在安装" "热处理数字孪生大屏"
   Call DisplayRefreshFonts
+  ; The progress page uses the entire lower pane while the install action is
+  ; hidden, leaving enough space for the native expandable detail list.
+  System::Alloc 16
+  Pop $R0
+  System::Call '*$R0(i 24, i 249, i 412, i 88)'
+  System::Call 'user32::MapDialogRect(p $HWNDPARENT, p R0)'
+  System::Call '*$R0(i.r0, i.r1, i.r2, i.r3)'
+  System::Free $R0
+  System::Call 'user32::MoveWindow(p $mui.InstFilesPage, i r0, i r1, i r2, i r3, i 1)'
   SetCtlColors $mui.InstFilesPage "233E52" "FFFFFF"
   GetDlgItem $0 $HWNDPARENT 3
   ShowWindow $0 ${SW_HIDE}
@@ -342,7 +441,7 @@ Function DisplayInstallingShow
   GetDlgItem $0 $mui.InstFilesPage 1230
   SetCtlColors $0 "6D8798" "FFFFFF"
   System::Call 'uxtheme::SetWindowTheme(p $mui.InstFilesPage.ProgressBar, w "", w "")'
-  SendMessage $mui.InstFilesPage.ProgressBar 0x409 0 0xC87525
+  SendMessage $mui.InstFilesPage.ProgressBar 0x409 0 0xA08E00
   SendMessage $mui.InstFilesPage.ProgressBar 0x2001 0 0xF8EDE2
 FunctionEnd
 
@@ -365,19 +464,21 @@ Function DisplayFinishPage
   SetCtlColors $0 "233E52" "FFFFFF"
   ${If} $runtimeNeedsReboot == "1"
     !insertmacro MUI_HEADER_TEXT "安装完成，请重启电脑" "Microsoft 运行环境需要重新启动 Windows"
-    !insertmacro DisplayLabel 0 2u 260u 22u "重启后，从桌面打开大屏。" "233E52"
-    !insertmacro DisplayLabel 0 32u 260u 22u "不会自动重启电脑。" "6D8798"
+    !insertmacro DisplayLabel 0 0 412u 15u "安装完成，请重启电脑后从桌面打开大屏。" "233E52"
+    !insertmacro DisplayLabel 0 20u 412u 15u "不会自动重启电脑。" "8394A5"
     StrCpy $displayLaunch ""
   ${Else}
     !insertmacro MUI_HEADER_TEXT "安装完成" "大屏已准备就绪"
-    !insertmacro DisplayLabel 0 2u 260u 22u "首次打开后，完成激活并登录账户。" "233E52"
-    !insertmacro DisplayLabel 0 30u 260u 20u "已有工程和账户将保留。" "6D8798"
-    ${NSD_CreateCheckbox} 0 62u 260u 18u "启动热处理数字孪生大屏"
+    !insertmacro DisplayLabel 0 0 412u 14u "安装完成。首次打开后，完成激活并登录账户。" "233E52"
+    !insertmacro DisplayLabel 0 16u 412u 12u "已有工程和账户将保留。" "8394A5"
+    ${NSD_CreateCheckbox} 0 32u 412u 14u "启动热处理数字孪生大屏"
     Pop $displayLaunch
     SendMessage $displayLaunch ${WM_SETFONT} $displayFont 1
     SetCtlColors $displayLaunch "233E52" "FFFFFF"
     ${NSD_Check} $displayLaunch
   ${EndIf}
+  Call DisplayRefreshFonts
+  Call DisplayShowClose
   nsDialogs::Show
 FunctionEnd
 
@@ -398,13 +499,25 @@ Function DisplayInstallingLeave
   GetDlgItem $0 $HWNDPARENT 1037
   SetCtlColors $0 "C13F55" "FFFFFF"
   GetDlgItem $0 $mui.InstFilesPage 1230
-  SendMessage $0 ${WM_SETTEXT} 0 "STR:未启动大屏；已有工程与账户保留。"
+  SendMessage $0 ${WM_SETTEXT} 0 "STR:安装未完成；已有工程与账户保留。"
   GetDlgItem $0 $HWNDPARENT 1
   ShowWindow $0 ${SW_HIDE}
   GetDlgItem $0 $HWNDPARENT 2
+  StrCpy $displayCloseMode 0
+  ; Keep the native failure details visible; Close sits in the footer.
+  GetDlgItem $1 $HWNDPARENT 1034
+  ShowWindow $1 ${SW_HIDE}
+  System::Alloc 16
+  Pop $R0
+  System::Call '*$R0(i 340, i 339, i 96, i 16)'
+  System::Call 'user32::MapDialogRect(p $HWNDPARENT, p R0)'
+  System::Call '*$R0(i.r1, i.r2, i.r3, i.r4)'
+  System::Free $R0
+  System::Call 'user32::MoveWindow(p r0, i r1, i r2, i r3, i r4, i 1)'
   SendMessage $0 ${WM_SETTEXT} 0 "STR:关闭"
   ShowWindow $0 ${SW_SHOW}
   EnableWindow $0 1
+  System::Call 'user32::SetWindowPos(p r0, p 0, i 0, i 0, i 0, i 0, i 0x53)'
   StrCpy $displayActionId 2
   Call DisplayPaintAction
   display_install_ok:

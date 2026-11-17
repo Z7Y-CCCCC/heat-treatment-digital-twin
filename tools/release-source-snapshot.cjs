@@ -7,7 +7,7 @@ function installerOnlyFile(name) {
     || /(?:^|\/)README[^/]*\.md$/i.test(name)
     || name === '生成安装包.ps1'
     || /^desktop\/scripts\/[^/]+(?:-test|\.test)\.cjs$/.test(name)
-    || /^desktop\/(?:display-installer(?:-ui)?\.nsh|assets\/installer-[^/]+\.(?:bmp|bin|json)|scripts\/(?:installer-[^/]+|create-installer-[^/]+|nsis-toolchain)\.cjs)$/.test(name);
+    || /^desktop\/(?:display-installer(?:-ui)?\.nsh|assets\/installer-[^/]+\.(?:bmp|bin|json|png)|scripts\/(?:installer-[^/]+|create-installer-[^/]+|nsis-toolchain)\.cjs)$/.test(name);
 }
 function sourceSnapshot(root) {
   const listed = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], {windowsHide:true, encoding:'utf8', maxBuffer:16*1024*1024});
