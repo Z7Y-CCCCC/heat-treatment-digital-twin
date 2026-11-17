@@ -318,9 +318,8 @@ internal sealed partial class AdminPanelForm : Form
             // unavailable service returns to the admin/error surface, never a
             // 0% native scene cover waiting indefinitely for credentials.
             var displayReady = false;
-            var displayWaitTimedOut = false;
             try { displayReady = await _displayAccessReady.Task.WaitAsync(TimeSpan.FromSeconds(12), _pipeCancellation.Token); }
-            catch (TimeoutException) { displayWaitTimedOut = true; WriteHostInfo("展示启动确认超时，保留后台入口，不报告场景就绪"); }
+            catch (TimeoutException) { WriteHostInfo("展示启动确认超时，保留后台入口，不报告场景就绪"); }
             if (_closing || IsDisposed) return;
             // Complete the initial placement before the desktop startup cover
             // is removed. An unsigned-in user must see the existing admin
@@ -337,7 +336,10 @@ internal sealed partial class AdminPanelForm : Form
             {
                 _returnToDashboardAfterUnlock = true;
                 ShowAdmin();
-                _waitingForAutomaticDisplay = displayWaitTimedOut;
+                // A prompt negative reply may be a temporary service outage,
+                // not a mandatory login. Recovery must work after either kind
+                // of initial wait; explicit ShowAdmin still cancels auto-return.
+                _waitingForAutomaticDisplay = !displayReady;
             }
             await ReportStartupReadyAsync();
             _status.Text = "已嵌入 Unity 大屏 · 可拖动后台管理页签";

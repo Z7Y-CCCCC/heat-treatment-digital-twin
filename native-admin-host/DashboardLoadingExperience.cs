@@ -259,7 +259,11 @@ internal static class DashboardLoadingExperience
               lastPhase = current;
             }
           };
-          setProgress(0, 0, phases[0]);
+          setProgress(0, 0, '正在连接展示服务');
+          // No native progress has arrived yet. Show the real wait condition,
+          // not a misleading 0% and never a timer-driven fabricated percentage.
+          const percentUnit = root.querySelector('.dtl-percent small');
+          percent.textContent = '连接中'; percentUnit.hidden = true; lastProgress = -1;
           // Mirrored from shared/startupLoading.mjs; VM parity tests run without a browser.
           function createLoadingProgressTracker(requireNative) {
             let loadId='',progress=0,phase=0,sequence=-1
@@ -291,6 +295,7 @@ internal static class DashboardLoadingExperience
             if (progressFrame) return;
             progressFrame = requestAnimationFrame(() => {
               progressFrame = 0;
+              percentUnit.hidden = false;
               setProgress(pendingProgress?.progress, pendingProgress?.phase, pendingProgress?.step);
             });
           };

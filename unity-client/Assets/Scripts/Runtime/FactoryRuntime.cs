@@ -524,7 +524,7 @@ namespace HeatTreatment.DigitalTwin.Runtime
             _sceneLoadId = Guid.NewGuid().ToString("N");
             _startupRenderGate.Pause();
             _startupProgressSequence = 0;
-            _diagnostics?.BeginLoading();
+            _diagnostics?.BeginLoading(0.06f);
             SetSceneLoading("config", 0, 0);
             DestroyCurrentFactory();
             _ = LoadConfigurationLoopAsync(_reload.Token);

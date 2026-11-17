@@ -246,6 +246,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
 
         private async Task<TemplateEntry> LoadGltfTemplateAsync(ModelAssetDto asset, CancellationToken cancellationToken, bool useMotion = false)
         {
+            var timing = System.Diagnostics.Stopwatch.StartNew();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(_loadTimeoutSeconds));
 
@@ -255,7 +256,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
             var completed = false;
             try
             {
-                importer = new GltfImport(new LoopbackDownloadProvider(timeout.Token));
+                importer = new GltfImport(new LoopbackDownloadProvider(timeout.Token), new ModelImportDeferAgent());
                 var settings = new ImportSettings
                 {
                     GenerateMipMaps = true,
@@ -272,6 +273,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 {
                     throw new InvalidOperationException($"glTFast rejected model '{asset.Id}' from {url}");
                 }
+                var importMs = timing.ElapsedMilliseconds;
 
                 // Match the authoring scene-root path convention for single AND multi-root GLBs.
                 var instantiator = new GameObjectInstantiator(importer, root.transform,
@@ -282,6 +284,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 {
                     throw new InvalidOperationException($"glTFast could not instantiate model '{asset.Id}'");
                 }
+                var instantiateMs = timing.ElapsedMilliseconds - importMs;
 
                 var bindings = ReadBindings(asset.MetadataObject);
                 var inspection = InspectionConfigResolver.Resolve(asset, null);
@@ -298,6 +301,7 @@ namespace HeatTreatment.DigitalTwin.Rendering
                 );
                 root.SetActive(false);
                 Debug.Log($"[RuntimeModelLibrary] Loaded {asset.Id}: {report}");
+                Debug.Log($"[ModelTemplateTiming] model={asset.Id}, importMs={importMs}, instantiateMs={instantiateMs}, optimizeMs={timing.ElapsedMilliseconds - importMs - instantiateMs}");
                 completed = true;
                 return new TemplateEntry
                 {

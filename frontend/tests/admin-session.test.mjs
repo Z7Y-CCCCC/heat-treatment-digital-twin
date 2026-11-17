@@ -345,3 +345,19 @@ test('a successful heartbeat without a slot field cannot replace a selected cust
     assert.equal(session.adminSession.accountSlotId,slot)
     assert.equal(session.adminSession.sessionRevision,revision)
 })
+
+
+test('native cold start bootstraps before one session read; standalone and overlay do not create display identities',async t=>{
+    for(const surface of ['admin','overlay','standalone']) {
+        const f=await fixture(t),calls=[]
+        f.browser.location=new URL('http://127.0.0.1:3001/admin'+(surface==='standalone'?'':`?embedded=unity&surface=${surface}`))
+        if(surface!=='standalone') f.browser.chrome={webview:{postMessage(){}}}
+        t.mock.method(f.browser,'fetch',async url=>{
+            calls.push(String(url).split('/').at(-1))
+            return json(String(url).endsWith('/display-bootstrap')?{success:true,displayOnly:true}:displaySession)
+        })
+        await f.refreshAdminSession()
+        assert.deepEqual(calls,surface==='admin'?['display-bootstrap','session']:['session'])
+        assert.equal(f.adminSession.authenticated,false)
+    }
+})
