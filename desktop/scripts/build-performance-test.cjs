@@ -5,6 +5,15 @@ const { fingerprintInputs, buildCachedNative } = require('./native-build-cache.c
 const { buildTasks, runBuildTasks } = require('./parallel-build.cjs');
 const { spawn, spawnSync } = require('node:child_process');
 
+test('release component entrypoints exist and match the canonical npm build scripts', () => {
+  const project = path.resolve(__dirname, '../..');
+  const scripts = JSON.parse(fs.readFileSync(path.join(project, 'desktop/package.json'), 'utf8')).scripts;
+  for (const task of buildTasks(project)) {
+    assert.ok(fs.statSync(task.args[0]).isFile(), task.name + ' entrypoint must exist');
+    assert.equal('node ' + path.relative(path.join(project, 'desktop'), task.args[0]).split(path.sep).join('/'), scripts[task.name], task.name);
+  }
+});
+
 async function runCapturedBuildTasks(tasks, options) {
   // Raw console output can share a pipe read with node:test's V8 frames on
   // Windows. Capture the helper's status messages locally, not by patching

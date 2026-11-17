@@ -8,7 +8,7 @@ const { spawn } = require('node:child_process');
 function buildTasks(project) {
   const tasks = ['frontend', 'admin-host', 'collector-service', 'collector-center'].map(name => ({
     name: `build:${name}`, command: process.execPath,
-    args: [path.join(project, 'desktop/scripts', `build-${name}.cjs`)], cwd: project
+    args: [path.join(project, 'desktop/scripts', name === 'admin-host' ? 'build-native-admin-host.cjs' : `build-${name}.cjs`)], cwd: project
   }));
   tasks.splice(2, 0, { name: 'prepare:resources', dependsOn: ['build:admin-host'], command: process.execPath,
     args: [path.join(project, 'desktop/scripts/prepare-all-resources.cjs')], cwd: project });
