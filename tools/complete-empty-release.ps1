@@ -55,7 +55,7 @@ try {
     Invoke-Stage '记录候选资源基线' @((Join-Path $PSScriptRoot 'package-resource-integrity.cjs'), '--snapshot', $unpacked, $baseline)
     if ($CollectorSmokeResult) {
         Invoke-Stage '重新校验已通过采集服务测试的资源及证据' @((Join-Path $PSScriptRoot 'verify-release-smoke-evidence.cjs'), $CollectorSmokeResult, (Join-Path $plugin 'resources'), 'collector')
-    } else { Invoke-Stage '独立采集服务验证' @((Join-Path $PSScriptRoot 'collector-service-smoke-test.cjs'), (Join-Path $plugin 'resources')) }
+    } else { Invoke-Stage '独立采集服务验证' @((Join-Path $PSScriptRoot 'collector-service-smoke-test.cjs'), (Join-Path $plugin 'resources'), ('--frontend=' + (Join-Path $resources 'frontend'))) }
     if ($MysqlSmokeResult) {
         Invoke-Stage '重新校验已通过 MySQL 首启重启测试的资源及证据' @((Join-Path $PSScriptRoot 'verify-release-smoke-evidence.cjs'), $MysqlSmokeResult, $resources, 'mysql')
     } else { Invoke-Stage '空系统随包 MySQL 首启重启验证' @((Join-Path $PSScriptRoot 'packaged-mysql-smoke-test.cjs'), $exe) }
