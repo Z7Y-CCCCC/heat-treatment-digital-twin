@@ -45,6 +45,14 @@ Function DisplayUIInit
   ; A normal Win32 dialog remains keyboard-accessible, with a compact custom
   ; Cancel button replacing the stock caption. Older Windows ignores this hint.
   System::Call 'dwmapi::DwmSetWindowAttribute(p $HWNDPARENT, i 33, *i 2, i 4)'
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\InstallerWindowChrome.dll "${__FILEDIR__}\.cache\installer-window-chrome\InstallerWindowChrome.dll"
+  ; Keep the DLL loaded: its native subclasses live until this process exits.
+  System::Call '"$PLUGINSDIR\InstallerWindowChrome.dll"::Attach(p $HWNDPARENT) i.r0'
+  ${If} $0 != 1
+    MessageBox MB_ICONSTOP "安装窗口初始化失败，请重新运行安装程序。"
+    Quit
+  ${EndIf}
   !ifdef DISPLAY_UI_PREVIEW
     System::Call 'user32::GetDC(p $HWNDPARENT) p.r0'
     System::Call 'gdi32::SelectObject(p r0, p $displayFont) p.r1'
@@ -225,7 +233,7 @@ Function DisplaySettingsPage
   !insertmacro MUI_HEADER_TEXT "热处理数字孪生大屏" "让产线运行，一目了然"
   Call DisplayRefreshFonts
   GetDlgItem $0 $HWNDPARENT 1
-  SendMessage $0 ${WM_SETTEXT} 0 "STR:立即安装"
+  SendMessage $0 ${WM_SETTEXT} 0 "STR:下一步"
   Call DisplayPaintPrimary
   Call DisplayShowClose
   nsDialogs::Create 1018
@@ -233,7 +241,7 @@ Function DisplaySettingsPage
   SetCtlColors $0 "233E52" "FFFFFF"
   StrCpy $displayCustomExpanded 0
   !insertmacro DisplayLabel 0 0 300u 14u "自动配置运行环境 · 升级保留已有工程" "8394A5"
-  ${NSD_CreateLink} 316u 0 96u 14u "自定义安装 ▾"
+  ${NSD_CreateLink} 316u 0 96u 14u "自定义安装"
   Pop $displayCustomToggle
   SendMessage $displayCustomToggle ${WM_SETFONT} $displaySmallFont 1
   SetCtlColors $displayCustomToggle "008EA0" "FFFFFF"
@@ -273,7 +281,7 @@ Function DisplayToggleCustom
     Call DisplayExpandCustomSettings
   ${Else}
     StrCpy $displayCustomExpanded 0
-    SendMessage $displayCustomToggle ${WM_SETTEXT} 0 "STR:自定义安装 ▾"
+    SendMessage $displayCustomToggle ${WM_SETTEXT} 0 "STR:自定义安装"
     ShowWindow $displayPathPanel ${SW_HIDE}
     ShowWindow $displayPath ${SW_HIDE}
     ShowWindow $displayBrowse ${SW_HIDE}
@@ -285,7 +293,7 @@ FunctionEnd
 ; not pop a notification handle or collapse settings that are already open.
 Function DisplayExpandCustomSettings
   StrCpy $displayCustomExpanded 1
-  SendMessage $displayCustomToggle ${WM_SETTEXT} 0 "STR:收起设置 ▴"
+  SendMessage $displayCustomToggle ${WM_SETTEXT} 0 "STR:收起设置"
   ShowWindow $displayPathPanel ${SW_SHOW}
   ShowWindow $displayPath ${SW_SHOW}
   ShowWindow $displayBrowse ${SW_SHOW}

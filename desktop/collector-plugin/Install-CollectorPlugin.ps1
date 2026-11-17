@@ -2,9 +2,11 @@
 param(
     [string]$InstallRoot = (Join-Path $env:ProgramFiles 'HeatTreatmentCollectorPlugin'),
     [string]$ImportDataDirectory = (Join-Path $env:APPDATA 'heat-treatment-digital-twin-desktop'),
-    [switch]$ResumeImportedData
+    [switch]$ResumeImportedData,
+    [switch]$SkipUserDataImport
 )
 $ErrorActionPreference = 'Stop'
+if($SkipUserDataImport){$ImportDataDirectory=''}
 $source = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\') + '\'
 $manifest = Get-Content -LiteralPath (Join-Path $source 'plugin-manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($manifest.product -ne 'collector-plugin' -or $manifest.files.Count -lt 10) { throw '采集插件清单无效。' }
@@ -37,8 +39,10 @@ if (-not ([Security.Principal.WindowsPrincipal]::new([Security.Principal.Windows
     foreach ($value in @($InstallRoot,$ImportDataDirectory,$PSCommandPath)) { if ($value.Contains('"')) { throw '路径含非法引号。' } }
     $elevatedArguments=@(
         '-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',('"{0}"' -f $PSCommandPath),
-        '-InstallRoot',('"{0}"' -f $InstallRoot),'-ImportDataDirectory',('"{0}"' -f $ImportDataDirectory))
+        '-InstallRoot',('"{0}"' -f $InstallRoot))
+    if(-not $SkipUserDataImport){$elevatedArguments+=@('-ImportDataDirectory',('"{0}"' -f $ImportDataDirectory))}
     if($ResumeImportedData){$elevatedArguments+='-ResumeImportedData'}
+    if($SkipUserDataImport){$elevatedArguments+='-SkipUserDataImport'}
     $child = Start-Process -FilePath 'powershell.exe' -Verb RunAs -WindowStyle Hidden -Wait -PassThru -ArgumentList $elevatedArguments
     if ($child.ExitCode -ne 0) { throw '采集插件安装失败，原始数据保留。' }
     Write-Host '采集插件已安装。重新打开大屏即可连接。'
@@ -95,7 +99,7 @@ try {
         if($LASTEXITCODE -ne 0){throw '采集插件运行环境未就绪，请重启 Windows 或修复 Visual C++ x64 运行库后重试。'}
     }
     $arguments = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',(Join-Path $target '安装采集服务.ps1'),'-InstallRoot',$target)
-    if (-not $previousConfig -and -not $ResumeImportedData -and (Test-Path -LiteralPath (Join-Path $ImportDataDirectory 'data\database-config.json'))) {
+    if (-not $SkipUserDataImport -and -not $previousConfig -and -not $ResumeImportedData -and (Test-Path -LiteralPath (Join-Path $ImportDataDirectory 'data\database-config.json'))) {
         $arguments += @('-ImportDataDirectory',$ImportDataDirectory)
     }
     & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" @arguments

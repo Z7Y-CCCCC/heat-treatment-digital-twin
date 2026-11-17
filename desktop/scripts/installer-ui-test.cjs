@@ -158,7 +158,7 @@ test('every rejected path reopens editable settings and displays its error witho
     assert.equal(state.vars.displayCustomExpanded, 1);
     for (const control of ['displayPathPanel', 'displayPath', 'displayBrowse', 'displayPathError']) assert.equal(state.visible[control], true, control);
     assert.equal(state.text.displayPathError, message);
-    assert.equal(state.text.displayCustomToggle, '收起设置 ▴');
+    assert.equal(state.text.displayCustomToggle, '收起设置');
     assert.equal(state.vars[0], 'C:\\Windows', 'the error helper preserves the caller path');
     assert.deepEqual(state.stack, []);
     state.stack.push('toggle HWND');
@@ -207,7 +207,7 @@ public static bool EnumChildWindows(IntPtr h,EnumProc callback,IntPtr l){foreach
 public static bool IsWindowVisible(IntPtr h){return h.ToInt32()==2 || (h.ToInt32()==3 && Expanded) || (h.ToInt32()==4 && ErrorVisible);}
 public static bool IsWindowEnabled(IntPtr h){return true;}
 public static int GetClassName(IntPtr h,StringBuilder text,int max){text.Append(h.ToInt32()==2?"Button":h.ToInt32()==3?"Edit":"Static");return text.Length;}
-public static int GetWindowText(IntPtr h,StringBuilder text,int max){text.Append(h.ToInt32()==2?(Expanded?"收起设置 ▴":"自定义安装 ▾"):h.ToInt32()==3?@"C:\fixture":"请选择本机磁盘上的完整安装路径。");return text.Length;}
+public static int GetWindowText(IntPtr h,StringBuilder text,int max){text.Append(h.ToInt32()==2?(Expanded?"收起设置":"自定义安装"):h.ToInt32()==3?@"C:\fixture":"请选择本机磁盘上的完整安装路径。");return text.Length;}
 public static int GetWindowLongW(IntPtr h,int index){return 0xb;}
 public static IntPtr GetParent(IntPtr h){return new IntPtr(BadParent?1:10);}
 public static int GetDlgCtrlID(IntPtr h){return 1437;}
@@ -250,4 +250,20 @@ Check ([SetupPreviewNative]::VisibleTexts($handle) -match '^请选择') 'A visib
   const evidence = JSON.parse(result.trim());
   assert.equal(evidence.success, true); assert.equal(evidence.checks, 8); assert.equal(evidence.nativeCalls, 0); assert.equal(evidence.uiStarted, false);
   fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(evidence, null, 2));
+});
+
+
+test('close control is flush to the top right and settings links contain no duplicate glyphs',()=>{
+ const page=layout.dialogs.find(d=>d.id===105),close=page.controls.find(c=>c.id===2);
+ assert.equal(close.x+close.w,page.w);assert.equal(close.y,0);
+ assert.match(source,/STR:收起设置"/);assert.match(source,/STR:自定义安装"/);
+ assert.doesNotMatch(source,/收起设置 [▴▾▲▼·.]|自定义安装 [▴▾▲▼·.]/);
+ assert.match(source,/InstallerWindowChrome\.dll.*Attach/);
+});
+test('native installer-only chrome compiles and its actual shared geometry passes command-line DPI and hit tests without UI', {skip:process.platform!=='win32'},()=>{
+ const filename=require('./build-installer-window-chrome.cjs').buildInstallerChrome({test:true});
+ const bytes=fs.readFileSync(filename),pe=bytes.readUInt32LE(0x3c);assert.equal(bytes.readUInt16LE(pe+4),0x14c);assert.equal(bytes.readUInt32LE(pe+24+16),0);
+ const native=fs.readFileSync(path.join(root,'installer-window-chrome.c'),'utf8');
+ assert.match(native,/WM_NCHITTEST/);assert.match(native,/return HTTRANSPARENT/);assert.match(native,/return HTCAPTION/);assert.match(native,/CreateRoundRectRgn/);assert.match(native,/SetWindowRgn/);assert.match(native,/WM_DPICHANGED/);
+ assert.doesNotMatch(native,/SendInput|mouse_event|keybd_event|CreateProcess|ShellExecute/);
 });

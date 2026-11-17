@@ -10,6 +10,10 @@ function verifyRelease(directory, expectedCommit = process.env.GITHUB_SHA, expec
     throw new Error('Release build and isolated launch checks must have passed');
   if (expectedCommit && manifest.commit !== expectedCommit) throw new Error('Artifact belongs to another commit');
   if (expectedRun && manifest.run !== String(expectedRun)) throw new Error('Artifact belongs to another run');
+  if(manifest.collectorInstaller) {
+    const integrated=manifest.collectorInstaller;
+    if(integrated.mode!=='offline-selectable'||integrated.verified!==true||integrated.version!==manifest.version||integrated.commit!==manifest.buildSourceCommit||integrated.commit!==manifest.commit||integrated.sha256!==manifest.collectorPlugin?.sha256)throw Error('Integrated collector provenance does not match the installer release');
+  } else if(manifest.version==='2.3.3') throw Error('Missing integrated collector installer proof');
   const name = manifest.installer;
   if (typeof name !== 'string' || path.basename(name) !== name || /[\\/]/.test(name) || !/\.exe$/i.test(name)) throw new Error('Invalid installer name');
   const allowed = [name, `${name}.sha256.txt`, 'release-manifest.json', 'build-timings.json'].sort();

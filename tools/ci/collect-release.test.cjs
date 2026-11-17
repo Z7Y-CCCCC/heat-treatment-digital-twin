@@ -109,3 +109,13 @@ test('portable publication keeps installer bytes and provenance, with consistent
   assert.throws(() => verifyUploadedAssets(out, assets.map((asset, i) => i ? asset : { ...asset, digest: 'sha256:wrong' })), /digest mismatch/);
   assert.throws(() => verifyUploadedAssets(out, assets.map((asset, i) => i ? asset : { ...asset, state: 'starter' })), /incomplete/);
 });
+
+
+test('integrated installer publication rejects independently stale plugin provenance',t=>{
+ const f=fixture(t),file='HeatTreatmentCollector-Plugin-2.3.1-x64.zip',data=Buffer.from('same-build plugin fixture'),commit='d'.repeat(40);
+ fs.writeFileSync(path.join(f.directory,file),data);f.manifest.collectorBundled=false;f.manifest.buildSourceCommit=commit;
+ f.manifest.collectorPlugin={file,size:data.length,sha256:crypto.createHash('sha256').update(data).digest('hex'),smokeTest:'passed'};
+ f.manifest.collectorInstaller={mode:'offline-selectable',version:f.manifest.version,commit,sha256:f.manifest.collectorPlugin.sha256,verified:true};f.save();
+ const out=collectRelease(f.root),fileName=path.join(out,'release-manifest.json'),manifest=JSON.parse(fs.readFileSync(fileName));manifest.commit=commit;fs.writeFileSync(fileName,JSON.stringify(manifest));assert.doesNotThrow(()=>verifyRelease(out,commit));
+ for(const [key,value] of [['version','0.0.0'],['commit','e'.repeat(40)],['sha256','0'.repeat(64)],['verified',false],['mode','download-latest']]) {const changed=structuredClone(manifest);changed.collectorInstaller[key]=value;fs.writeFileSync(fileName,JSON.stringify(changed));assert.throws(()=>verifyRelease(out,commit),/provenance/);}
+});

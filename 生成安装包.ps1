@@ -473,7 +473,7 @@ if (Test-Path -LiteralPath $pluginDirectory) {
 Invoke-CheckedCommand -Label '核对实际安装资源为空系统（业务库、模型、动作、上传配置）' -Executable $node -ArgumentList @(
     (Join-Path $desktopDirectory 'scripts/verify-empty-install.cjs'), $displayResources
 )
-Invoke-CheckedCommand -Label '生成独立可选采集插件目录（不进入大屏安装包）' -Executable $node -ArgumentList @(
+Invoke-CheckedCommand -Label '生成独立采集插件目录（安装向导可选，运行目录独立）' -Executable $node -ArgumentList @(
     (Join-Path $desktopDirectory 'scripts/prepare-collector-plugin.cjs'), $displayResources, $pluginDirectory
 )
 Invoke-CheckedCommand -Label '确认采集插件同样只含固定画面模板与空现场数据' -Executable $node -ArgumentList @(
@@ -508,6 +508,13 @@ Invoke-CheckedCommand -Label '验证运行测试未改写安装资源' -Executab
     $resourceVerification
 )
 
+$pluginName = "HeatTreatmentCollector-Plugin-$version-x64.zip"
+$pluginPath = Join-Path $outputDirectory $pluginName
+Invoke-CheckedCommand -Label '单独压缩可选采集插件' -Executable $node -ArgumentList @(
+    (Join-Path $desktopDirectory 'scripts/archive-collector-plugin.cjs'), $pluginDirectory, $pluginPath
+)
+$pluginHash = Get-ReleaseSha256 $pluginPath
+
 $previousCompressionLevel = [Environment]::GetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', 'Process')
 $effectiveCompressionLevel = if ($FastPack) { '0' } elseif ([string]::IsNullOrWhiteSpace($previousCompressionLevel)) { '1' } else { $previousCompressionLevel }
 if ($effectiveCompressionLevel -notmatch '^[0-9]$') {
@@ -519,7 +526,7 @@ try {
     Write-Host "ZIP 压缩级别：$effectiveCompressionLevel（默认 1，可通过 ELECTRON_BUILDER_COMPRESSION_LEVEL 覆盖）"
     Invoke-CheckedCommand -Label '压缩已验证的程序并生成 NSIS 安装包' -Executable $node -ArgumentList @(
         (Join-Path $projectDirectory 'tools/package-installer.cjs'),
-        (Join-Path $outputDirectory 'win-unpacked'), $outputDirectory, $effectiveCompressionLevel
+        (Join-Path $outputDirectory 'win-unpacked'), $outputDirectory, $effectiveCompressionLevel, $pluginPath
     )
 } finally {
     [Environment]::SetEnvironmentVariable('ELECTRON_BUILDER_COMPRESSION_LEVEL', $previousCompressionLevel, 'Process')
@@ -531,18 +538,15 @@ $installerPath = Join-Path $outputDirectory $installerName
 if (-not (Test-Path -LiteralPath $installerPath)) {
     throw "构建命令已结束，但没有找到预期安装包：$installerPath"
 }
+Invoke-CheckedCommand -Label '抽取最终安装包并核对内置采集插件与本次构建逐字节一致' -Executable $node -ArgumentList @(
+    (Join-Path $projectDirectory 'tools/collector-installer-payload.cjs'), $installerPath, $pluginPath, $outputDirectory
+)
 $installer = Get-Item -LiteralPath $installerPath
 if ($installer.Length -le 0) { throw "安装包文件为空：$installerPath" }
 
 $installerHash = Get-ReleaseSha256 $installerPath
 $checksumPath = "$installerPath.sha256.txt"
 Set-Content -LiteralPath $checksumPath -Encoding UTF8 -Value "$installerHash  $installerName"
-$pluginName = "HeatTreatmentCollector-Plugin-$version-x64.zip"
-$pluginPath = Join-Path $outputDirectory $pluginName
-Invoke-CheckedCommand -Label '单独压缩可选采集插件' -Executable $node -ArgumentList @(
-    (Join-Path $desktopDirectory 'scripts/archive-collector-plugin.cjs'), $pluginDirectory, $pluginPath
-)
-$pluginHash = Get-ReleaseSha256 $pluginPath
 Invoke-CheckedCommand -Label '确认构建期间程序源码未改变' -Executable $node -ArgumentList @(
     (Join-Path $projectDirectory 'tools/release-source-snapshot.cjs'), 'verify', $projectDirectory, $sourceSnapshot
 )
@@ -560,6 +564,7 @@ $releaseManifest = [ordered]@{
     stagingDirectory = $outputDirectory
     mysqlBundled = $true
     collectorBundled = $false
+    collectorInstaller = [ordered]@{ mode='offline-selectable'; version=$version; commit=$buildSourceCommit; sha256=$pluginHash; verified=$true }
     collectorPlugin = [ordered]@{ file=$pluginName; size=(Get-Item -LiteralPath $pluginPath).Length; sha256=$pluginHash; smokeTest=$(if ($SkipSmokeTest) { 'skipped' } else { 'passed' }) }
     smokeTest = if ($SkipSmokeTest) { 'skipped' } else { 'passed' }
     includeHistory = [bool]$IncludeHistory
