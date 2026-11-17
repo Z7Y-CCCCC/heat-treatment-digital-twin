@@ -7,6 +7,14 @@ const { prepareResourceDirectory } = require('./resource-preparation.cjs');
 const defaultSource = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'MySQL', 'MySQL Server 9.2');
 const requiredExecutables = ['mysqld.exe', 'mysql.exe', 'mysqladmin.exe', 'mysqldump.exe'];
 const msvcPattern = /^(?:vcruntime|msvcp|concrt)\d+[^\\/]*\.dll$/i;
+function includeRuntimePath(source, filename) {
+    const relative = path.relative(source, filename).split(path.sep).join('/');
+    // MeCab's three Japanese full-text dictionaries are not used by this
+    // application's InnoDB schema. Keep all character sets and ordinary
+    // Unicode storage; do not package an unrelated optional tokenizer.
+    return !/^lib\/mecab(?:\/|$)/i.test(relative)
+        && !/\.(?:lib|pdb)$/i.test(filename) && !/debug/i.test(path.basename(filename));
+}
 
 function walk(directory) {
     return fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -78,7 +86,7 @@ async function prepareMysqlRuntime(destination, explicitSource) {
         for (const name of ['lib', 'share']) {
             fs.cpSync(path.join(source, name), path.join(staging, name), {
                 recursive: true,
-                filter: filename => !/\.(?:lib|pdb)$/i.test(filename) && !/debug/i.test(path.basename(filename))
+                filter: filename => includeRuntimePath(source, filename)
             });
         }
         for (const name of ['LICENSE', 'README']) fs.copyFileSync(path.join(source, name), path.join(staging, name));
@@ -150,4 +158,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { prepareMysqlRuntime, importedDlls };
+module.exports = { prepareMysqlRuntime, importedDlls, includeRuntimePath };

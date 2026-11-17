@@ -93,6 +93,7 @@ async function main() {
         { recursive: true, dereference: true, force: false, errorOnExist: false });
     if (stopping) return;
     database = new MysqlRuntime({ root, runtimeDir: path.join(resources, 'mysql'), nodeBinary: path.join(resources, 'runtime', 'node.exe'),
+        ...(config.mysqlPortStart !== undefined ? { preferredPort: config.mysqlPortStart } : {}),
         hostScript: path.join(resources, 'backend', 'services', 'privateMysqlHost.js'), dependenciesDir: dependencies,
         templateFile: template, onProgress: log,
         onUnexpectedExit: error => { console.error(error); stop().finally(() => process.exit(1)); } });

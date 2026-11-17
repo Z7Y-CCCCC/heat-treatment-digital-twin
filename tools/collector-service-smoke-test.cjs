@@ -53,7 +53,8 @@ let child;
     fixture.close();
     const port = await findFreePort(3941), backendOrigin = `http://127.0.0.1:${port}`;
     const filename = path.join(run, 'collector-service.json');
-    fs.writeFileSync(filename, JSON.stringify({ version: 1, root, resourcesRoot: resources, port, backendOrigin }));
+    fs.writeFileSync(filename, JSON.stringify({ version: 1, root, resourcesRoot: resources, port, backendOrigin,
+        ...(process.env.RELEASE_TEST_MYSQL_PORT ? { mysqlPortStart: Number(process.env.RELEASE_TEST_MYSQL_PORT) } : {}) }));
     let connection, gateway;
     const launches = [];
     const desktopExe = path.join(path.dirname(source), '热处理数字孪生大屏.exe');

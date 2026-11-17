@@ -470,6 +470,8 @@ async function initializeWritableData() {
     if (isQuitting) throw new Error('程序正在退出，已取消初始化');
     mysqlRuntime = new MysqlRuntime({
         root,
+        ...(process.env.DESKTOP_SMOKE_STANDALONE === 'true' && process.env.RELEASE_TEST_MYSQL_PORT
+            ? { preferredPort: Number(process.env.RELEASE_TEST_MYSQL_PORT) } : {}),
         ...(app.isPackaged ? { linkDirectory: path.join(process.env.ProgramData || 'C:\\ProgramData', 'HeatTreatmentDigitalTwinDisplayLinks') } : {}),
         runtimeDir: resourcePath('mysql'),
         nodeBinary: resourcePath('runtime', 'node.exe'),
