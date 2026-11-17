@@ -85,6 +85,8 @@ Function CollectorChoiceLeave
 FunctionEnd
 
 !ifndef DISPLAY_UI_PREVIEW
+; Functions are compiled before electron-builder declares its PowerShellPath.
+; Use the system path directly rather than depend on the later shared hook.
 Function InstallSelectedCollector
   ; Recheck at execution time: a service may have appeared after page init.
   ${If} $collectorChoice != "1"
@@ -108,7 +110,7 @@ Function InstallSelectedCollector
   File /oname=$PLUGINSDIR\collector-plugin.zip "${COLLECTOR_PAYLOAD_ZIP}"
   SetCompress auto
   File /oname=$PLUGINSDIR\Install-CollectorPayload.ps1 "${__FILEDIR__}\Install-CollectorPayload.ps1"
-  nsExec::ExecToStack /TIMEOUT=1200000 `"$PowerShellPath" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Install-CollectorPayload.ps1" -ArchivePath "$PLUGINSDIR\collector-plugin.zip" -ExpectedSha256 "${COLLECTOR_PAYLOAD_SHA256}" -ExpectedVersion "${COLLECTOR_BUILD_VERSION}" -ExpectedCommit "${COLLECTOR_BUILD_COMMIT}"`
+  nsExec::ExecToStack /TIMEOUT=1200000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Install-CollectorPayload.ps1" -ArchivePath "$PLUGINSDIR\collector-plugin.zip" -ExpectedSha256 "${COLLECTOR_PAYLOAD_SHA256}" -ExpectedVersion "${COLLECTOR_BUILD_VERSION}" -ExpectedCommit "${COLLECTOR_BUILD_COMMIT}"`
   Pop $0
   Pop $1
   ${If} $0 != 0
@@ -125,7 +127,7 @@ Function VerifySelectedCollector
   ; Old display uninstallers may have touched SCM after the pre-copy migration.
   ; Recheck AFTER display installation, repair only with this exact payload,
   ; and never let a completed frontend hide a missing/stale collector service.
-  nsExec::ExecToStack /TIMEOUT=180000 `"$PowerShellPath" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Install-CollectorPayload.ps1" -ArchivePath "$PLUGINSDIR\collector-plugin.zip" -ExpectedSha256 "${COLLECTOR_PAYLOAD_SHA256}" -ExpectedVersion "${COLLECTOR_BUILD_VERSION}" -ExpectedCommit "${COLLECTOR_BUILD_COMMIT}" -VerifyInstalledOnly`
+  nsExec::ExecToStack /TIMEOUT=180000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\Install-CollectorPayload.ps1" -ArchivePath "$PLUGINSDIR\collector-plugin.zip" -ExpectedSha256 "${COLLECTOR_PAYLOAD_SHA256}" -ExpectedVersion "${COLLECTOR_BUILD_VERSION}" -ExpectedCommit "${COLLECTOR_BUILD_COMMIT}" -VerifyInstalledOnly`
   Pop $0
   Pop $1
   ${If} $0 != 0

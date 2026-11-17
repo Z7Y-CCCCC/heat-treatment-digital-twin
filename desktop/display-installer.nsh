@@ -84,7 +84,9 @@ Var runtimeNeedsReboot
   !insertmacro IS_POWERSHELL_AVAILABLE
   ; Install/migrate the selected same-build plugin BEFORE overwriting display
   ; files. Its service and data remain outside the display install directory.
-  Call InstallSelectedCollector
+  !ifndef BUILD_UNINSTALLER
+    Call InstallSelectedCollector
+  !endif
   InitPluginsDir
   File /oname=$PLUGINSDIR\display-install-preflight.ps1 "${DISPLAY_PREFLIGHT_SOURCE}"
   nsExec::ExecToStack /TIMEOUT=20000 `"$PowerShellPath" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\display-install-preflight.ps1" -InstallRoot "$INSTDIR"`
