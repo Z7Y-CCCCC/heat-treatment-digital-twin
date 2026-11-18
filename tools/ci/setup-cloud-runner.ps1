@@ -16,6 +16,7 @@ function Resolve-ContainedPath([string]$Relative) {
 $runtimeCheck = & node (Join-Path $workspace 'tools/ci/cloud-runtime.cjs')
 if ($LASTEXITCODE -ne 0) { throw 'Cloud runtime source verification failed' }
 . (Join-Path $workspace 'tools/ci/cloud-download.ps1')
+. (Join-Path $workspace 'tools/ci/cloud-extract.ps1')
 $config = Get-Content -LiteralPath (Join-Path $workspace 'tools/ci/cloud-runtime.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $cloud = Resolve-ContainedPath 'cloud-release-v1'
 $unity = Resolve-ContainedPath 'cloud-release-v1/unity/Editor/Unity.exe'
@@ -62,8 +63,7 @@ if (-not $CheckOnly) {
     if (-not (Test-Path -LiteralPath (Join-Path $mysql 'bin/mysqld.exe') -PathType Leaf)) {
         $archive = Download-Verified 'mysql.zip' $config.mysql.url $config.mysql.sha256 $config.mysql.size
         $mysqlDirectory = Resolve-ContainedPath 'cloud-release-v1/mysql'
-        New-Item -ItemType Directory -Path $mysqlDirectory -Force | Out-Null
-        try { & tar.exe -xf $archive -C $mysqlDirectory; if ($LASTEXITCODE -ne 0) { throw 'MySQL runtime extraction failed' } }
+        try { Expand-VerifiedCloudArchive -Archive $archive -Destination $mysqlDirectory -ExpectedSize $config.mysql.size -ExpectedSha256 $config.mysql.sha256 }
         finally { Remove-Item -LiteralPath $archive -Force }
     }
 }
