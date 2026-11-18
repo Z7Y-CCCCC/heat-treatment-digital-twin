@@ -94,7 +94,9 @@ jobs:
         if: steps.release.outputs.release == 'true' && inputs.verified_run_id == ''
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-        run: node tools/ci/cloud-runtime.cjs --require-license
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        run: node tools/ci/cloud-runtime.cjs --require-license --require-authorization
 
   quality:
     needs: preflight
@@ -167,6 +169,8 @@ jobs:
       - name: Provision the exact cloud editor, MySQL and public trust anchor
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: ./tools/ci/setup-cloud-runner.ps1
       - name: Check the provisioned cloud prerequisites without changing authorization
@@ -190,6 +194,9 @@ jobs:
       - name: Verify native overlay in the cloud Windows session
         shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: dotnet run --project tools/native-overlay-tests/NativeOverlayTests.csproj --configuration Release
+      - name: Return only this disposable runner's account seat, including on build failure
+        if: always()
+        run: node tools/ci/cloud-unity-account.cjs --return-seat
       - name: Collect this build's verified installer
         shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: node tools/ci/collect-release.cjs
@@ -212,6 +219,7 @@ jobs:
           path: |
             安装包/release-*/构建日志-*.txt
             ${{ runner.temp }}/cloud-release-v1/activation-result.json
+            ${{ runner.temp }}/cloud-release-v1/account-seat-return-result.json
             安装包/release-*/build-timings.json
             output/packaged-project-bundle-mysql-*/result.json
             output/packaged-project-bundle-mysql-*/mysqld.log

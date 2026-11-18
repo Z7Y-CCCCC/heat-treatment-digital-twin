@@ -12,9 +12,9 @@
 
 云端编译需要项目指定的 Unity **2022.3.34f1c1 / 1e17368ca73f**。GitHub 免费构建不等于 Unity 可以不授权；须使用符合现有 Unity 条款的有效授权，本流程不会开通付费套餐或绕过许可证。
 
-将有权用于 CI 的现有 Unity .ulf 文件内容设置为仓库 Settings → Secrets and variables → Actions 中的 **UNITY_LICENSE**。不要将许可证、密码、厂商私钥写入源码、PR、聊天或普通仓库变量。是否复制本机许可证必须由 Ethan 单独确认，配置脚本不会自动读取本机 C:/ProgramData/Unity 或上传任何凭据。
+Unity Personal 在仓库 Settings → Secrets and variables → Actions 安全配置 **UNITY_EMAIL**、**UNITY_PASSWORD**，使用当前 Unity 账号的正规云端激活；符合要求的非 Personal .ulf 文件可使用 **UNITY_LICENSE**。不要将许可证、密码、厂商私钥写入源码、PR、聊天或普通仓库变量。是否复制本机许可证必须由 Ethan 单独确认，配置脚本不会自动读取本机 C:/ProgramData/Unity 或上传任何凭据。
 
-若许可证尚未配置，发行预检在大文件下载前明确失败；不会占用本机 runner，也不会发布半成品。若 Unity 在云端拒绝该许可证，应修复 CI 的合法授权，不能跳过编译门禁或用旧二进制冒充当前源码。
+若所需账号授权或许可证尚未配置，发行预检在大文件下载前明确失败；不会占用本机 runner，也不会发布半成品。若 Unity 在云端拒绝该许可证，应修复 CI 的合法授权，不能跳过编译门禁或用旧二进制冒充当前源码。
 
 许可证仅注入需要它的两个步骤，不写入 GITHUB_ENV、不进入 cache、发布资源或日志附件。激活使用 runner 临时私有目录，临时 .ulf 用完删除，激活日志不上传。许可证适用性由实际云端激活和构建验证；不能把本机存在许可证当作云端已经可用。
 
@@ -56,7 +56,7 @@ MySQL ZIP 解压固定使用 .NET 内置 ZipFile API，不依赖 PATH、外部 t
 
 以下命令只验证源码/隔离夹具，不构建发行安装包：
 
-    node --test tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-download.test.cjs tools/ci/cloud-extract.test.cjs tools/ci/cloud-readiness.test.cjs tools/ci/release-trigger.test.cjs tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
+    node --test tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-download.test.cjs tools/ci/cloud-extract.test.cjs tools/ci/cloud-readiness.test.cjs tools/ci/cloud-unity-account.test.cjs tools/ci/release-trigger.test.cjs tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
     node tools/ci/check-release.cjs
     node tools/ci/cloud-runtime.cjs
     node tools/repository-hygiene.cjs
@@ -74,3 +74,15 @@ Cloud Windows readiness 是仅可在可信 main 上手动触发的隔离验收�
 不能把 Unity Personal 的文件导入进程返回 `1` 一律解释成授权被拒绝，也不能仅凭返回 `0` 解释成授权可用。云端导入后必须另起全新的空 Unity 编辑器项目，运行 `CloudActivationProbe.Run`，实际输出独立成功标记并以 `0` 退出；版本不符、无标记、超时、明确授权拒绝或机器绑定不匹配均失败。原有独立 readiness 和正式安装包/空业务数据/模板/启动重启门禁不变。
 
 原始 Unity 激活与执行日志仅保留在当前一次性 Runner 的私有临时目录。公开诊断只包含固定错误代码、返回码与验证布尔值，不包含许可证原文、账号、密码、机器标识或日志摘录。出现机器绑定拒绝时不得改写签名或绑定，需要通过 Unity 支持的账户授权流程处理；脚本不会擅自读取或上传 Ethan 的 Unity 账户凭据。
+
+## Personal 账号授权与云端席位
+
+2026-11-18 的实际云端尝试已经通过 MySQL 官方 ZIP 解压，但 Personal 文件没有授予可运行的 Editor license：导入返回 1，独立编辑器返回 1、没有执行标记。安全报告只显示许可/令牌或连接异常与无有效编辑器授权，不能把它直接描述成已证实的机器绑定拒绝，也不能声称已发布新安装包。
+
+在仓库 Actions Secrets 安全配置当前 Unity 账号的 UNITY_EMAIL、UNITY_PASSWORD；不要发到聊天，不从本机 Hub、日志或凭据缓存自动提取。存在完整账号 Secret 时使用官方安装包附带的 Unity.Licensing.Client，通过 --help 检查 --activate-all 能力，支持 --include-personal 时才使用该参数；不购买或绕过授权。Personal 未配置账号时在大文件下载前失败，避免重复消耗十几分钟。符合要求的非 Personal 文件路径保留。
+
+客户端返回 0 仍必须通过原来的全新隔离编辑器执行/版本/标记/退出码证明，任何无席位、认证失败、缺标记、超时或实际授权拒绝均失败。账号和密码只注入可信 main 的预检/激活步骤；不写入 GITHUB_ENV、缓存、安装包或日志附件，原始客户端日志留在私有 runner 临时目录。
+
+账号激活尝试会记录不含凭据的本次 runner 席位清理路由，构建失败也必须归还本次云端席位。支持的客户端使用 --return-ulf；旧客户端或无 ULF 的 entitlement 席位使用独立临时编辑器 -returnlicense，不打开应用工程、不操作 Ethan 电脑的激活。归还失败会阻止正式安装包发布，不能降为警告放行。
+
+账号授权仍须实际云端验收；单元测试和配置合并不代表真实授权或安装包发布完成。账号要求双重验证或无可用席位时须按 Unity 正规流程处理，不能直接推断必须购买 Pro。

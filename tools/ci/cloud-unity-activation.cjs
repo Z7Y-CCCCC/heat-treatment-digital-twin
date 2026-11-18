@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { readCloudRuntime, requireUnityLicense } = require('./cloud-runtime.cjs');
+const { hasAccount, activateAccount } = require('./cloud-unity-account.cjs');
 
 const MARKER = 'CLOUD_UNITY_ACTIVATION_EXECUTION_OK';
 const MAX_LOG_BYTES = 4 * 1024 * 1024;
@@ -58,9 +59,10 @@ function readPrivateLog(filename) {
 }
 function runActivationProof(env = process.env, run = (file, args) => spawnSync(file, args, {
     windowsHide: true, encoding: 'utf8', stdio: 'ignore', timeout: 300000,
-})) {
+}), accountRun) {
     const paths = activationPaths(env);
-    requireUnityLicense(env);
+    const accountMode = hasAccount(env);
+    if (!accountMode) requireUnityLicense(env);
     const { config } = readCloudRuntime();
     if (fs.existsSync(paths.fixture) || fs.existsSync(paths.log) || fs.existsSync(paths.report)) {
         throw Error('Activation proof paths must be new and must never overwrite previous evidence');
@@ -68,7 +70,7 @@ function runActivationProof(env = process.env, run = (file, args) => spawnSync(f
     const rawExit = env.CLOUD_UNITY_IMPORT_EXIT_CODE;
     const numericExit = /^-?\d{1,10}$/.test(rawExit || '') ? Number(rawExit) : NaN;
     const importExitCode = Number.isInteger(numericExit) && numericExit >= -2147483648 && numericExit <= 2147483647 ? numericExit : null;
-    const kind = licenseKind(env.UNITY_LICENSE);
+    const kind = accountMode ? 'personal' : licenseKind(env.UNITY_LICENSE);
     const report = {
         schema: 1, success: false, unityVersion: config.unity.version,
         licenseKind: kind, importExitCode, importSignals: [],
@@ -83,10 +85,18 @@ function runActivationProof(env = process.env, run = (file, args) => spawnSync(f
         return report;
     }
     try {
-        report.importSignals = diagnosticSignals(paths.importLogs.map(readPrivateLog).join('\n'));
-        if (importExitCode !== 0 && !(importExitCode === 1 && kind === 'personal')) return finish(false, 'manual-import-failed');
-        if (report.importSignals.some(code => code === 'machine-binding-mismatch' || code === 'license-signature-rejected')) {
-            return finish(false, 'license-file-rejected');
+        if (accountMode) {
+            report.activationMethod = 'account';
+            const activation = activateAccount(paths, env, accountRun);
+            report.accountExitCode = activation.exit;
+            report.accountSignals = activation.signals;
+            if (!activation.success) return finish(false, 'account-activation-failed');
+        } else {
+            report.importSignals = diagnosticSignals(paths.importLogs.map(readPrivateLog).join('\n'));
+            if (importExitCode !== 0 && !(importExitCode === 1 && kind === 'personal')) return finish(false, 'manual-import-failed');
+            if (report.importSignals.some(code => code === 'machine-binding-mismatch' || code === 'license-signature-rejected')) {
+                return finish(false, 'license-file-rejected');
+            }
         }
         // Personal import can return 1 even after successful registration. Neither
         // 0 nor 1 grants a pass here: a separate real editor execution is mandatory.
