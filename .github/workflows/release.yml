@@ -211,6 +211,7 @@ jobs:
           name: windows-build-logs-${{ github.run_number }}
           path: |
             安装包/release-*/构建日志-*.txt
+            ${{ runner.temp }}/cloud-release-v1/activation-result.json
             安装包/release-*/build-timings.json
             output/packaged-project-bundle-mysql-*/result.json
             output/packaged-project-bundle-mysql-*/mysqld.log

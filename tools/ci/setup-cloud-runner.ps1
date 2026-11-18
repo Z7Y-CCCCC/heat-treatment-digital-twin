@@ -79,11 +79,18 @@ if (-not $CheckOnly -and -not $PrepareOnly) {
     New-Item -ItemType Directory -Path (Split-Path -Parent $license) -Force | Out-Null
     try {
         [IO.File]::WriteAllText($license, $env:UNITY_LICENSE, (New-Object System.Text.UTF8Encoding($false)))
-        $process = Start-Process -FilePath $unity -ArgumentList @('-batchmode','-nographics','-quit','-manualLicenseFile',('"' + $license + '"'),'-logFile',('"' + $log + '"')) -WindowStyle Hidden -Wait -PassThru
-        if ($process.ExitCode -ne 0) { throw 'Unity rejected the supplied authorized license. Activation logs stay private in runner temp and are never published.' }
+        $stdout = Resolve-ContainedPath 'cloud-release-v1/private/import-stdout.log'
+        $stderr = Resolve-ContainedPath 'cloud-release-v1/private/import-stderr.log'
+        $process = Start-Process -FilePath $unity -ArgumentList @('-batchmode','-nographics','-quit','-manualLicenseFile',('"' + $license + '"'),'-logFile',('"' + $log + '"')) -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        $process.WaitForExit()
+        $env:CLOUD_UNITY_IMPORT_EXIT_CODE = [string]$process.ExitCode
+        $env:UNITY_EDITOR_PATH = $unity
+        & node (Join-Path $workspace 'tools/ci/cloud-unity-activation.cjs')
+        if ($LASTEXITCODE -ne 0) { throw 'Cloud Unity activation did not pass real empty-editor execution proof. Activation logs stay private; only fixed diagnostic codes are published.' }
     } finally {
         if (Test-Path -LiteralPath $license) { Remove-Item -LiteralPath $license -Force }
         [Environment]::SetEnvironmentVariable('UNITY_LICENSE', $null, 'Process')
+        [Environment]::SetEnvironmentVariable('CLOUD_UNITY_IMPORT_EXIT_CODE', $null, 'Process')
     }
 }
 if ($CheckOnly) { Write-Host 'Cloud build prerequisites verified; no packaging or license changes performed.'; return }
