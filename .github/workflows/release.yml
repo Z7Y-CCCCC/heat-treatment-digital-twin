@@ -9,6 +9,7 @@ on:
         default: ''
         type: string
   push:
+    branches: [main]
     tags: ['v*']
 
 permissions:
@@ -24,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      release: ${{ steps.release.outputs.release }}
       tag: ${{ steps.version.outputs.tag }}
       commit: ${{ steps.reuse.outputs.commit || github.sha }}
       run: ${{ steps.reuse.outputs.run || github.run_id }}
@@ -35,8 +37,6 @@ jobs:
           fetch-depth: 0
       - name: Only release main or a version tag already merged into main
         id: version
-        env:
-          RUNNER_ENABLED: ${{ vars.WINDOWS_RELEASE_RUNNER_ENABLED }}
         shell: bash
         run: |
           set -euo pipefail
@@ -47,10 +47,6 @@ jobs:
           git merge-base --is-ancestor HEAD origin/main
           node tools/ci/check-release.cjs
           echo "tag=v$(node -p 'require("./desktop/package.json").version')" >> "$GITHUB_OUTPUT"
-          if [[ "$RUNNER_ENABLED" != true ]]; then
-            echo 'Windows runner is not enabled. Run tools/ci/setup-windows-runner.ps1; then set WINDOWS_RELEASE_RUNNER_ENABLED=true.' >&2
-            exit 1
-          fi
 
       - name: Verify previously built artifact provenance for publish-only retry
         id: reuse
@@ -66,17 +62,35 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?filter=latest&per_page=100" > source-jobs.json
           node tools/ci/reusable-release.cjs source-run.json source-jobs.json "$SOURCE_RUN"
 
+      - name: Skip an already published version or release a new main version
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          BUILD_COMMIT: ${{ steps.reuse.outputs.commit || github.sha }}
+        run: node tools/ci/release-trigger.cjs
+
+      - name: Require the dedicated Windows runner only for a fresh build
+        if: steps.release.outputs.release == 'true' && inputs.verified_run_id == ''
+        env:
+          RUNNER_ENABLED: ${{ vars.WINDOWS_RELEASE_RUNNER_ENABLED }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_ENABLED" != true ]]; then
+            echo 'Windows runner is not enabled. Run tools/ci/setup-windows-runner.ps1; then set WINDOWS_RELEASE_RUNNER_ENABLED=true.' >&2
+            exit 1
+          fi
+
   quality:
     needs: preflight
+    if: needs.preflight.outputs.release == 'true'
     uses: ./.github/workflows/quality.yml
 
   package:
     needs: [preflight, quality]
-    if: inputs.verified_run_id == ''
+    if: needs.preflight.outputs.release == 'true' && inputs.verified_run_id == ''
     runs-on: [self-hosted, Windows, X64, digital-twin-release]
-    # Do not archive this self-hosted user's multi-gigabyte global npm cache.
-    env:
-      NPM_CONFIG_CACHE: ${{ runner.temp }}/heat-treatment-release-npm-cache-v1
     timeout-minutes: 60
     steps:
       # Never let checkout's clean step delete Mono/runtime files underneath a
@@ -111,6 +125,12 @@ jobs:
       - name: Verify Windows cache compression before restoring any cache
         shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: node tools/ci/cache-compression.cjs
+      # runner.temp is unavailable in job-level env; resolve it on the runner.
+      - name: Scope npm downloads to the release cache
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: |
+          $cache = Join-Path $env:RUNNER_TEMP 'heat-treatment-release-npm-cache-v1'
+          "NPM_CONFIG_CACHE=$cache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: actions/setup-node@v4
         with:
           node-version: 22.13.1
@@ -178,7 +198,7 @@ jobs:
 
   publish-release:
     needs: [preflight, quality, package]
-    if: always() && needs.preflight.result == 'success' && needs.quality.result == 'success' && (needs.package.result == 'success' || (needs.package.result == 'skipped' && inputs.verified_run_id != ''))
+    if: always() && needs.preflight.outputs.release == 'true' && needs.preflight.result == 'success' && needs.quality.result == 'success' && (needs.package.result == 'success' || (needs.package.result == 'skipped' && inputs.verified_run_id != ''))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -223,7 +243,7 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
           else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG · Windows x64" --notes "Windows x64 完整安装包：安装向导可选择“仅展示”或“展示＋本机采集”。独立采集插件已离线内置并与主程序同一提交；已装服务会同步更新，保留现场数据。Collector-Plugin.zip 同时提供给单独安装采集服务的电脑。基于提交 $BUILD_COMMIT 自动构建，不含现场账号或 PLC 凭据。sha256.txt 用于完整性校验。"
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG · Windows x64" --notes "Windows x64 完整安装包：已修复“仅展示”不可选、空白现场复选框被裁掉及安装日志中文乱码。仅展示不更改已有采集服务；选择本机采集时使用内置的同版本、同提交插件升级。已有现场默认保留；需要新建空白现场须显式勾选，旧工程不会删除。出厂只预置 7 个视角的静态组件布局，不含模型、动作、PLC 设置、账户或业务记录。Collector-Plugin.zip 可供其他电脑独立安装采集服务。基于提交 $BUILD_COMMIT 自动构建，sha256.txt 用于完整性校验。"
           fi
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/verified-release/"* --clobber
           gh release view "$RELEASE_TAG" --json assets > uploaded-assets.json

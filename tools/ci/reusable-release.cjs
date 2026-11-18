@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 function reusableRelease(run, jobs, id, git = args => execFileSync('git', args, { encoding: 'utf8' })) {
   if (!/^\d+$/.test(String(id)) || String(run.id) !== String(id)) throw new Error('Invalid source run');
-  if (run.path !== '.github/workflows/release.yml' || run.head_branch !== 'main' || run.event !== 'workflow_dispatch'
+  if (run.path !== '.github/workflows/release.yml' || run.head_branch !== 'main' || !['workflow_dispatch', 'push'].includes(run.event)
     || run.status !== 'completed' || !/^[a-f0-9]{40}$/.test(run.head_sha) || !Number.isInteger(run.run_number)) throw new Error('Only completed main release builds may be reused');
   for (const name of ['preflight', 'package', 'quality / Frontend production build', 'quality / Backend contract and integration tests', 'quality / Windows desktop and native runtime regressions', 'quality / Isolated MQTT simulator regressions']) {
     if (!jobs.jobs?.some(job => job.name === name && job.conclusion === 'success' && job.status === 'completed')) throw new Error(`Source build did not pass: ${name}`);

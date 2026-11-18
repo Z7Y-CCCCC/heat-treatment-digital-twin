@@ -59,7 +59,7 @@ jobs:
         run: node scripts/mongo-data-source-integration-test.cjs
         timeout-minutes: 3
         env:
-          MONGODB_TEST_URI: mongodb://127.0.0.1:${{ job.services.mongodb.ports[27017] }}/admin
+          MONGODB_TEST_URI: mongodb://127.0.0.1:${{ job.services.mongodb.ports['27017'] }}/admin
           MONGODB_TEST_DISPOSABLE: 'true'
           MONGODB_TEST_ADMIN_USER: fixture_admin
           MONGODB_TEST_ADMIN_PASSWORD: ci-disposable-only
@@ -151,7 +151,7 @@ jobs:
       - run: npm --prefix desktop run test:processes
       - run: npm --prefix desktop run test:deployment
       - run: npm --prefix desktop run test:resources
-      - run: node --test tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
+      - run: node --test tools/ci/collect-release.test.cjs tools/ci/release-trigger.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
       - run: node tools/ci/check-release.cjs
       - run: dotnet run --project tools/native-runtime-tests/NativeRuntimeTests.csproj --configuration Release --artifacts-path output/native-runtime-tests
       - run: dotnet run --project tools/frame-metrics-tests/FrameMetricsTests.csproj --configuration Release --artifacts-path output/frame-metrics-tests
