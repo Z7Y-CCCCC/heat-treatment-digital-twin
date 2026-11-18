@@ -60,20 +60,19 @@ function extract(root, input, options = {}) {
             + ' -ExpectedSize ' + input.size + ' -ExpectedSha256 ' + quote(input.sha256),
     ].join('\n'), options);
 }
-test('cloud setup uses the tested native extractor and keeps the original pinned archive checks', () => {
+test('cloud setup uses the tested built-in ZIP extractor and keeps the original pinned archive checks', () => {
     const setup = fs.readFileSync(path.join(__dirname, 'setup-cloud-runner.ps1'), 'utf8');
     const code = fs.readFileSync(helper, 'utf8');
     assert.match(setup, /\. \(Join-Path \$workspace 'tools\/ci\/cloud-extract\.ps1'\)/);
     assert.match(setup, /Expand-VerifiedCloudArchive -Archive \$archive -Destination \$mysqlDirectory -ExpectedSize \$config\.mysql\.size -ExpectedSha256 \$config\.mysql\.sha256/);
     assert.doesNotMatch(setup, /& tar\.exe/);
-    assert.match(code, /Join-Path \(\[Environment\]::SystemDirectory\) 'tar\.exe'/);
+    assert.match(code, /\[IO\.Compression\.ZipFile\]::ExtractToDirectory\(\$archivePath, \$destinationPath\)/);
     assert.match(code, /Get-FileHash -LiteralPath \$archivePath -Algorithm SHA256/);
-    assert.match(code, /\$process\.WaitForExit\(\)/);
-    assert.match(code, /\$process\.ExitCode -ne 0/);
-    assert.match(code, /Start-Process -FilePath \$tar[^\n]+-WindowStyle Hidden[^\n]+-Wait -PassThru/);
+    assert.match(code, /catch\s*\{\s*throw 'Verified cloud archive extraction failed'/);
+    assert.doesNotMatch(code, /Start-Process|& \$tar|& tar\.exe/);
     assert.doesNotMatch(code, /Expand-Archive|Remove-Item|Move-Item|Stop-Process|taskkill/);
 });
-winTest('actual native tar extracts a Windows absolute ZIP path even when Git GNU tar shadows PATH', t => {
+winTest('actual built-in ZIP API extracts Windows drive-letter, Unicode and space paths when Git GNU tar shadows PATH', t => {
     const root = temporary(t), input = fixture(root), gitTar = 'C:/Program Files/Git/usr/bin/tar.exe';
     assert.ok(fs.existsSync(gitTar), 'The Windows regression requires the Git tar that caused the hosted-runner failure');
     const legacy = spawnSync(gitTar, ['-tf', input.archive], { windowsHide: true, encoding: 'utf8', timeout: 15000 });
@@ -121,7 +120,7 @@ winTest('pre-existing destination files remain byte-identical and are never over
     assert.deepEqual(fs.readFileSync(sentinel), original);
     assert.deepEqual(fs.readdirSync(input.destination), ['existing-setting.txt']);
 });
-winTest('a corrupt ZIP with matching test-fixture bytes still fails the real native extraction', t => {
+winTest('a corrupt ZIP with matching test-fixture bytes still fails the real ZIP extraction', t => {
     const root = temporary(t), archive = path.join(root, 'invalid.zip'), bytes = Buffer.from('not a ZIP archive');
     fs.writeFileSync(archive, bytes);
     const result = extract(root, { archive, destination: path.join(root, 'invalid-destination'), size: bytes.length,

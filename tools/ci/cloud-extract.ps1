@@ -36,15 +36,13 @@ function Expand-VerifiedCloudArchive {
             @(Get-ChildItem -LiteralPath $destinationPath -Force).Count -ne 0)) {
         throw 'Cloud archive destination must be new or empty; existing files are never overwritten'
     }
-    # PATH may resolve tar.exe to Git/MSYS GNU tar, which treats D:\... as a
-    # remote host. Always use the Windows native ZIP-capable bsdtar explicitly.
-    $tar = Join-Path ([Environment]::SystemDirectory) 'tar.exe'
-    if (-not (Test-Path -LiteralPath $tar -PathType Leaf)) { throw 'Windows native archive tool is missing' }
-    $forbidden = [char[]]@([char]0, [char]10, [char]13, [char]34)
-    if ($archivePath.IndexOfAny($forbidden) -ge 0 -or $destinationPath.IndexOfAny($forbidden) -ge 0) { throw 'Unsafe native archive argument' }
-    New-Item -ItemType Directory -Path $destinationPath -Force | Out-Null
-    $arguments = @('-xf', ('"' + $archivePath + '"'), '-C', ('"' + $destinationPath + '"'))
-    $process = Start-Process -FilePath $tar -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
-    $process.WaitForExit()
-    if ($process.ExitCode -ne 0) { throw 'Verified cloud archive extraction failed' }
+    # Use the built-in ZIP API: GNU tar misreads Windows drive letters, and
+    # external tar versions/command-line encodings differ across Windows images.
+    # The API accepts Unicode paths directly and rejects archive path traversal.
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $destinationPath)
+    } catch {
+        throw 'Verified cloud archive extraction failed'
+    }
 }
