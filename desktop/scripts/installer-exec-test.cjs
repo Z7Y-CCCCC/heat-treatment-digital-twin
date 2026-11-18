@@ -4,6 +4,9 @@ const fs=require('node:fs'),path=require('node:path');
 const {spawnSync,execFileSync}=require('node:child_process');
 const {fixture,root}=require('./installer-test-fixtures.cjs');
 const {sourceProof,buildInstallerNsExec,validateDll}=require('./build-installer-nsexec.cjs');
+// Hosted Windows may cold-start 32-bit PowerShell for more than five seconds.
+// Stream correctness is not a startup SLA; test inactivity enforcement separately.
+const STREAM_PIPE_TIMEOUT_MS=20000, FIXTURE_PROCESS_TIMEOUT_MS=45000;
 
 test('installer execution plugin is source-pinned and retains the original license',()=>{
   const hashes=sourceProof();assert.equal(Object.keys(hashes).length,6);
@@ -38,7 +41,7 @@ test('native installer plugin builds without a warm cache and reuses only source
   assert.equal(validateDll(second.file),second.sha256);
 });
 
-async function runStreamFixture(t,{malformed=false,exitCode=37}={}){
+async function runStreamFixture(t,{malformed=false,exitCode=37,startupDelayMs=0,pipeTimeoutMs=STREAM_PIPE_TIMEOUT_MS}={}){
   const f=fixture(t,'installer-unicode-pipe-');
   const expected='\uFEFF[fixture] Chinese stream\r\n警告：中文分片不能乱码。\r\nWarning: 保留警告内容 🧪\r\n错误：设备 PLC 配置未修改。\r\n结束。\r\n';
   const valid=Buffer.from(expected,'utf16le'),bytes=malformed?valid.subarray(0,valid.length-1):valid;
@@ -46,6 +49,7 @@ async function runStreamFixture(t,{malformed=false,exitCode=37}={}){
   // 150ms pauses exceed nsExec's polling period and force separate pipe reads.
   const child=[
     '$ErrorActionPreference="Stop";$ProgressPreference="SilentlyContinue"',
+    '[Threading.Thread]::Sleep('+startupDelayMs+')',
     "$bytes=[Convert]::FromBase64String('"+bytes.toString('base64')+"')",
     '$stream=[Console]::OpenStandardOutput();$offset=0;$parts=@(1,1,1,1,3,7,2,31,5,23)',
     'for($i=0;$offset -lt $bytes.Length;$i++){',
@@ -60,33 +64,51 @@ async function runStreamFixture(t,{malformed=false,exitCode=37}={}){
     'RequestExecutionLevel user','!include LogicLib.nsh',
     '!include "'+path.join(root,'desktop/installer-exec.nsh')+'"',
     'Section',
-    'InstallerExec::ExecToStack /TIMEOUT=5000 \'"$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive -EncodedCommand '+command+'\'',
+    'InstallerExec::ExecToStack /TIMEOUT='+pipeTimeoutMs+' \'"$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive -EncodedCommand '+command+'\'',
     'Pop $0','Pop $1',
     'FileOpen $2 "'+output+'" w','FileWriteUTF16LE $2 "$1"','FileClose $2',
     'FileOpen $2 "'+status+'" w','FileWrite $2 "$0"','FileClose $2',
-    '\u0024{If} $0 == "error"','SetErrorLevel 2','\u0024{Else}','SetErrorLevel $0','\u0024{EndIf}',
+    '\u0024{If} $0 == "error"','\u0024{OrIf} $0 == "timeout"','SetErrorLevel 2','\u0024{Else}','SetErrorLevel $0','\u0024{EndIf}',
     'SectionEnd'
   ].join('\n');
   const file=path.join(f.directory,'fixture.nsi');fs.writeFileSync(file,source,'utf8');
   const tool=await require('./nsis-toolchain.cjs').nsisToolchain();
   execFileSync(tool.path,['/WX','/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env},stdio:'pipe'});
-  const result=spawnSync(exe,['/S'],{windowsHide:true,timeout:15000});
+  const result=spawnSync(exe,['/S'],{windowsHide:true,timeout:FIXTURE_PROCESS_TIMEOUT_MS});
   return {exitCode:result.status,status:fs.readFileSync(status,'utf8'),text:fs.readFileSync(output).toString('utf16le'),expected,error:result.error};
 }
 
 test('actual NSIS execution recovers exact Chinese/emoji/warning/error text from odd UTF-16 pipe fragments',{
-  skip:process.platform!=='win32',timeout:30000
+  skip:process.platform!=='win32',timeout:60000
 },async t=>{
   const result=await runStreamFixture(t);
-  assert.equal(result.exitCode,37,result.error?.message);
+  assert.equal(result.exitCode,37,JSON.stringify({status:result.status,text:result.text,error:result.error?.message}));
   assert.equal(result.status,'37','the real child error code is retained');
   assert.equal(result.text,result.expected,'no missing, duplicated, byte-swapped or stray characters');
 });
 
 test('actual NSIS execution fails an incomplete final UTF-16 character instead of concealing corrupted output',{
-  skip:process.platform!=='win32',timeout:30000
+  skip:process.platform!=='win32',timeout:60000
 },async t=>{
   const result=await runStreamFixture(t,{malformed:true,exitCode:0});
-  assert.equal(result.exitCode,2,result.error?.message);
+  assert.equal(result.exitCode,2,JSON.stringify({status:result.status,text:result.text,error:result.error?.message}));
   assert.equal(result.status,'error');
+});
+
+test('slow PowerShell startup does not weaken exact UTF-16 output and child exit-code proof',{
+  skip:process.platform!=='win32',timeout:60000
+},async t=>{
+  const result=await runStreamFixture(t,{startupDelayMs:6000});
+  assert.equal(result.exitCode,37,JSON.stringify({status:result.status,text:result.text,error:result.error?.message}));
+  assert.equal(result.status,'37');
+  assert.equal(result.text,result.expected);
+});
+
+test('the actual native execution timeout remains enforced and cannot look like fixture success',{
+  skip:process.platform!=='win32',timeout:60000
+},async t=>{
+  const result=await runStreamFixture(t,{startupDelayMs:1500,pipeTimeoutMs:250});
+  assert.equal(result.status,'timeout',JSON.stringify({exitCode:result.exitCode,text:result.text,error:result.error?.message}));
+  assert.equal(result.exitCode,2);
+  assert.equal(result.text,'');
 });
