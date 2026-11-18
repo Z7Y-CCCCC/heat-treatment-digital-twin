@@ -48,7 +48,9 @@ Runner 的进程路径检测只针对本安装目录。停止 runner 前应确�
 
 首次启用仓库变量 `WINDOWS_RELEASE_RUNNER_ENABLED=true`，并保持带 `digital-twin-release` 标签的专用 Windows runner 在线。当前原生 Unity／安装包构建仍由这台已 provision 的自托管机器执行，GitHub 负责调度、校验和发布；机器离线时任务排队，不会自动改用未经配置的电脑。保留 Actions → Windows installer → Run workflow 选择 `main` 的失败重试入口，以及已合入 main、与产品版本一致的受保护 `vX.Y.Z` tag 触发入口。
 
-只有全部成功才会创建草稿、附加安装包及 SHA256、复核提交与文件哈希，然后**自动发布 Release**。手动 main 发布也使用当前版本 tag。已有 tag 指向其它提交或已发布的同版本不会被覆盖；新版本必须先修改版本号。下载入口是仓库 Releases；私有仓库需要访问权限。失败运行只保留 Actions 日志，不会把旧安装包当作新版本发布。
+程序目录预打包和最终 NSIS 打包都显式使用 `--publish never`，禁止 electron-builder 根据 CI／tag 隐式提前发布，也消除其隐式发布警告。发布权限只在校验后的 `publish-release` job 中启用。只有全部成功才会创建草稿、附加安装包及 SHA256、复核提交与文件哈希，然后**自动发布 Release**。手动 main 发布也使用当前版本 tag。已有 tag 指向其它提交或已发布的同版本不会被覆盖；新版本必须先修改版本号。下载入口是仓库 Releases；私有仓库需要访问权限。失败运行只保留 Actions 日志，不会把旧安装包当作新版本发布。
+
+Windows 中文管道回归将宿主 PowerShell 冷启动预算与原生执行超时断言分开：完整文本／UTF-16 分片／子进程退出码／截断 EOF 的严格断言保持不变，另用真实低时限进程验证 `timeout` 必须失败。故意延迟 6 秒的隔离用例覆盖新托管机冷启动；失败日志保留原生状态和实际文本，不把 `timeout` 转成 fixture 成功。不修改生产超时、解码插件或出厂数据门禁。
 
 诊断日志归档上传属于辅助步骤：网络失败会明确警告，日志仍留在 runner `_diag`；不因日志传输中断否定已通过的安装包。构建、回归、启动检查、安装包上传和下载哈希验证都不是可选步骤，任一失败仍禁止发布。
 

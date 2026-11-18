@@ -2,7 +2,7 @@
 const { test } = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { execFileSync } = require('node:child_process');
-const { compressionOptions } = require('./package-installer.cjs');
+const { compressionOptions, installerBuilderArguments } = require('./package-installer.cjs');
 const archiver = require('../desktop/node_modules/7zip-bin').path7za;
 const { compute7zCompressArgs } = require('../desktop/node_modules/app-builder-lib/out/targets/archive.js');
 const compressionVariable = 'ELECTRON_BUILDER_COMPRESSION_LEVEL';
@@ -160,4 +160,19 @@ test('fast packaging really stores ZIP entries, preserves bytes and leaves calle
     if (before === undefined) delete process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL;
     else process.env.ELECTRON_BUILDER_COMPRESSION_LEVEL = before;
   }
+});
+
+test('both installer stages explicitly disable implicit publishing before verified workflow publication', () => {
+  const source=path.resolve(__dirname,'..'),unpacked=path.join(source,'unpacked-fixture'),output=path.join(source,'output-fixture');
+  for(const compression of ['normal','store']) {
+    const args=installerBuilderArguments(source,unpacked,output,compression);
+    assert.equal(args[args.indexOf('--publish')+1],'never');
+    assert.equal(args.filter(arg=>arg==='--publish').length,1);
+    assert.equal(args[args.indexOf('--prepackaged')+1],unpacked);
+    assert.equal(args[0],path.join(source,'desktop/node_modules/electron-builder/out/cli/cli.js'));
+    assert.ok(args.includes('--config.compression='+compression));
+  }
+  const script=fs.readFileSync(path.join(source,'生成安装包.ps1'),'utf8');
+  assert.match(script, /'--publish', 'never', '--dir', '--win', '--x64'/);
+  assert.match(fs.readFileSync(path.join(source,'tools/package-installer.cjs'),'utf8'), /execFileSync\(process\.execPath, installerBuilderArguments\(root, unpacked, output, options\.compression\)/);
 });

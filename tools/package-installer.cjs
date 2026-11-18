@@ -21,6 +21,15 @@ function compressionOptions(level, inherited = process.env) {
   return { compression: level === '0' ? 'store' : 'normal', env };
 }
 
+function installerBuilderArguments(root, unpacked, output, compression) {
+  // Only publish-release may expose verified assets. CI/tag detection must not
+  // let electron-builder publish an unverified installer on its own.
+  return [path.join(root, 'desktop/node_modules/electron-builder/out/cli/cli.js'),
+    '--projectDir', path.join(root, 'desktop'), '--prepackaged', unpacked, '--win', 'nsis', '--x64',
+    '--publish', 'never',
+    `--config.directories.output=${output}`, `--config.compression=${compression}`];
+}
+
 function buildInstaller(root, unpacked, output, level, collectorArchive) {
   require('../desktop/scripts/build-installer-window-chrome.cjs').buildInstallerChrome();
   const options = compressionOptions(level);
@@ -30,9 +39,7 @@ function buildInstaller(root, unpacked, output, level, collectorArchive) {
   const payload = require('./collector-installer-payload.cjs').preparePayload(collectorArchive, output, {version:require(path.join(root,'desktop/package.json')).version,commit});
   options.env.DIGITAL_TWIN_COLLECTOR_PAYLOAD_INCLUDE = payload.include;
   options.env.DIGITAL_TWIN_INSTALLER_IO_INCLUDE = io.include;
-  execFileSync(process.execPath, [path.join(root, 'desktop/node_modules/electron-builder/out/cli/cli.js'),
-    '--projectDir', path.join(root, 'desktop'), '--prepackaged', unpacked, '--win', 'nsis', '--x64',
-    `--config.directories.output=${output}`, `--config.compression=${options.compression}`],
+  execFileSync(process.execPath, installerBuilderArguments(root, unpacked, output, options.compression),
     { windowsHide: true, stdio: 'inherit', env: options.env });
   const installer = path.join(output, `热处理数字孪生大屏-安装包-${require(path.join(root,'desktop/package.json')).version}-x64.exe`);
   const proof = require('./installer-startup-smoke.cjs').verifyInstallerStartup(installer, path.join(output, 'installer-startup-verification.json'));
@@ -44,4 +51,4 @@ if (require.main === module) {
   if (!unpacked || !output || level === undefined || !collectorArchive) throw Error('Expected unpacked directory, output directory, compression level and same-build collector ZIP');
   buildInstaller(path.resolve(__dirname, '..'), path.resolve(unpacked), path.resolve(output), level, path.resolve(collectorArchive));
 }
-module.exports = { compressionOptions, buildInstaller };
+module.exports = { compressionOptions, installerBuilderArguments, buildInstaller };
