@@ -27,5 +27,11 @@ function requireUnityLicense(env=process.env) {
  if(typeof env.UNITY_LICENSE!=='string'||env.UNITY_LICENSE.length<20||env.UNITY_LICENSE.length>262144||!/<License(?:\s|>)/.test(env.UNITY_LICENSE))throw Error('One-time setup required: add your existing authorized Unity .ulf as repository Actions secret UNITY_LICENSE. GitHub standard hosted Windows builds are free for this public repository. No local license or password is uploaded automatically.');
  return true;
 }
-if(require.main===module){try{const result=readCloudRuntime();if(process.argv.includes('--require-license'))requireUnityLicense();console.log(JSON.stringify({unityVersion:result.config.unity.version,mysqlVersion:result.config.mysql.version,publicKeyFingerprint:result.publicKeyFingerprint,licenseRequired:process.argv.includes('--require-license')}));}catch(error){console.error(error.message);process.exitCode=1;}}
-module.exports={validateManifest,readCloudRuntime,requireUnityLicense};
+function requireCloudAuthorization(env=process.env) {
+ if(require('./cloud-unity-account.cjs').hasAccount(env))return 'account';
+ requireUnityLicense(env);
+ if(/<Entitlement\b[^<>]*\bTag\s*=\s*['"]UnityPersonal['"][^<>]*>/i.test(env.UNITY_LICENSE))throw Error('One-time secure setup required: Unity Personal did not grant an editor license on the hosted runner. Add UNITY_EMAIL and UNITY_PASSWORD as repository Actions Secrets; never send passwords in chat. No paid service is enabled.');
+ return 'file';
+}
+if(require.main===module){try{const result=readCloudRuntime();const required=process.argv.includes('--require-authorization')||process.argv.includes('--require-license');const authorization=required?requireCloudAuthorization():undefined;console.log(JSON.stringify({unityVersion:result.config.unity.version,mysqlVersion:result.config.mysql.version,publicKeyFingerprint:result.publicKeyFingerprint,licenseRequired:required,...(authorization?{authorizationMethod:authorization}:{})}));}catch(error){console.error(error.message);process.exitCode=1;}}
+module.exports={validateManifest,readCloudRuntime,requireUnityLicense,requireCloudAuthorization};
