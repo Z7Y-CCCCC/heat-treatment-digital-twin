@@ -81,9 +81,15 @@ test('publish retry reuses only fully verified main builds, never an overall fai
     job.conclusion = 'failure'; assert.throws(() => reusableRelease(f.run, f.jobs, 123, f.git), /did not pass/); job.conclusion = 'success';
   }
   assert.throws(() => reusableRelease(f.run, f.jobs, '123;evil', f.git), /Invalid/);
-  for (const patch of [{ head_branch: 'feature' }, { event: 'pull_request' }, { path: '.github/workflows/other.yml' }, { status: 'in_progress' }]) {
+  for (const patch of [{ head_branch: 'feature' }, { head_branch: 'v2.3.6', event: 'push' }, { event: 'pull_request' }, { event: 'pull_request_target' }, { path: '.github/workflows/other.yml' }, { status: 'in_progress' }]) {
     assert.throws(() => reusableRelease({ ...f.run, ...patch }, f.jobs, 123, f.git), /Only completed main/);
   }
+});
+test('publish retry also accepts fully verified automatic main push builds', () => {
+  const f = reusableFixture();
+  assert.deepEqual(reusableRelease({ ...f.run, event: 'push' }, f.jobs, 123, f.git), { commit: f.run.head_sha, run: '123', artifact: 'windows-installer-5' });
+  const skipped = { jobs: f.jobs.jobs.map(job => job.name === 'package' ? { ...job, conclusion: 'skipped' } : job) };
+  assert.throws(() => reusableRelease({ ...f.run, event: 'push' }, skipped, 123, f.git), /did not pass: package/);
 });
 test('publish retry refuses product changes and non-ancestor builds, but permits publication-only repairs', () => {
   const f = reusableFixture();

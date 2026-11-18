@@ -280,7 +280,11 @@ test('Windows release dependency cache is isolated from the global npm cache and
   const project=path.resolve(__dirname,'../..');
   const workflow=fs.readFileSync(path.join(project,'.github/workflows/release.yml'),'utf8').replace(/\r\n/g,'\n');
   const job=workflow.split('\n  package:\n')[1].split('\n  verify:')[0];
-  assert.match(job,/NPM_CONFIG_CACHE: \$\{\{ runner\.temp \}\}\/heat-treatment-release-npm-cache-v1/);
+  const header=job.split('    steps:')[0];
+  assert.doesNotMatch(header,/\$\{\{\s*runner\./,'runner context is not legal in job-level env');
+  assert.match(job,/Scope npm downloads to the release cache/);
+  assert.match(job,/Join-Path \$env:RUNNER_TEMP 'heat-treatment-release-npm-cache-v1'/);
+  assert.match(job,/"NPM_CONFIG_CACHE=\$cache" \| Out-File -FilePath \$env:GITHUB_ENV -Encoding utf8 -Append/);
   assert.match(job,/path: \$\{\{ env\.NPM_CONFIG_CACHE \}\}/);
   assert.match(job,/key: release-npm-scoped-v1-/);
   assert.match(job,/restore-keys: \|\s+release-npm-scoped-v1-/);

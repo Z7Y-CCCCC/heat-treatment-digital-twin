@@ -36,13 +36,17 @@
 
 配置中断后，脚本不会覆盖非空且尚未成功配置的目录：先查看 `_diag` 日志，确认无正在运行的构建，选择新的专用空目录重试；如远端已出现 runner，先核查并按 GitHub Settings → Actions → Runners 的移除流程清理失效记录。不要为重试直接删除工作目录或覆盖远端同名 runner。
 
-在仓库 Settings → Actions → Runners 确认 `Idle` 和 `digital-twin-release` 标签后再触发发布。使用主分支手动发布或受保护版本 tag，禁止把自托管发布任务接到外部 PR 或 `pull_request_target` 的外部代码上。构建采用初始模板，避免把现场数据库或上传文件作为安装包输入。发布环境和受保护分支由仓库管理员设置。
+在仓库 Settings → Actions → Runners 确认 `Idle` 和 `digital-twin-release` 标签后再触发发布。仅运行已合入受保护 main 的新版本自动发布、main 手动重试或受保护版本 tag，禁止把自托管发布任务接到外部 PR 或 `pull_request_target` 的外部代码上。构建采用初始模板，避免把现场数据库或上传文件作为安装包输入。发布环境和受保护分支由仓库管理员设置。
 
 Runner 的进程路径检测只针对本安装目录。停止 runner 前应确保 GitHub 显示 Idle，避免打断正在执行的发布。安装目录 `_diag` 保存 runner 日志；不要上传 `.credentials`、`.credentials_rsaparams` 或整个 runner 目录。
 
 ## 发布与下载
 
-在 Actions → Windows installer → Run workflow 选择 `main`；或推送已合入 main 且与 `desktop/package.json` 一致的 `vX.Y.Z` tag。先启用仓库变量 `WINDOWS_RELEASE_RUNNER_ENABLED=true`。流程执行自动回归、初始模板打包、独立 MySQL 首次启动／重启和资源完整性检查、原生界面验证，再上传产物。
+默认无需手动上传或点击 Run workflow：将准备发布的新版本合入 `main` 后，`push` 自动触发 Windows installer。版本号须同步更新 `desktop/package.json`、`desktop/package-lock.json` 和 `release-manifest.json`；该版本尚未公开时，流程执行完整质量回归、初始模板打包、独立 MySQL 首次启动／重启、资源完整性和空业务数据检查、原生界面验证，再上传并发布安装包。所有检查仍为强制门禁，PR 只运行托管质量检查，不使用自托管发布机。
+
+同一版本已公开时，后续 main 提交只做发布状态预检并跳过发布构建，不占用 Windows runner、不重复打包、不移动 tag、不覆盖已发布资产；独立的 main 质量工作流照常运行。GitHub API 权限、限流或服务错误必须失败，只有真实 404 才表示版本不存在。尚未公开但已被其它提交占用的 tag／草稿必须先解决或升级版本，不能强行覆盖；同提交草稿可重试。
+
+首次启用仓库变量 `WINDOWS_RELEASE_RUNNER_ENABLED=true`，并保持带 `digital-twin-release` 标签的专用 Windows runner 在线。当前原生 Unity／安装包构建仍由这台已 provision 的自托管机器执行，GitHub 负责调度、校验和发布；机器离线时任务排队，不会自动改用未经配置的电脑。保留 Actions → Windows installer → Run workflow 选择 `main` 的失败重试入口，以及已合入 main、与产品版本一致的受保护 `vX.Y.Z` tag 触发入口。
 
 只有全部成功才会创建草稿、附加安装包及 SHA256、复核提交与文件哈希，然后**自动发布 Release**。手动 main 发布也使用当前版本 tag。已有 tag 指向其它提交或已发布的同版本不会被覆盖；新版本必须先修改版本号。下载入口是仓库 Releases；私有仓库需要访问权限。失败运行只保留 Actions 日志，不会把旧安装包当作新版本发布。
 
@@ -50,7 +54,7 @@ Runner 的进程路径检测只针对本安装目录。停止 runner 前应确�
 
 GitHub 下载资产使用 `HeatTreatmentDigitalTwin-Setup-X.Y.Z-x64.exe`，避免平台改写中文文件名导致清单与校验文件不一致。采集另用 `HeatTreatmentCollector-Plugin-X.Y.Z-x64.zip`。发布前只规范文件名与对应清单，不修改安装包二进制、构建提交或 SHA256；上传后再核对主包、插件、各自校验文件、清单和构建耗时文件齐全才公开。
 
-如果只有发布阶段失败，重新运行 workflow 时可填写 `verified_run_id`。仅接受同仓库 `main` 手动发布流程中已全部通过回归和 `package` 的运行；原构建提交必须是当前提交的祖先，且此后只能有发布脚本/文档变更，产品源码一旦变化就拒绝复用。流程重跑质量门禁，下载原运行的指定产物，复核来源提交、运行编号与 SHA256，再将版本 tag 指向**原构建提交**。不改写产物来源，也不把失败构建补标成成功。默认留空仍完整构建。
+如果只有发布阶段失败，重新运行 workflow 时可填写 `verified_run_id`。仅接受同仓库 `main` 自动 push 或手动发布流程中已全部通过回归和 `package` 的运行，tag／PR／其它分支构建及跳过 package 的预检不能复用；原构建提交必须是当前提交的祖先，且此后只能有发布脚本/文档变更，产品源码一旦变化就拒绝复用。流程重跑质量门禁，下载原运行的指定产物，复核来源提交、运行编号与 SHA256，再将版本 tag 指向**原构建提交**。不改写产物来源，也不把失败构建补标成成功。默认留空仍完整构建。
 
 GitHub 自带 `GITHUB_TOKEN` 为历史提交创建 tag 时，可能因 workflow 文件写权限返回 403；这不是安装包校验失败。此类补发先由维护者为已验证的原构建提交创建版本 tag，再重试发布任务。不要移动现有 tag、修改产物清单提交号或把个人 token 自动保存进 Secrets。维护者建 tag 会另外触发 tag 构建；如果已在补发同一份验证产物，应取消这次重复构建，避免多跑一套。正常按版本 tag 发布不需要此补发步骤。[Git references 权限说明](https://docs.github.com/en/rest/git/refs#create-a-reference)。
 
