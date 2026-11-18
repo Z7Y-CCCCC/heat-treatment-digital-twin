@@ -1,4 +1,8 @@
-!include "getProcessInfo.nsh"
+!include "${__FILEDIR__}\installer-exec.nsh"
+!ifndef DISPLAY_UI_PREVIEW
+  !include "getProcessInfo.nsh"
+  Var pid
+!endif
 !include "nsDialogs.nsh"
 !include "WinVer.nsh"
 !include "x64.nsh"
@@ -11,7 +15,6 @@
   !endif
 !endif
 !define DISPLAY_PREFLIGHT_SOURCE "${__FILEDIR__}\display-install-preflight.ps1"
-Var pid
 SetFont "Microsoft YaHei UI" 9
 !ifndef BUILD_UNINSTALLER
 Var runtimeNeedsReboot
@@ -62,7 +65,7 @@ Var runtimeNeedsReboot
   Call DisplayCheckCancel
   !insertmacro DisplayStage "准备 Microsoft 运行环境"
   DetailPrint "正在检查 WebView2 和 Visual C++ 运行环境…"
-  nsExec::ExecToLog /TIMEOUT=510000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\prerequisites\RuntimePrerequisites.ps1" -Action Install -ProvisionDisplayLinks -InstallerLog -RuntimeRoot "$INSTDIR\resources\prerequisites" -ReportPath "$TEMP\HeatTreatmentDigitalTwin-runtime-setup.json"`
+  InstallerExec::ExecToLog /TIMEOUT=510000 `"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\prerequisites\RuntimePrerequisites.ps1" -Action Install -ProvisionDisplayLinks -InstallerLog -RuntimeRoot "$INSTDIR\resources\prerequisites" -ReportPath "$TEMP\HeatTreatmentDigitalTwin-runtime-setup.json"`
   Pop $0
   ${If} $0 == 3010
     StrCpy $runtimeNeedsReboot "1"
@@ -75,7 +78,7 @@ Var runtimeNeedsReboot
   Call DisplayCheckCancel
   !ifdef FAST_PROGRAM_MANIFEST
     !insertmacro DisplayStage "完成升级提交与旧程序清理"
-    nsExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action Complete -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "${UNINSTALL_FILENAME}" -InstallerLog'
+    InstallerExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action Complete -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "${UNINSTALL_FILENAME}" -InstallerLog'
     Pop $0
     ${If} $0 != 0
       !insertmacro DisplayAbort "新版程序已核验，但旧程序清理未完成（$0）；请保留日志后重试。"
@@ -140,7 +143,7 @@ Var runtimeNeedsReboot
   !endif
   InitPluginsDir
   File /oname=$PLUGINSDIR\display-install-preflight.ps1 "${DISPLAY_PREFLIGHT_SOURCE}"
-  nsExec::ExecToStack /TIMEOUT=20000 `"$PowerShellPath" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\display-install-preflight.ps1" -InstallRoot "$INSTDIR"`
+  InstallerExec::ExecToStack /TIMEOUT=20000 `"$PowerShellPath" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\display-install-preflight.ps1" -InstallRoot "$INSTDIR"`
   Pop $0
   Pop $1
   ${If} $0 != 0
@@ -176,7 +179,7 @@ Var runtimeNeedsReboot
     StrCpy $R3 "Retire"
   ${EndIf}
   DetailPrint "处理程序文件；独立采集服务及所有现场数据保留。"
-  nsExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action $R3 -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "${UNINSTALL_FILENAME}" -InstallerLog'
+  InstallerExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action $R3 -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "${UNINSTALL_FILENAME}" -InstallerLog'
   Pop $0
   ${If} $0 != 0
     SetErrorLevel 2

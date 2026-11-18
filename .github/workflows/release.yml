@@ -74,6 +74,9 @@ jobs:
     needs: [preflight, quality]
     if: inputs.verified_run_id == ''
     runs-on: [self-hosted, Windows, X64, digital-twin-release]
+    # Do not archive this self-hosted user's multi-gigabyte global npm cache.
+    env:
+      NPM_CONFIG_CACHE: ${{ runner.temp }}/heat-treatment-release-npm-cache-v1
     timeout-minutes: 60
     steps:
       # Never let checkout's clean step delete Mono/runtime files underneath a
@@ -111,11 +114,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.13.1
-          cache: npm
-          cache-dependency-path: |
-            backend/package-lock.json
-            frontend/package-lock.json
-            desktop/package-lock.json
+      - name: Restore only release dependency tarballs
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.NPM_CONFIG_CACHE }}
+          key: release-npm-scoped-v1-${{ runner.os }}-${{ runner.name }}-${{ hashFiles('backend/package-lock.json', 'frontend/package-lock.json', 'desktop/package-lock.json') }}
+          restore-keys: |
+            release-npm-scoped-v1-${{ runner.os }}-${{ runner.name }}-
       # This dedicated machine is provisioned with .NET 8. Installing again
       # would try to write Program Files as a non-admin desktop build user.
       - name: Load and validate provisioned release environment

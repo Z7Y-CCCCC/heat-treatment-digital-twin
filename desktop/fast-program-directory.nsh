@@ -1,3 +1,4 @@
+!include "${__FILEDIR__}\installer-exec.nsh"
 ; Offline installer I/O overrides; loaded AFTER the stock archive macros.
 ; The same verified native decoder is retained. No raw/partial copy fallback.
 Var /GLOBAL displayPreparedRoot
@@ -19,7 +20,7 @@ Var /GLOBAL displayPreparedRoot
   File /oname=$PLUGINSDIR\program-directory.ps1 "${FAST_PROGRAM_DIRECTORY_SOURCE}"
   File /oname=$PLUGINSDIR\installer-process.ps1 "${FAST_INSTALLER_PROCESS_SOURCE}"
   File /oname=$PLUGINSDIR\program-files.json "${FAST_PROGRAM_MANIFEST}"
-  nsExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action Publish -InstallRoot "$INSTDIR" -PreparedRoot "$displayPreparedRoot" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "${UNINSTALL_FILENAME}" -InstallerLog'
+  InstallerExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action Publish -InstallRoot "$INSTDIR" -PreparedRoot "$displayPreparedRoot" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "${UNINSTALL_FILENAME}" -InstallerLog'
   Pop $0
   ${If} $0 != 0
     !insertmacro DisplayAbort "程序核验或目录切换失败（$0）；没有复制不完整程序，旧工程未清空。"

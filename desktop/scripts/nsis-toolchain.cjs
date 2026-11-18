@@ -5,6 +5,7 @@ const { getMakeNsisPath } = require('../node_modules/app-builder-lib/out/toolset
 // between builder versions; guessing LOCALAPPDATA paths breaks clean machines.
 async function nsisToolchain() {
   const tool = await getMakeNsisPath();
+  if (process.platform === 'win32') require('./build-installer-nsexec.cjs').buildInstallerNsExec();
   const dir = path.dirname(tool.path);
   const root = path.basename(dir).toLowerCase() === 'bin' ? path.dirname(dir) : dir;
   return { ...tool, seed: path.join(root, 'Contrib/UIs/modern.exe') };

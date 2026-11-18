@@ -1,3 +1,4 @@
+!include "${__FILEDIR__}\installer-exec.nsh"
 ; Three native pages. Shared by the real installer and the no-install preview.
 !ifndef BUILD_UNINSTALLER
 !include "FileFunc.nsh"
@@ -51,7 +52,7 @@ Var displayStageClock
     File /oname=$PLUGINSDIR\program-directory.ps1 "${FAST_PROGRAM_DIRECTORY_SOURCE}"
     File /oname=$PLUGINSDIR\installer-process.ps1 "${FAST_INSTALLER_PROCESS_SOURCE}"
     File /oname=$PLUGINSDIR\program-files.json "${FAST_PROGRAM_MANIFEST}"
-    nsExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action Rollback -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "Uninstall ${PRODUCT_FILENAME}.exe" -InstallerLog'
+    InstallerExec::ExecToLog /TIMEOUT=240000 '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\program-directory.ps1" -Action Rollback -InstallRoot "$INSTDIR" -ManifestFile "$PLUGINSDIR\program-files.json" -ManifestSha256 "${FAST_PROGRAM_MANIFEST_SHA256}" -UninstallerFilename "Uninstall ${PRODUCT_FILENAME}.exe" -InstallerLog'
     Pop $0
   !endif
   SetDetailsPrint listonly
@@ -75,6 +76,44 @@ FunctionEnd
   SendMessage $0 ${WM_SETFONT} $displayFont 1
 !macroend
 
+; Page-specific geometry uses native dialog units, not fixed pixels. The
+; collector page needs a real 112u pane; the settings/finish pane is only 50u.
+!macro DisplayMoveControl ID X Y W H
+  Push $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  Push $R4
+  Push $R5
+  System::Alloc 16
+  Pop $R4
+  System::Call '*$R4(i ${X}, i ${Y}, i ${W}, i ${H})'
+  System::Call 'user32::MapDialogRect(p $HWNDPARENT, p R4)'
+  System::Call '*$R4(i.R0, i.R1, i.R2, i.R3)'
+  System::Free $R4
+  GetDlgItem $R5 $HWNDPARENT ${ID}
+  System::Call 'user32::MoveWindow(p R5, i R0, i R1, i R2, i R3, i 1)'
+  Pop $R5
+  Pop $R4
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Pop $R0
+!macroend
+
+Function DisplayStandardLayout
+  !insertmacro DisplayMoveControl 1036 0 0 460 230
+  !insertmacro DisplayMoveControl 1018 24 289 412 50
+  !insertmacro DisplayMoveControl 1 155 249 150 28
+  Call DisplayPaintSidebar
+FunctionEnd
+
+Function DisplayCollectorLayout
+  !insertmacro DisplayMoveControl 1036 0 0 460 170
+  !insertmacro DisplayMoveControl 1018 24 182 412 112
+  !insertmacro DisplayMoveControl 1 155 307 150 28
+  Call DisplayPaintSidebar
+FunctionEnd
 Function DisplayUIInit
   SetAutoClose true
   SetCtlColors $HWNDPARENT "233E52" "FFFFFF"
@@ -161,8 +200,13 @@ Function DisplayPaintSidebar
   System::Call 'gdi32::DeleteObject(p R4)'
   System::Call 'user32::ReleaseDC(p R0, p R5)'
   SendMessage $R0 0x172 0 $R9
+  ${If} $displaySidebarBitmap != ""
+    System::Call 'gdi32::DeleteObject(p $displaySidebarBitmap)'
+  ${EndIf}
   StrCpy $displaySidebarBitmap $R9
-  CreateFont $displayBrandFont "Segoe UI" 28 700
+  ${If} $displayBrandFont == ""
+    CreateFont $displayBrandFont "Segoe UI" 28 700
+  ${EndIf}
   GetDlgItem $0 $HWNDPARENT 1039
   ShowWindow $0 ${SW_SHOW}
   SendMessage $0 ${WM_SETFONT} $displayBrandFont 1
@@ -270,6 +314,7 @@ Function DisplayShowClose
 FunctionEnd
 
 Function DisplaySettingsPage
+  Call DisplayStandardLayout
   !insertmacro MUI_HEADER_TEXT "热处理数字孪生大屏" "让产线运行，一目了然"
   Call DisplayRefreshFonts
   GetDlgItem $0 $HWNDPARENT 1
@@ -456,6 +501,7 @@ Function DisplayProductDirectory
 FunctionEnd
 
 Function DisplayInstallingShow
+  Call DisplayStandardLayout
   System::Call 'kernel32::GetTickCount() i.r0'
   StrCpy $displayStageClock $0
   !insertmacro MUI_HEADER_TEXT "正在安装" "热处理数字孪生大屏"
@@ -508,6 +554,7 @@ Function DisplayInstallingShow
 FunctionEnd
 
 Function DisplayFinishPage
+  Call DisplayStandardLayout
   IfAbort 0 display_finish_ok
     SetErrorLevel 2
     Quit

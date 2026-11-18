@@ -7,6 +7,9 @@ const { layout, dialogResource, resourceManifest } = require('./installer-layout
 if (process.platform !== 'win32') throw new Error('Generate native installer resources on Windows');
 const root = path.resolve(__dirname, '..');
 async function main() {
+// Even an externally supplied UI seed must prepare the source-verified logger.
+// A clean release checkout must not depend on preview/test caches.
+require('./build-installer-nsexec.cjs').buildInstallerNsExec();
 const seed = process.env.NSIS_UI_SEED || (await require('./nsis-toolchain.cjs').nsisToolchain()).seed;
 const target = path.join(root, 'assets/installer-ui.bin');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'display-installer-ui-'));

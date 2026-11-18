@@ -1,0 +1,28 @@
+{
+  "upstream": {
+    "repository": "https://github.com/NSIS-Dev/nsis",
+    "version": "3.12",
+    "tag": "v312",
+    "commit": "e3f60402bcdf7be822d159b531c6e38ddf32de12"
+  },
+  "originalSha256": {
+    "nsexec.c": "0b38d9ac4650370457876774e724b138b0e7271218fa13c4427685a1c24cbfc2",
+    "pluginapi.c": "05afdef6e372198cc92b83aa3e0e0b36ae30ca5b20a1a745246629eddf011a15",
+    "nsis/pluginapi.h": "7c3e26aca38de6a9b3715266b1fdf27edb263cd4b6f0a27d0c44a014cb9e12f0",
+    "nsis/nsis_tchar.h": "0b734ec6cf66cf3eb17adf56b329926b43cd363b700be81ea73e6d88627b13d4",
+    "nsis/api.h": "7320b14365a8e4805dd03378d96c4298af4df12cb7ad4e94fbf133b93a1fe1dc",
+    "COPYING": "6cc665347be5c84b76bf0fd6f85fbb0c33261e89b3408aa3e3e55dbe95e12d89"
+  },
+  "sha256": {
+    "nsexec.c": "7996dbd62640cefaf0ce6909bd1c8821d76771512d63f6e5c38e299b19077837",
+    "pluginapi.c": "2a012dba493f31581d87376627c2e54683f9b55ffab1376d4d40cc74a9d9cd80",
+    "nsis/pluginapi.h": "096a9c13ec61c6abbface28546dbdd2051b7b09096c293da0eaf06dc38dcad5f",
+    "nsis/nsis_tchar.h": "9aedf4d5d59eb54146555ac40c53a2909b85c9bb26c12200434d1d343d58b438",
+    "nsis/api.h": "b41a873fa5f2d7263e97b617e9c951cfc2032a7482da0974db4bb8614b24c458",
+    "COPYING": "9afab55b28917f993049218d52d5ed9ec56498bc6d53fe422aea5b60c867ee4b"
+  },
+  "localChanges": [
+    "nsexec.c: compact unconsumed pipe bytes, defer fragmented BOM detection, reject incomplete encoded EOF",
+    "All source/header/license files: normalize LF line endings and remove trailing whitespace; license wording is unchanged"
+  ]
+}

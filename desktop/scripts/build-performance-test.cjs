@@ -274,3 +274,17 @@ test('captured build messages cannot corrupt coalesced Node test reporter frames
   assert.match(result.stdout, /# pass 1/);
   assert.doesNotMatch(result.stdout + result.stderr, /Unable to deserialize cloned data/);
 });
+
+
+test('Windows release dependency cache is isolated from the global npm cache and its old giant archive keys', () => {
+  const project=path.resolve(__dirname,'../..');
+  const workflow=fs.readFileSync(path.join(project,'.github/workflows/release.yml'),'utf8').replace(/\r\n/g,'\n');
+  const job=workflow.split('\n  package:\n')[1].split('\n  verify:')[0];
+  assert.match(job,/NPM_CONFIG_CACHE: \$\{\{ runner\.temp \}\}\/heat-treatment-release-npm-cache-v1/);
+  assert.match(job,/path: \$\{\{ env\.NPM_CONFIG_CACHE \}\}/);
+  assert.match(job,/key: release-npm-scoped-v1-/);
+  assert.match(job,/restore-keys: \|\s+release-npm-scoped-v1-/);
+  assert.doesNotMatch(job,/cache: npm|npm-cache\s*$|node-cache-/m);
+  for(const file of ['backend/package-lock.json','frontend/package-lock.json','desktop/package-lock.json'])assert.ok(job.includes(file));
+  assert.match(job,/Build, verify first launch and restart, then package/);
+});
