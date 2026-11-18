@@ -44,6 +44,7 @@ Ethan 仅要求修改规则或流水线时，合并提交标题须含 **[skip re
 - Unity：官方中国下载站的指定版本/修订，严格核对下载长度、完整 Authenticode 签名及固定发布者证书指纹，安装后检查编辑器版本；不自动改用别的编辑器。
 - MySQL 9.2.0：Oracle 官方归档 ZIP，固定字节大小及 SHA-256。只提取运行文件，不启动预置现场数据库服务。
 - 厂商授权身份：tools/ci/trust/license-public-key.pub 是已有签发身份的公开验证密钥。SPKI SHA-256 固定在 cloud-runtime.json；必须为 Ed25519，拒绝私钥和身份变化。仅公钥进入交付包，不生成替代身份。
+- 官方大文件下载采用 HTTP Range 断点续传、连接/传输时限及最多 6 次重试；连接重置时保留已下载字节，不重复整份下载。不接受忽略 Range、超出固定长度或未通过完整签名/摘要的文件。
 - 云端临时文件的删除、移动和安装均限定于经校验的 RUNNER_TEMP；脚本拒绝在本机或 self-hosted 环境执行。
 - 依赖缓存仅含依赖下载、Unity 导入/编译缓存及经既有完整性检查的构建缓存，不含许可证或现场数据。
 
@@ -53,7 +54,7 @@ Ethan 仅要求修改规则或流水线时，合并提交标题须含 **[skip re
 
 以下命令只验证源码/隔离夹具，不构建发行安装包：
 
-    node --test tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-readiness.test.cjs tools/ci/release-trigger.test.cjs tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
+    node --test tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-download.test.cjs tools/ci/cloud-readiness.test.cjs tools/ci/release-trigger.test.cjs tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
     node tools/ci/check-release.cjs
     node tools/ci/cloud-runtime.cjs
     node tools/repository-hygiene.cjs

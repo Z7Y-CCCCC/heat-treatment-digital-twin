@@ -15,6 +15,7 @@ function Resolve-ContainedPath([string]$Relative) {
 }
 $runtimeCheck = & node (Join-Path $workspace 'tools/ci/cloud-runtime.cjs')
 if ($LASTEXITCODE -ne 0) { throw 'Cloud runtime source verification failed' }
+. (Join-Path $workspace 'tools/ci/cloud-download.ps1')
 $config = Get-Content -LiteralPath (Join-Path $workspace 'tools/ci/cloud-runtime.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 $cloud = Resolve-ContainedPath 'cloud-release-v1'
 $unity = Resolve-ContainedPath 'cloud-release-v1/unity/Editor/Unity.exe'
@@ -34,8 +35,7 @@ function Download-Verified([string]$Name, [string]$Url, [string]$Sha256, [long]$
     $partial = Resolve-ContainedPath "cloud-release-v1/downloads/$Name.partial"
     New-Item -ItemType Directory -Path (Split-Path -Parent $file) -Force | Out-Null
     try {
-        & curl.exe --fail --location --silent --show-error --retry 3 --retry-delay 2 --output $partial $Url
-        if ($LASTEXITCODE -ne 0) { throw 'Official cloud prerequisite download failed' }
+        Save-ResumableCloudDownload -Partial $partial -Url $Url -Size $Size
         if ((Get-Item -LiteralPath $partial).Length -ne $Size) { throw 'Official cloud prerequisite download size mismatch' }
         if ($Sha256 -and (Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Sha256) { throw 'Cloud prerequisite SHA-256 mismatch' }
         if (-not $Sha256) { Assert-UnityInstaller $partial }
