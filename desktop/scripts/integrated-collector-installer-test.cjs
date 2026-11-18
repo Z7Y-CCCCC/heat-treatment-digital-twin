@@ -2,11 +2,17 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto'),{spawnSync,execFileSync}=require('node:child_process');
 const root=path.resolve(__dirname,'../..'),read=f=>fs.readFileSync(path.join(root,f),'utf8').replace(/\r\n/g,'\n');
-test('offline selection is visible and existing collectors cannot silently retain old code',()=>{
+test('offline selection remains usable with an existing independent collector; selected upgrades remain verified',()=>{
  const ui=read('desktop/collector-installer.nsh'),hooks=read('desktop/display-installer.nsh');
  assert.match(hooks,/Page custom CollectorChoicePage CollectorChoiceLeave/);
  assert.match(hooks,/Call CollectorChoiceInit/);assert.match(ui,/NSD_CreateRadioButton.*仅展示/);assert.match(ui,/NSD_CreateRadioButton.*展示＋本机采集/);
- assert.match(ui,/collectorExisting == "1"[\s\S]*EnableWindow \$collectorDisplayRadio 0/);
+ const page=ui.split('Function CollectorChoicePage')[1].split('FunctionEnd')[0];
+ assert.match(page,/Call DisplayCollectorLayout/);
+ assert.doesNotMatch(ui,/EnableWindow \$collectorDisplayRadio 0|必须同步更新|请重新打开安装向导并选择同步安装采集插件/);
+ const install=ui.split('Function InstallSelectedCollector')[1].split('FunctionEnd')[0];
+ const displayOnly=install.split('Call DisplayCheckCancel')[0];
+ assert.match(displayOnly,/\$collectorChoice != "1"[\s\S]*Return/);
+ assert.doesNotMatch(displayOnly,/ReadReg|FileExists|(?:nsExec|InstallerExec)::|InitPluginsDir/);
  assert.match(ui,/WITHCOLLECTOR=/);assert.match(ui,/COLLECTOR_PAYLOAD_SHA256/);assert.match(ui,/COLLECTOR_BUILD_COMMIT/);
  const guard=hooks.split('!macro customCheckAppRunning')[1];assert.ok(guard.indexOf('Call InstallSelectedCollector')<guard.indexOf('display-install-preflight.ps1'));
  assert.match(ui,/\$collectorChoice != "1"[\s\S]*Return/);assert.match(ui,/\$0 != 0[\s\S]*!insertmacro DisplayAbort/);
@@ -50,7 +56,7 @@ test('real NSIS compilation embeds exactly the version-bound ZIP, independently 
  fs.writeFileSync(path.join(tmp,'plugin-manifest.json'),JSON.stringify({product:'collector-plugin',version:'2.3.3',buildSourceCommit:commit,files:[]}));
  execFileSync(require('7zip-bin').path7za,['a','-tzip',archive,'plugin-manifest.json'],{cwd:tmp,windowsHide:true,stdio:'ignore'});
  const {preparePayload,verifyEmbeddedPayload}=require('../../tools/collector-installer-payload.cjs');const payload=preparePayload(archive,tmp,{version:'2.3.3',commit});
- const source=`Unicode true\nName "Collector compile fixture"\nOutFile "${path.join(tmp,'fixture.exe')}"\nRequestExecutionLevel user\n!include LogicLib.nsh\n!include FileFunc.nsh\n!include nsDialogs.nsh\n!macro DisplayStage TEXT\nDetailPrint "\u0024{TEXT}"\n!macroend\n!macro DisplayAbort TEXT\nSetErrorLevel 2\nAbort "\u0024{TEXT}"\n!macroend\nFunction DisplayCheckCancel\nFunctionEnd\n!macro DisplayLabel X Y W H TEXT COLOR\n\u0024{NSD_CreateLabel} \u0024{X} \u0024{Y} \u0024{W} \u0024{H} \u0024{TEXT}\nPop $0\n!macroend\n!include "${path.join(root,'desktop/collector-installer.nsh')}"\nFunction DisplayRefreshFonts\nFunctionEnd\nFunction DisplayShowClose\nFunctionEnd\nFunction DisplayPaintPrimary\nFunctionEnd\nSection\nCall CollectorChoiceInit\nCall CollectorChoicePage\nCall CollectorChoiceLeave\nCall InstallSelectedCollector\nCall VerifySelectedCollector\nSectionEnd\n`;
+ const source=`Unicode true\nName "Collector compile fixture"\nOutFile "${path.join(tmp,'fixture.exe')}"\nRequestExecutionLevel user\n!include LogicLib.nsh\n!include FileFunc.nsh\n!include nsDialogs.nsh\nVar displayFont\n!macro DisplayStage TEXT\nDetailPrint "\u0024{TEXT}"\n!macroend\n!macro DisplayAbort TEXT\nSetErrorLevel 2\nAbort "\u0024{TEXT}"\n!macroend\nFunction DisplayCheckCancel\nFunctionEnd\n!macro DisplayLabel X Y W H TEXT COLOR\n\u0024{NSD_CreateLabel} \u0024{X} \u0024{Y} \u0024{W} \u0024{H} \u0024{TEXT}\nPop $0\n!macroend\n!include "${path.join(root,'desktop/collector-installer.nsh')}"\nFunction DisplayCollectorLayout\nFunctionEnd\nFunction DisplayRefreshFonts\nCreateFont $displayFont \"Microsoft YaHei UI\" 10\nFunctionEnd\nFunction DisplayShowClose\nFunctionEnd\nFunction DisplayPaintPrimary\nFunctionEnd\nSection\nCall CollectorChoiceInit\nCall CollectorChoicePage\nCall CollectorChoiceLeave\nCall InstallSelectedCollector\nCall VerifySelectedCollector\nSectionEnd\n`;
  const file=path.join(tmp,'fixture.nsi');fs.writeFileSync(file,source);
  const tool=await require('./nsis-toolchain.cjs').nsisToolchain();const compiled=spawnSync(tool.path,['/WX','/INPUTCHARSET','UTF8',file],{windowsHide:true,env:{...process.env,...tool.env,DIGITAL_TWIN_COLLECTOR_PAYLOAD_INCLUDE:payload.include},encoding:'utf8'});assert.equal(compiled.status,0,compiled.stdout+compiled.stderr);
  assert.equal(verifyEmbeddedPayload(path.join(tmp,'fixture.exe'),archive,tmp).success,true);

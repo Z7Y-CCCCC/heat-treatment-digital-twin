@@ -173,6 +173,7 @@ test('early rollback macro compiles before the stock uninstaller filename defini
             const tag=label+(uninstallerPass?'-uninstaller':'-installer'),file=path.join(f.directory,tag+'.nsi');
             const source=['Unicode true','Name "CompileOnly"','OutFile "'+path.join(f.directory,tag+'.exe')+'"',
                 'RequestExecutionLevel user','SilentInstall silent','InstallDir "'+path.join(f.directory,'never-installed')+'"',
+                '!include "'+path.join(root,'desktop/installer-exec.nsh')+'"',
                 'Var displayFailure','!define PRODUCT_FILENAME "CompileOnly"',
                 ...(uninstallerPass?['!define BUILD_UNINSTALLER']:[]),'!include "'+io.include+'"',body,
                 'Function .onInit','  !insertmacro DisplayAbort "compile fixture only"','FunctionEnd',

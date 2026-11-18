@@ -294,9 +294,9 @@ test('details restore worker output after the builder reset and failures retain 
  assert.match(native,/LVM_INSERTITEMW\|\|msg==LVM_SETITEMTEXTW/);
  assert.match(native,/WideCharToMultiByte\(CP_UTF8/);assert.match(native,/CREATE_NEW/);assert.match(native,/FlushFileBuffers/);
  const collector=fs.readFileSync(path.join(root,'collector-installer.nsh'),'utf8');
- assert.match(hooks,/nsExec::ExecToLog \/TIMEOUT=510000/);
- assert.match(collector,/nsExec::ExecToLog \/TIMEOUT=1200000/);
- assert.match(collector,/nsExec::ExecToLog \/TIMEOUT=180000/);
+ assert.match(hooks,/InstallerExec::ExecToLog \/TIMEOUT=510000/);
+ assert.match(collector,/InstallerExec::ExecToLog \/TIMEOUT=1200000/);
+ assert.match(collector,/InstallerExec::ExecToLog \/TIMEOUT=180000/);
  const preview=fs.readFileSync(path.join(__dirname,'installer-preview.cjs'),'utf8');
  assert.match(preview,/SetDetailsPrint none\s+!insertmacro DisplayStage/,'fixture must reproduce real builder behavior');
  assert.match(preview,/DisplayAbort.*1603/);
@@ -315,7 +315,7 @@ test('details restore worker output after the builder reset and failures retain 
    }
  }
  assert.match(hooks,/-ProvisionDisplayLinks -InstallerLog/);
- assert.equal(collector.split(/\r?\n/).filter(line=>line.includes('nsExec::ExecToLog')&&line.includes('-InstallerLog')).length,2);
+ assert.equal(collector.split(/\r?\n/).filter(line=>line.includes('InstallerExec::ExecToLog')&&line.includes('-InstallerLog')).length,2);
  assert.match(source,/DetailPrint "\[\+\$9 s\]/);
  assert.match(nsisFunction('DisplayInstallingShow'),/GetTickCount/);
 });
