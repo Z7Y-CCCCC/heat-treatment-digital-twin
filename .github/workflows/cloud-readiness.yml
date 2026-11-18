@@ -35,6 +35,9 @@ jobs:
         run: node tools/ci/cloud-readiness.cjs
       - name: Return only this disposable runner's account seat, including on verification failure
         if: always()
+        env:
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         run: node tools/ci/cloud-unity-account.cjs --return-seat
       - name: Upload only the credential-free readiness result
         uses: actions/upload-artifact@v4

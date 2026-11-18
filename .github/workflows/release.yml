@@ -190,12 +190,19 @@ jobs:
         run: node tools/ci/set-build-version.cjs
       - name: Build, verify first launch and restart, then package
         shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
-        run: ./生成安装包.ps1 -StarterTemplate -NoPause
+        run: |
+          $runnerTemp = [IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\', '/')
+          $buildRoot = [IO.Path]::GetFullPath((Join-Path $runnerTemp 'cloud-build-output-v1'))
+          if (-not $buildRoot.StartsWith($runnerTemp + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe cloud build output path' }
+          ./生成安装包.ps1 -StarterTemplate -NoPause -BuildOutputRoot $buildRoot
       - name: Verify native overlay in the cloud Windows session
         shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
         run: dotnet run --project tools/native-overlay-tests/NativeOverlayTests.csproj --configuration Release
       - name: Return only this disposable runner's account seat, including on build failure
         if: always()
+        env:
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         run: node tools/ci/cloud-unity-account.cjs --return-seat
       - name: Collect this build's verified installer
         shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
@@ -218,6 +225,10 @@ jobs:
           name: windows-build-logs-${{ github.run_number }}
           path: |
             安装包/release-*/构建日志-*.txt
+            ${{ runner.temp }}/cloud-build-output-v1/release-*/构建日志-*.txt
+            ${{ runner.temp }}/cloud-build-output-v1/release-*/component-build-logs/*.log
+            ${{ runner.temp }}/cloud-build-output-v1/release-*/component-build-timings.json
+            ${{ runner.temp }}/cloud-build-output-v1/release-*/build-timings.json
             ${{ runner.temp }}/cloud-release-v1/activation-result.json
             ${{ runner.temp }}/cloud-release-v1/account-seat-return-result.json
             安装包/release-*/build-timings.json

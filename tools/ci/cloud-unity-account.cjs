@@ -93,15 +93,24 @@ function returnAccountSeat(env = process.env, run) {
     const state = JSON.parse(readLog(statePath));
     if (state.schema !== 1 || typeof state.clientReturn !== 'boolean'
         || !clientCandidates(state.editor, root).includes(state.client)) throw Error('Unsafe account seat return state');
+    // Activation does not promise a reusable login token. Reinject the same
+    // explicitly configured Secrets only for this private current-run return.
+    // Neither credentials nor account identifiers enter the state/report.
+    if (!hasAccount(env)) { report.success = false; report.signals = ['account-credentials-unavailable']; return finish(); }
     report.attempted = true;
     let result;
-    if (state.clientReturn) result = launch(privateRoot, state.client, ['--return-ulf'], 'account-return-client', run);
+    if (state.clientReturn) {
+        report.route = 'client-ulf';
+        result = launch(privateRoot, state.client, ['--return-ulf', '--username', env.UNITY_EMAIL, '--password', env.UNITY_PASSWORD], 'account-return-client', run);
+    }
     if (!state.clientReturn || /Ulf license file not found|UlfLicenseFileNotFound/i.test(result.text)) {
         const fixture = path.join(privateRoot, 'account-return-fixture');
         if (fs.existsSync(fixture)) throw Error('Account return fixture must be new');
         fs.mkdirSync(path.join(fixture, 'Assets'), { recursive: true });
         const log = path.join(privateRoot, 'account-return-editor.log');
+        report.route = 'editor';
         result = launch(privateRoot, state.editor, ['-batchmode', '-nographics', '-quit', '-returnlicense',
+            '-username', env.UNITY_EMAIL, '-password', env.UNITY_PASSWORD,
             '-projectPath', fixture, '-logFile', log], 'account-return-editor', run);
         result.text += '\n' + readLog(log);
     }

@@ -27,3 +27,16 @@ test('Unity authorization is an explicit secret and is never extracted from this
  for(const call of script.split('\n').filter(line=>line.includes('Start-Process -FilePath')))assert.match(call,/-WindowStyle Hidden/);
  assert.match(script,/Activation logs stay private/);assert.match(script,/Remove-Item -LiteralPath \$license/);
 });
+
+test('cloud release stages into runner temp and uploads failed component evidence without exposing activation logs', () => {
+ const workflow=fs.readFileSync(path.join(__dirname,'../../.github/workflows/release.yml'),'utf8');
+ const build=workflow.split('- name: Build, verify first launch and restart, then package')[1].split('- name: Verify native overlay')[0];
+ assert.match(build, /Join-Path \$runnerTemp 'cloud-build-output-v1'/);
+ assert.match(build, /\$buildRoot\.StartsWith\(\$runnerTemp \+ '\\'/);
+ assert.match(build, /生成安装包\.ps1 -StarterTemplate -NoPause -BuildOutputRoot \$buildRoot/);
+ const diagnostics=workflow.split('name: windows-build-logs-')[1].split('- name: Report diagnostic upload failure')[0];
+ for(const suffix of ['构建日志-*.txt','component-build-logs/*.log','component-build-timings.json','build-timings.json'])
+   assert.ok(diagnostics.includes('${{ runner.temp }}/cloud-build-output-v1/release-*/'+suffix));
+ assert.doesNotMatch(diagnostics,/private\/|Unity\.ulf|account-(?:activate|return)-(?:stdout|stderr)|UNITY_(?:EMAIL|PASSWORD)/);
+ assert.match(workflow,/needs\.package\.result == 'success'/);
+});

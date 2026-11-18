@@ -68,15 +68,34 @@ test('account success cannot conceal missing execution markers or actual editor 
         assert.equal(result.success, false); assert.equal(result.executionVerified, false);
     }
 });
-test('returning a current-run client seat uses no account credentials and exports no private log', t => {
+test('current-run client seat return receives explicit Secrets privately, never relying on a reusable activation token', t => {
     const f = fixture(t); assert.equal(activateAccount(f.paths, f.env, f.account).success, true);
-    const result = returnAccountSeat({ ...f.env, UNITY_EMAIL: undefined, UNITY_PASSWORD: undefined }, (file, args) => {
-        assert.equal(file, f.client); assert.deepEqual(args, ['--return-ulf']); return { status: 0, stdout: 'Returned ' + PRIVATE_PASSWORD };
-    }); assert.equal(result.success, true); assert.equal(result.attempted, true); assertPrivate(result);
+    const state = JSON.parse(fs.readFileSync(path.join(f.paths.privateRoot, 'account-seat-state.json'), 'utf8')); assertPrivate(state);
+    const result = returnAccountSeat(f.env, (file, args) => {
+        assert.equal(file, f.client);
+        assert.deepEqual(args, ['--return-ulf', '--username', PRIVATE_EMAIL, '--password', PRIVATE_PASSWORD]);
+        return { status: 0, stdout: 'Returned ' + PRIVATE_EMAIL + ' ' + PRIVATE_PASSWORD };
+    }); assert.equal(result.success, true); assert.equal(result.attempted, true); assert.equal(result.route, 'client-ulf'); assertPrivate(result);
+    assertPrivate(JSON.parse(fs.readFileSync(path.join(f.paths.root, 'account-seat-return-result.json'), 'utf8')));
+});
+test('missing return credentials fail before a client is launched; partial Secrets remain errors', t => {
+    const f = fixture(t); activateAccount(f.paths, f.env, f.account); let calls = 0;
+    const result = returnAccountSeat({ ...f.env, UNITY_EMAIL: undefined, UNITY_PASSWORD: undefined }, () => { calls++; });
+    assert.equal(result.success, false); assert.equal(result.attempted, false); assert.equal(calls, 0);
+    assert.deepEqual(result.signals, ['account-credentials-unavailable']); assertPrivate(result);
+    const g = fixture(t); activateAccount(g.paths, g.env, g.account);
+    assert.throws(() => returnAccountSeat({ ...g.env, UNITY_PASSWORD: undefined }, () => { calls++; }), /secure setup/); assert.equal(calls, 0);
+});
+test('a zero return exit with an unavailable access token is still rejected, never published as successful cleanup', t => {
+    const f = fixture(t); activateAccount(f.paths, f.env, f.account);
+    const result = returnAccountSeat(f.env, () => ({ status: 0, stderr: 'Access token is unavailable ' + PRIVATE_PASSWORD }));
+    assert.equal(result.success, false); assert.deepEqual(result.signals, ['licensing-access-token-unavailable']); assertPrivate(result);
 });
 test('an entitlement seat without ULF is returned through a new isolated editor fixture, never the application', t => {
     const f = fixture(t); activateAccount(f.paths, f.env, f.account); const calls = [];
     const result = returnAccountSeat(f.env, (file, args) => { calls.push(file);
+        assert.equal(args[args.indexOf(file === f.client ? '--username' : '-username') + 1], PRIVATE_EMAIL);
+        assert.equal(args[args.indexOf(file === f.client ? '--password' : '-password') + 1], PRIVATE_PASSWORD);
         if (file === f.client) return { status: 1, stdout: 'Ulf license file not found (1404)' };
         assert.equal(file, f.paths.editor); assert.ok(args.includes('-returnlicense'));
         assert.ok(args[args.indexOf('-projectPath') + 1].startsWith(f.paths.privateRoot + path.sep));
@@ -106,11 +125,11 @@ test('operator, self-hosted, untrusted refs and filesystem roots cannot activate
     for (const patch of [{ GITHUB_ACTIONS: 'false' }, { RUNNER_ENVIRONMENT: 'self-hosted' }, { GITHUB_REF: 'refs/heads/feature' }, { RUNNER_TEMP: path.parse(f.env.RUNNER_TEMP).root }])
         assert.throws(() => trustedRoot({ ...f.env, ...patch }), /trusted|root/);
 });
-test('shipping workflows scope Secrets to preflight/activation and require current-run seat return before publishing', () => {
+test('shipping workflows scope Secrets to preflight/activation/return and require current-run seat return before publishing', () => {
     const root = path.resolve(__dirname, '../..'); const release = fs.readFileSync(path.join(root, '.github/workflows/release.yml'), 'utf8');
     const setup = fs.readFileSync(path.join(__dirname, 'setup-cloud-runner.ps1'), 'utf8');
     assert.match(release, /--require-authorization/); assert.match(release, /UNITY_PASSWORD: \$\{\{ secrets\.UNITY_PASSWORD \}\}/);
-    assert.match(release, /if: always\(\)\s+run: node tools\/ci\/cloud-unity-account\.cjs --return-seat/);
+    assert.match(release, /if: always\(\)\s+env:\s+UNITY_EMAIL: \$\{\{ secrets\.UNITY_EMAIL \}\}\s+UNITY_PASSWORD: \$\{\{ secrets\.UNITY_PASSWORD \}\}\s+run: node tools\/ci\/cloud-unity-account\.cjs --return-seat/);
     assert.ok(release.indexOf('cloud-unity-account.cjs --return-seat') < release.indexOf("Collect this build's verified installer"));
     assert.doesNotMatch(release, /private\/.*\.(?:log|json)|account-activate-.*\.log/);
     assert.match(setup, /SetEnvironmentVariable\('UNITY_PASSWORD', \$null, 'Process'\)/);
