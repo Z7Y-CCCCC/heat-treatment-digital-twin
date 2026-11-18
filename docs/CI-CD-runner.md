@@ -50,11 +50,13 @@ Ethan 仅要求修改规则或流水线时，合并提交标题须含 **[skip re
 
 独立下载后的安装包仍必须符合根目录《打包必看.md》：仅保留固定 7 视角、35 静态组件；主包和独立采集插件的全部现场业务、模型、动作、PLC、账户及历史数据为空。不会从本机库或旧安装包重建/替换静态模板。
 
+MySQL ZIP 解压固定使用 .NET 内置 ZipFile API，不依赖 PATH、外部 tar 或命令行编码。Git/MSYS GNU tar 会把 D:\... 当成远程地址，不同 Windows 镜像的外部 tar 也存在路径兼容差异；内置 API 直接接收盘符、中文及空格路径，并拒绝 ZIP 路径越界。解压前再次检查固定长度和 SHA-256，目标必须是 RUNNER_TEMP 内的新目录或空目录；现有文件不覆盖，校验不符或解压失败都停止发行。
+
 ## 本地与云端验证
 
 以下命令只验证源码/隔离夹具，不构建发行安装包：
 
-    node --test tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-download.test.cjs tools/ci/cloud-readiness.test.cjs tools/ci/release-trigger.test.cjs tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
+    node --test tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-download.test.cjs tools/ci/cloud-extract.test.cjs tools/ci/cloud-readiness.test.cjs tools/ci/release-trigger.test.cjs tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
     node tools/ci/check-release.cjs
     node tools/ci/cloud-runtime.cjs
     node tools/repository-hygiene.cjs
