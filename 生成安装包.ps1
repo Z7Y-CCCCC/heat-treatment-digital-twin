@@ -414,7 +414,7 @@ try {
         $builderCli,
         '--config', $candidateConfig,
         '--projectDir', $desktopDirectory,
-        '--dir', '--win', '--x64',
+        '--publish', 'never', '--dir', '--win', '--x64',
         "--config.directories.output=$outputDirectory",
         '--config.compression=normal'
     )
