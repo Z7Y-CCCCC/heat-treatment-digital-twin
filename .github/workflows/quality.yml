@@ -2,6 +2,12 @@ name: digital-twin-quality
 
 on:
   workflow_call:
+    inputs:
+      release_version:
+        description: 'Optional verified automatic release version; source versions must remain consistent'
+        required: false
+        default: ''
+        type: string
   workflow_dispatch:
   push:
     branches: [main]
@@ -129,7 +135,7 @@ jobs:
 
   desktop:
     name: Windows desktop and native runtime regressions
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -151,15 +157,17 @@ jobs:
       - run: npm --prefix desktop run test:processes
       - run: npm --prefix desktop run test:deployment
       - run: npm --prefix desktop run test:resources
-      - run: node --test tools/ci/collect-release.test.cjs tools/ci/release-trigger.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
+      - run: node --test tools/ci/collect-release.test.cjs tools/ci/release-trigger.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-readiness.test.cjs
       - run: node tools/ci/check-release.cjs
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
       - run: dotnet run --project tools/native-runtime-tests/NativeRuntimeTests.csproj --configuration Release --artifacts-path output/native-runtime-tests
       - run: dotnet run --project tools/frame-metrics-tests/FrameMetricsTests.csproj --configuration Release --artifacts-path output/frame-metrics-tests
       - run: node --test tools/tests/runtime-frame-report.test.cjs
       - run: dotnet run --project tools/native-inspection-tests/NativeInspectionTests.csproj --configuration Release --artifacts-path output/native-inspection-tests
-      # Actual DirectComposition requires an interactive desktop; run it on the
-      # dedicated release host, while keeping compilation in hosted PR checks.
-      - run: dotnet build tools/native-overlay-tests/NativeOverlayTests.csproj --configuration Release --artifacts-path output/native-overlay-tests
+      # Exercise real DirectComposition on the hosted desktop before relying
+      # on the same environment for automated installer releases.
+      - run: dotnet run --project tools/native-overlay-tests/NativeOverlayTests.csproj --configuration Release --artifacts-path output/native-overlay-tests
       - run: dotnet build native-admin-host/HeatTreatmentAdminHost.csproj --configuration Release --artifacts-path output/native-host
 
   mock-server:

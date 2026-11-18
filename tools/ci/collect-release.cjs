@@ -14,6 +14,7 @@ function collectRelease(root, sourceDirectory) {
   const directory = path.resolve(directories[0]);
   const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'release-manifest.json'), 'utf8').replace(/^\uFEFF/, ''));
   const timings = JSON.parse(fs.readFileSync(path.join(directory, 'build-timings.json'), 'utf8').replace(/^\uFEFF/, ''));
+  if (process.env.RELEASE_VERSION && manifest.version !== process.env.RELEASE_VERSION) throw new Error('Installer version does not match the automatic release plan');
   require('../installer-startup-smoke.cjs').assertStartupProof(manifest);
   require('../installer-extraction-smoke.cjs').assertExtractionProof(manifest);
   if (!timings.success || manifest.smokeTest !== 'passed' || manifest.emptySystem !== true || manifest.contentPolicy !== 'empty-v1' || manifest.mysqlBundled !== true) {

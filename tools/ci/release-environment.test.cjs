@@ -37,14 +37,23 @@ for (const [label, change] of [
   const f = fixture(); change(f);
   assert.throws(() => configureReleaseEnvironment(f.env)); assert.equal(fs.existsSync(f.env.GITHUB_ENV), false);
 });
-test('workflow loads trust after Node setup and before any costly build; no key generation or enforcement bypass', () => {
+test('workflow loads the pinned existing public identity after Node setup and before any costly application build', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../../.github/workflows/release.yml'), 'utf8');
-  const start = source.indexOf('      - name: Load and validate provisioned release environment');
+  const start = source.indexOf('      - name: Provision the exact cloud editor, MySQL and public trust anchor');
+  const check = source.indexOf('      - name: Check the provisioned cloud prerequisites without changing authorization');
+  const build = source.indexOf('      - name: Build, verify first launch and restart, then package');
   assert.ok(start > source.indexOf('      - uses: actions/setup-node@v4', source.indexOf('  package:')));
-  assert.ok(start < source.indexOf('      - name: Check native build prerequisites'));
-  assert.match(source.slice(start, source.indexOf('      - name: Check native build prerequisites')), /node tools\/ci\/release-environment.cjs/);
-  const loader = fs.readFileSync(path.join(__dirname, 'release-environment.cjs'), 'utf8');
-  assert.doesNotMatch(loader, /generateKeyPair|LICENSE_ENFORCE|license-private-key\.pem/);
+  assert.ok(start < check && check < build);
+  assert.match(source.slice(start, check), /setup-cloud-runner\.ps1/);
+  assert.match(source.slice(check, build), /setup-cloud-runner\.ps1 -CheckOnly/);
+  assert.doesNotMatch(source.slice(source.indexOf('  package:'), build), /release-environment\.cjs|self-hosted/);
+  for (const filename of ['release-environment.cjs', 'cloud-runtime.cjs', 'setup-cloud-runner.ps1']) {
+    const loader = fs.readFileSync(path.join(__dirname, filename), 'utf8');
+    assert.doesNotMatch(loader, /generateKeyPair|LICENSE_ENFORCE|license-private-key\.pem/);
+  }
+  const cloud = fs.readFileSync(path.join(__dirname, 'cloud-runtime.cjs'), 'utf8');
+  assert.match(cloud, /key.asymmetricKeyType!==\x27ed25519\x27/);
+  assert.match(cloud, /fingerprint!==publicKey.spkiSha256/);
 });
 
 test('Windows cache compression requires the complete Git toolchain and precedes both cache consumers',t=>{

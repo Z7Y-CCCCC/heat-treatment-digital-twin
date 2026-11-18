@@ -10,7 +10,11 @@ const { reusableRelease } = require('./reusable-release.cjs');
 const { portableRelease, verifyUploadedAssets } = require('./portable-release.cjs');
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-release-'));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  t.after(() => {
+    const resolved=path.resolve(root),parent=path.resolve(os.tmpdir())+path.sep;
+    assert.ok(resolved.startsWith(parent)&&path.basename(resolved).startsWith('ci-release-'));
+    fs.rmSync(resolved, { recursive: true, force: true });
+  });
   const directory = path.join(root, '安装包', 'release-test');
   fs.mkdirSync(directory, { recursive: true });
   const installer = path.join(directory, 'test.exe');
@@ -139,4 +143,19 @@ test('integrated installer publication rejects independently stale plugin proven
  f.manifest.collectorInstaller={mode:'offline-selectable',version:f.manifest.version,commit,sha256:f.manifest.collectorPlugin.sha256,verified:true};f.save();
  const out=collectRelease(f.root),fileName=path.join(out,'release-manifest.json'),manifest=JSON.parse(fs.readFileSync(fileName));manifest.commit=commit;fs.writeFileSync(fileName,JSON.stringify(manifest));assert.doesNotThrow(()=>verifyRelease(out,commit));
  for(const [key,value] of [['version','0.0.0'],['commit','e'.repeat(40)],['sha256','0'.repeat(64)],['verified',false],['mode','download-latest']]) {const changed=structuredClone(manifest);changed.collectorInstaller[key]=value;fs.writeFileSync(fileName,JSON.stringify(changed));assert.throws(()=>verifyRelease(out,commit),/provenance/);}
+});
+
+
+test('automatic release version is mandatory at collection and downloaded artifact verification', t => {
+  const f=fixture(t),previous=process.env.RELEASE_VERSION;
+  t.after(()=>{if(previous===undefined)delete process.env.RELEASE_VERSION;else process.env.RELEASE_VERSION=previous;});
+  process.env.RELEASE_VERSION='2.3.2';
+  assert.throws(()=>collectRelease(f.root),/Installer version does not match the automatic release plan/);
+  assert.equal(fs.existsSync(path.join(f.root,'output','ci-release')),false);
+  process.env.RELEASE_VERSION=f.manifest.version;
+  const out=collectRelease(f.root);
+  assert.doesNotThrow(()=>verifyRelease(out,'','',f.manifest.version));
+  assert.throws(()=>verifyRelease(out,'','','2.3.2'),/Artifact version does not match the automatic release plan/);
+  process.env.RELEASE_VERSION='2.3.2';
+  assert.throws(()=>verifyRelease(out,''),/Artifact version does not match the automatic release plan/);
 });

@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "unity": {
+    "version": "2022.3.34f1c1",
+    "revision": "1e17368ca73f",
+    "url": "https://download.unitychina.cn/download_unity/1e17368ca73f/Windows64EditorInstaller/UnitySetup64-2022.3.34f1c1.exe",
+    "size": 3466916072,
+    "signerThumbprint": "3B027072EFDDD6DA096DCEE025CBAEC665AC3CA1"
+  },
+  "mysql": {
+    "version": "9.2.0",
+    "url": "https://cdn.mysql.com/archives/mysql-9.2/mysql-9.2.0-winx64.zip",
+    "size": 304204441,
+    "sha256": "9ee202d6daa040b82aeea8a867b25360f7644851b68b31f8b1230132e4464d93"
+  },
+  "publicKey": {
+    "file": "tools/ci/trust/license-public-key.pub",
+    "spkiSha256": "66c64f41454876a49cf5979c016db0d2d8aa35ca6d3d738d0557f228a61af013"
+  }
+}

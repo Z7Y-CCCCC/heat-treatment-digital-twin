@@ -1,0 +1,40 @@
+name: Cloud Windows readiness
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cloud-unity-readiness
+  cancel-in-progress: false
+jobs:
+  readiness:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Only check trusted merged main, without building an installer
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: |
+          if ($env:GITHUB_REF -ne 'refs/heads/main') { throw 'Cloud authorization checks run only on trusted main' }
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.1
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Provision official cloud prerequisites and check authorized license
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+        run: ./tools/ci/setup-cloud-runner.ps1
+      - name: Verify a fresh empty Unity fixture and MySQL version, not the application
+        run: node tools/ci/cloud-readiness.cjs
+      - name: Upload only the credential-free readiness result
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-windows-readiness-${{ github.run_number }}
+          path: ${{ runner.temp }}/cloud-release-v1/readiness.json
+          if-no-files-found: error
+          retention-days: 3

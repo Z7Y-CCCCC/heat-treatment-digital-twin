@@ -3,9 +3,10 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { fileDigest } = require('../../desktop/scripts/file-digest.cjs');
 
-function verifyRelease(directory, expectedCommit = process.env.GITHUB_SHA, expectedRun = '') {
+function verifyRelease(directory, expectedCommit = process.env.GITHUB_SHA, expectedRun = '', expectedVersion = process.env.RELEASE_VERSION || '') {
   const read = name => JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8').replace(/^\uFEFF/, ''));
   const manifest = read('release-manifest.json'), timings = read('build-timings.json');
+  if (expectedVersion && manifest.version !== expectedVersion) throw new Error('Artifact version does not match the automatic release plan');
   require('../installer-startup-smoke.cjs').assertStartupProof(manifest);
   require('../installer-extraction-smoke.cjs').assertExtractionProof(manifest);
   if (!timings.success || manifest.smokeTest !== 'passed' || manifest.emptySystem !== true || manifest.contentPolicy !== 'empty-v1' || manifest.mysqlBundled !== true)
@@ -36,5 +37,5 @@ function verifyRelease(directory, expectedCommit = process.env.GITHUB_SHA, expec
   if (checksum !== `${sha256}  ${name}`) throw new Error('Checksum file mismatch');
   return { installer: name, size: bytes.length, sha256, commit: manifest.commit };
 }
-if (require.main === module) console.log(JSON.stringify(verifyRelease(path.resolve(process.argv[2] || 'output/ci-release'), process.argv[3] || process.env.GITHUB_SHA, process.argv[4] || ''), null, 2));
+if (require.main === module) console.log(JSON.stringify(verifyRelease(path.resolve(process.argv[2] || 'output/ci-release'), process.argv[3] || process.env.GITHUB_SHA, process.argv[4] || '', process.argv[5] || process.env.RELEASE_VERSION || ''), null, 2));
 module.exports = { verifyRelease };
