@@ -38,3 +38,11 @@ jobs:
           path: ${{ runner.temp }}/cloud-release-v1/readiness.json
           if-no-files-found: error
           retention-days: 3
+      - name: Upload only fixed-code activation diagnostics, including on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-unity-activation-${{ github.run_number }}
+          path: ${{ runner.temp }}/cloud-release-v1/activation-result.json
+          if-no-files-found: ignore
+          retention-days: 3
