@@ -1,63 +1,67 @@
-# Windows 发布 runner 准备
+# GitHub 云端自动发行：合并 main 后生成新安装包
 
-普通测试使用 GitHub 托管 runner。完整安装包需要 Unity 2022.3.34f1c1 和 MySQL Windows 运行文件，因此发布使用专用 Windows x64 自托管 runner，标签为 `digital-twin-release`。
+## 使用方式与费用
 
-## 首次准备
+本仓库是公开仓库。发行和质量检查使用 GitHub **标准托管** Windows runner（windows-2022），标准 runner 的公开仓库构建免费；没有选用收费的 larger runner，不更改账户计费设置。
 
-在专用构建账户安装 Node.js 22.12+、.NET 8 SDK、PowerShell 7（pwsh）、Git、GitHub CLI、Unity 项目指定版本及 Windows Build Support，完成 Unity 许可证激活；准备 MySQL 9.2 完整安装目录（不需要运行数据库服务），安装 WebView2 Runtime 和 Visual C++ x64 运行库。账户应处于已登录的 Windows 桌面会话，具有访问网络和构建目录的权限。不要用现场正在运行生产大屏的账户做构建。发布步骤使用无用户 profile 的 PowerShell 7，避免中文路径解码和个人终端主题干扰；不会重复写入 Program Files 安装 .NET。
+以后正常交付只需：本机修改源码 → 提交 PR → 检查通过并合并 main。Windows installer 在 main push 上自动规划新版本、测试、云端打包、校验并发布 Release。提交后本机可关机；无需保持原自托管 runner 在线、手动点 Run workflow、创建 tag 或手动上传 EXE。
 
-先运行仅检查本机依赖的命令，此命令不注册 runner、不修改远端：
+只有全部门禁成功才会发布。失败结果不能算“新安装包已交付”。质量检查、云端依赖、Unity 授权、空业务数据、模板、首次启动/重启、原生叠加界面、安装界面、主包和插件完整性检查均保留。
 
-```powershell
-.\tools\ci\setup-windows-runner.ps1 -CheckOnly
-```
+## 一次性配置 Unity 授权
 
-非默认安装路径可以传 `-UnityEditorPath 'D:\Unity\Editor\Unity.exe' -MysqlRuntimeSource 'D:\mysql-9.2'`。预检核对编辑器版本和 MySQL 文件存在性；许可证、图形会话、WebView2、MySQL 动态库的完整可用性仍需实际发布构建和 smoke test 验证。
+云端编译需要项目指定的 Unity **2022.3.34f1c1 / 1e17368ca73f**。GitHub 免费构建不等于 Unity 可以不授权；须使用符合现有 Unity 条款的有效授权，本流程不会开通付费套餐或绕过许可证。
 
-管理员使用 `gh auth login` 登录该仓库的 GitHub 管理账户，再显式执行以下命令注册并启动 runner：
+将有权用于 CI 的现有 Unity .ulf 文件内容设置为仓库 Settings → Secrets and variables → Actions 中的 **UNITY_LICENSE**。不要将许可证、密码、厂商私钥写入源码、PR、聊天或普通仓库变量。是否复制本机许可证必须由 Ethan 单独确认，配置脚本不会自动读取本机 C:/ProgramData/Unity 或上传任何凭据。
 
-```powershell
-.\tools\ci\setup-windows-runner.ps1 -InstallAutoStart
-```
+若许可证尚未配置，发行预检在大文件下载前明确失败；不会占用本机 runner，也不会发布半成品。若 Unity 在云端拒绝该许可证，应修复 CI 的合法授权，不能跳过编译门禁或用旧二进制冒充当前源码。
 
-脚本通过 GitHub API 获取官方 Windows x64 runner 下载地址和 SHA256，校验后解压；短时注册 token 通过临时进程环境传递，不打印 token。脚本不会自行登录，不会替换同名远端 runner，也不会替用户启用远端 workflow。API 授权需要仓库管理员身份及管理 repository runners 的权限；细粒度 token 需要 Repository administration write，经典 token 私有仓库通常需要 repo scope。
+许可证仅注入需要它的两个步骤，不写入 GITHUB_ENV、不进入 cache、发布资源或日志附件。激活使用 runner 临时私有目录，临时 .ulf 用完删除，激活日志不上传。许可证适用性由实际云端激活和构建验证；不能把本机存在许可证当作云端已经可用。
 
-默认目录是 `%USERPROFILE%\actions-runners\digital-twin`，独立于源码目录；默认名称是 `<计算机名>-digital-twin`。可用 `-RunnerDirectory`、`-RunnerName`、`-Repository owner/repo` 覆盖。不要让两个 runner 共用一个目录。
+## 自动版本与重试
 
-## 重启与故障恢复
+源码中的 desktop/package.json、desktop/package-lock.json 与 release-manifest.json 仍须相互一致，作为产品主/次版本基线。普通修改无需手工提升补丁版本。
 
-重复运行相同命令会验证原配置并检查本目录的 `Runner.Listener.exe`，已有进程不会再次启动。`-InstallAutoStart` 安装当前用户的登录启动快捷方式；后台守护在异常退出后 15 秒重试。它不安装 Windows 服务，以支持 Unity/WebView2 的桌面启动检查。电脑必须开机、联网并已登录桌面；关机或退出账户时 GitHub 只能排队，不能构建。临时停止守护可在 runner 目录创建 `stop.flag`，确认无任务后关闭本 runner；重新启动前自行删除该标记。
+main 发行版本根据已合并的语义版本 tag 和提交距离自动计算，例如源版本仍为 2.3.6，新的 main 提交会得到高于上一发行的版本；多个分支提交可导致补丁号跳号。显式修改一致的主/次版本会被尊重，不能降低已经发行的版本。
 
-`release-environment.json` 只保存 Unity、MySQL 和**公钥**路径；厂商私钥不进入仓库、runner 工作目录或 Actions secrets。发布机通过 `LICENSE_ISSUER_PUBLIC_KEY_FILE` 或当前用户已有的厂商公钥打包。
+版本号只注入 GitHub 的干净、一次性构建 checkout，不自动回写 main、不改本机源码或现场数据。安装包、内置采集插件、独立插件及下载文件名使用相同版本；上传前再次核对版本、源提交、run、文件大小与 SHA-256。
 
-建议由维护者只导出公钥到 runner 独立的 `trust/license-public-key.pem`，把 `LICENSE_ISSUER_PUBLIC_KEY_FILE` 指向此文件后运行准备脚本；不要让构建账户依赖厂商个人 AppData 目录的可见性。复制前后核对公钥 SHA-256/签发指纹，绝不复制整个签发目录或重新生成身份。本机 v2.3.2 已按此方式 provision，原私钥位置不变。
+同一源提交已有 tag 时，重试使用同一版本。已发布的版本不移动 tag、不替换现有资产。只有同源的保留 tag / draft 可以恢复。GitHub API 权限、限流或服务错误必须失败，只有真实 404 代表版本不存在。
 
-发布任务在 Node 准备后，显式从 `RUNNER_TEMP/../../release-environment.json` 加载这三条路径，检查已有公钥是 Ed25519、拒绝私钥文件，再写入后续步骤的 `GITHUB_ENV`。缺失配置会在 Unity 编译前失败，不依赖 listener 启动时继承的 LOCALAPPDATA、测试签发目录或临时环境。只读取已有签发身份，不自动生成替代密钥；日志仅记录公钥指纹。可用 `node --test tools/ci/release-environment.test.cjs` 重跑边界检查。
+发行 workflow 使用串行 concurrency，避免并发 main 发布争用版本。workflow_dispatch 的 verified_run_id 可重试已通过所有强制门禁的 main 构建；产品源码已变化时必须重新构建。中间 Actions artifact 保留 7 天，正式 Release 安装包不随它到期。
 
-配置中断后，脚本不会覆盖非空且尚未成功配置的目录：先查看 `_diag` 日志，确认无正在运行的构建，选择新的专用空目录重试；如远端已出现 runner，先核查并按 GitHub Settings → Actions → Runners 的移除流程清理失效记录。不要为重试直接删除工作目录或覆盖远端同名 runner。
+只允许已合并 main 的源码或其版本 tag 发布，不运行外部 PR 代码的发布任务，不使用 pull_request_target。PR 仅运行标准云端质量检查。
 
-在仓库 Settings → Actions → Runners 确认 `Idle` 和 `digital-twin-release` 标签后再触发发布。仅运行已合入受保护 main 的新版本自动发布、main 手动重试或受保护版本 tag，禁止把自托管发布任务接到外部 PR 或 `pull_request_target` 的外部代码上。构建采用初始模板，避免把现场数据库或上传文件作为安装包输入。发布环境和受保护分支由仓库管理员设置。
+## 仅修改流水线时的显式不打包
 
-Runner 的进程路径检测只针对本安装目录。停止 runner 前应确保 GitHub 显示 Idle，避免打断正在执行的发布。安装目录 `_diag` 保存 runner 日志；不要上传 `.credentials`、`.credentials_rsaparams` 或整个 runner 目录。
+Ethan 仅要求修改规则或流水线时，合并提交标题须含 **[skip release]**。这只抑制本次 main push 的安装包构建/发行，独立 main 质量检查仍正常执行。它不是 [skip ci]，不跳过测试，不关闭发布规则，不修改断言。以后正常 main 合并不含该标记，自动编号和发行照常执行。
 
-## 发布与下载
+本次云端迁移使用该标记，不重打或覆盖已发布的 v2.3.6，也不以配置变更擅自触发新的安装包发布。
 
-默认无需手动上传或点击 Run workflow：将准备发布的新版本合入 `main` 后，`push` 自动触发 Windows installer。版本号须同步更新 `desktop/package.json`、`desktop/package-lock.json` 和 `release-manifest.json`；该版本尚未公开时，流程执行完整质量回归、初始模板打包、独立 MySQL 首次启动／重启、资源完整性和空业务数据检查、原生界面验证，再上传并发布安装包。所有检查仍为强制门禁，PR 只运行托管质量检查，不使用自托管发布机。
+## 云端依赖与信任来源
 
-同一版本已公开时，后续 main 提交只做发布状态预检并跳过发布构建，不占用 Windows runner、不重复打包、不移动 tag、不覆盖已发布资产；独立的 main 质量工作流照常运行。GitHub API 权限、限流或服务错误必须失败，只有真实 404 才表示版本不存在。尚未公开但已被其它提交占用的 tag／草稿必须先解决或升级版本，不能强行覆盖；同提交草稿可重试。
+- Node 22.13.1 与 .NET 8：官方 setup actions。
+- Unity：官方中国下载站的指定版本/修订，严格核对下载长度、完整 Authenticode 签名及固定发布者证书指纹，安装后检查编辑器版本；不自动改用别的编辑器。
+- MySQL 9.2.0：Oracle 官方归档 ZIP，固定字节大小及 SHA-256。只提取运行文件，不启动预置现场数据库服务。
+- 厂商授权身份：tools/ci/trust/license-public-key.pub 是已有签发身份的公开验证密钥。SPKI SHA-256 固定在 cloud-runtime.json；必须为 Ed25519，拒绝私钥和身份变化。仅公钥进入交付包，不生成替代身份。
+- 云端临时文件的删除、移动和安装均限定于经校验的 RUNNER_TEMP；脚本拒绝在本机或 self-hosted 环境执行。
+- 依赖缓存仅含依赖下载、Unity 导入/编译缓存及经既有完整性检查的构建缓存，不含许可证或现场数据。
 
-首次启用仓库变量 `WINDOWS_RELEASE_RUNNER_ENABLED=true`，并保持带 `digital-twin-release` 标签的专用 Windows runner 在线。当前原生 Unity／安装包构建仍由这台已 provision 的自托管机器执行，GitHub 负责调度、校验和发布；机器离线时任务排队，不会自动改用未经配置的电脑。保留 Actions → Windows installer → Run workflow 选择 `main` 的失败重试入口，以及已合入 main、与产品版本一致的受保护 `vX.Y.Z` tag 触发入口。
+独立下载后的安装包仍必须符合根目录《打包必看.md》：仅保留固定 7 视角、35 静态组件；主包和独立采集插件的全部现场业务、模型、动作、PLC、账户及历史数据为空。不会从本机库或旧安装包重建/替换静态模板。
 
-程序目录预打包和最终 NSIS 打包都显式使用 `--publish never`，禁止 electron-builder 根据 CI／tag 隐式提前发布，也消除其隐式发布警告。发布权限只在校验后的 `publish-release` job 中启用。只有全部成功才会创建草稿、附加安装包及 SHA256、复核提交与文件哈希，然后**自动发布 Release**。手动 main 发布也使用当前版本 tag。已有 tag 指向其它提交或已发布的同版本不会被覆盖；新版本必须先修改版本号。下载入口是仓库 Releases；私有仓库需要访问权限。失败运行只保留 Actions 日志，不会把旧安装包当作新版本发布。
+## 本地与云端验证
 
-Windows 中文管道回归将宿主 PowerShell 冷启动预算与原生执行超时断言分开：完整文本／UTF-16 分片／子进程退出码／截断 EOF 的严格断言保持不变，另用真实低时限进程验证 `timeout` 必须失败。故意延迟 6 秒的隔离用例覆盖新托管机冷启动；失败日志保留原生状态和实际文本，不把 `timeout` 转成 fixture 成功。不修改生产超时、解码插件或出厂数据门禁。
+以下命令只验证源码/隔离夹具，不构建发行安装包：
 
-诊断日志归档上传属于辅助步骤：网络失败会明确警告，日志仍留在 runner `_diag`；不因日志传输中断否定已通过的安装包。构建、回归、启动检查、安装包上传和下载哈希验证都不是可选步骤，任一失败仍禁止发布。
+    node --test tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-readiness.test.cjs tools/ci/release-trigger.test.cjs tools/ci/collect-release.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs
+    node tools/ci/check-release.cjs
+    node tools/ci/cloud-runtime.cjs
+    node tools/repository-hygiene.cjs
 
-GitHub 下载资产使用 `HeatTreatmentDigitalTwin-Setup-X.Y.Z-x64.exe`，避免平台改写中文文件名导致清单与校验文件不一致。采集另用 `HeatTreatmentCollector-Plugin-X.Y.Z-x64.zip`。发布前只规范文件名与对应清单，不修改安装包二进制、构建提交或 SHA256；上传后再核对主包、插件、各自校验文件、清单和构建耗时文件齐全才公开。
+还须执行原有 desktop 资源回归及 main/PR 全部质量检查。原生 overlay 在 GitHub-hosted Windows 上执行实际测试，不只编译；失败不能跳过以放行。
 
-如果只有发布阶段失败，重新运行 workflow 时可填写 `verified_run_id`。仅接受同仓库 `main` 自动 push 或手动发布流程中已全部通过回归和 `package` 的运行，tag／PR／其它分支构建及跳过 package 的预检不能复用；原构建提交必须是当前提交的祖先，且此后只能有发布脚本/文档变更，产品源码一旦变化就拒绝复用。流程重跑质量门禁，下载原运行的指定产物，复核来源提交、运行编号与 SHA256，再将版本 tag 指向**原构建提交**。不改写产物来源，也不把失败构建补标成成功。默认留空仍完整构建。
+原 setup-windows-runner.ps1 / start-windows-runner.ps1 与 windows-cache-check.yml 仅保留作已存在自托管机的手动维护/诊断工具，**不再是 main 发行的依赖**。不擅自停止或删除 Ethan 电脑上的服务、采集器和现有配置。
 
-GitHub 自带 `GITHUB_TOKEN` 为历史提交创建 tag 时，可能因 workflow 文件写权限返回 403；这不是安装包校验失败。此类补发先由维护者为已验证的原构建提交创建版本 tag，再重试发布任务。不要移动现有 tag、修改产物清单提交号或把个人 token 自动保存进 Secrets。维护者建 tag 会另外触发 tag 构建；如果已在补发同一份验证产物，应取消这次重复构建，避免多跑一套。正常按版本 tag 发布不需要此补发步骤。[Git references 权限说明](https://docs.github.com/en/rest/git/refs#create-a-reference)。
+## 云端只验收、不打包
 
-2026-11-04：完整分离式发布已在 [run 41802526546](https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin/actions/runs/41802526546) 跑通并公开 v2.3.2，实际产物、校验及未验证边界见 [发布交付记录](发布交付-v2.3.2.md)。
+Cloud Windows readiness 是仅可在可信 main 上手动触发的隔离验收：下载并核验官方编辑器/运行库、使用获准 Secret 激活 Unity、执行新建空 Unity 夹具、检查 MySQL 版本。它不运行应用打包脚本、不生成或发布安装包，仅上传不含凭据的 readiness.json；不能把此验收冒充完整安装包发行成功。

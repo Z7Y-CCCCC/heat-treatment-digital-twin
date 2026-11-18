@@ -134,7 +134,16 @@ test('the workflow automatically listens on main and gates every release job wit
   assert.match(publish, /portable-release\.cjs --uploaded/);
   assert.match(publish, /--draft=false --latest/);
   const preflight = workflow.split('\n  preflight:\n')[1].split('\n  quality:')[0];
-  assert.ok(preflight.indexOf('node tools/ci/release-trigger.cjs') < preflight.indexOf('RUNNER_ENABLED:'));
+  assert.ok(preflight.indexOf('node tools/ci/release-trigger.cjs') < preflight.indexOf('node tools/ci/cloud-runtime.cjs --require-license'));
+  assert.doesNotMatch(preflight, /WINDOWS_RELEASE_RUNNER_ENABLED|setup-windows-runner/);
+  assert.match(packageJob, /runs-on: windows-2022/);
+  assert.doesNotMatch(packageJob, /self-hosted|release-environment\.cjs|setup-windows-runner/);
+  assert.match(packageJob, /setup-dotnet@/);
+  assert.match(packageJob, /setup-cloud-runner\.ps1/);
+  assert.match(packageJob, /set-build-version\.cjs/);
+  assert.match(preflight, /auto-release-version\.cjs/);
+  assert.match(preflight, /SKIP_RELEASE:/);
+  assert.match(publish, /\"\$RELEASE_VERSION\"/);
   assert.match(preflight, /if: steps\.release\.outputs\.release == 'true' && inputs\.verified_run_id == ''/);
   assert.match(fs.readFileSync(path.join(root, '.github/workflows/quality.yml'), 'utf8'), /node --test[^\n]+release-trigger\.test\.cjs/);
 });
