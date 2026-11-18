@@ -92,3 +92,7 @@ Cloud Windows readiness 是仅可在可信 main 上手动触发的隔离验收�
 云端显式将本次构建暂存到 RUNNER_TEMP/cloud-build-output-v1/release-*，而不是本机 LOCALAPPDATA 或 OneDrive。失败时同时上传实际目录中的总体构建日志、各组件日志、组件耗时及总体耗时；不会只匹配尚未交付的安装包目录而漏掉资源准备错误。仅上传这些构建日志和固定代码激活/归还报告，不包含 private 目录、许可证或账户信息。全部质量、资源准备、启动/重启、空业务数据和完整性门禁仍为强制；诊断附件不能作为通过证据。
 
 实际账号验收记录：Actions run 44271558716 的官方 Unity 2022.3.34f1c1 已以退出码 0 输出独立执行标记，账号授权确实成功；该次运行随后在资源准备和缺少可复用 token 的归还步骤失败，因此没有发布安装包。此记录不代表后续构建已经成功。
+
+## 固定 FFmpeg ZIP 的 Windows 解压兼容性
+
+实际 run 44279507947 已通过账号激活、Unity 应用编译和本次 Runner 席位归还；资源准备失败来自 Git tar 的盘符误判和 PowerShell 5 误加载 PowerShell 7 的 Archive 模块。FFmpeg 解压现直接调用 .NET ZipFile.ExtractToDirectory 的两参数接口，显式隔离 PSModulePath、设置 UTF-8 输出并将所有错误作为失败处理；不再使用 tar/Expand-Archive 回退，也不递归删除已有目标内容。固定归档 SHA-256、FFmpeg 版本、h264_mf、LGPL 策略和运行文件完整性验证均保留。真实 Windows ZIP、外来模块、中文路径、无效归档与已有内容保护回归纳入资源门禁。

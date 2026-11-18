@@ -95,21 +95,28 @@ function ensureArchive() {
     return archive;
 }
 
-function extractArchive(archive, destination) {
-    fs.rmSync(destination, { recursive: true, force: true });
-    fs.mkdirSync(destination, { recursive: true });
-    try {
-        execFileSync('tar.exe', ['-xf', archive, '-C', destination], {
-            stdio: 'inherit',
-            windowsHide: true
-        });
-    } catch (tarError) {
-        console.warn('tar 解压失败，改用 PowerShell Expand-Archive。');
-        execFileSync('powershell.exe', [
-            '-NoProfile', '-NonInteractive', '-Command',
-            'Expand-Archive -LiteralPath $env:FFMPEG_ARCHIVE_INPUT -DestinationPath $env:FFMPEG_EXTRACT_OUTPUT -Force'
-        ], { stdio: 'inherit', windowsHide: true, env: { ...process.env, FFMPEG_ARCHIVE_INPUT: archive, FFMPEG_EXTRACT_OUTPUT: destination } });
-    }
+function extractArchive(archive, destination, execute = execFileSync) {
+    const input = path.resolve(archive), output = path.resolve(destination);
+    if (output === path.parse(output).root) throw new Error('ZIP extraction requires a fresh directory, not a filesystem root');
+    if (fs.existsSync(output)) {
+        const stat = fs.lstatSync(output);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || fs.readdirSync(output).length) {
+            throw new Error('ZIP extraction requires an empty fresh directory; existing content is never deleted');
+        }
+    } else fs.mkdirSync(output, { recursive: true });
+    // Git/MSYS tar interprets a Windows drive letter as a remote host. The
+    // inherited PS7 Archive module is incompatible with Windows PowerShell 5.
+    // Use the .NET two-argument API directly, never either shell archive tool.
+    const powershell = path.join(process.env.SystemRoot || 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const script = "$ErrorActionPreference='Stop';"
+        + "$env:PSModulePath=(Join-Path $PSHOME 'Modules');"
+        + "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+        + 'Add-Type -AssemblyName System.IO.Compression.FileSystem;'
+        + '[IO.Compression.ZipFile]::ExtractToDirectory($env:FFMPEG_ARCHIVE_INPUT,$env:FFMPEG_EXTRACT_OUTPUT)';
+    execute(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+        stdio: 'pipe', windowsHide: true, encoding: 'utf8', timeout: 120000,
+        env: { ...process.env, FFMPEG_ARCHIVE_INPUT: input, FFMPEG_EXTRACT_OUTPUT: output }
+    });
 }
 
 function copyRuntimeFiles(extractedRoot) {
@@ -223,7 +230,7 @@ async function main() {
         await publishRuntime();
         return;
     }
-    const extractionDir = path.join(cacheDir, `.extract-${process.pid}`);
+    const extractionDir = fs.mkdtempSync(path.join(cacheDir, '.extract-'));
     try {
         extractArchive(archive, extractionDir);
         const extractedRoot = path.join(extractionDir, build.archiveRoot);
@@ -234,7 +241,10 @@ async function main() {
         console.log(`已验证编码器：h264_mf；运行文件：${runtimeFiles.length} 个`);
         await publishRuntime();
     } finally {
-        fs.rmSync(extractionDir, { recursive: true, force: true });
+        const actual = fs.realpathSync.native(extractionDir), cacheRoot = fs.realpathSync.native(cacheDir);
+        if (!actual.startsWith(cacheRoot + path.sep) || !/^\.extract-[^\\/]+$/.test(path.basename(actual))
+            || fs.lstatSync(extractionDir).isSymbolicLink()) throw new Error('Unsafe FFmpeg extraction cleanup path');
+        fs.rmSync(actual, { recursive: true, force: false });
     }
 }
 
@@ -244,7 +254,9 @@ async function publishRuntime() {
     });
 }
 
-main().catch(error => {
+if (require.main === module) main().catch(error => {
     console.error(error.stack || error.message || error);
     process.exitCode = 1;
 });
+
+module.exports = { extractArchive };
