@@ -8,22 +8,46 @@ const { sha256 } = require('./runtime-cache.cjs');
 
 function dependencyFingerprint(source) {
     const hash = crypto.createHash('sha256');
-    hash.update(`${POLICY_VERSION}:${process.platform}:${process.arch}:${process.versions.modules}\0`);
+    hash.update('dependency-content-v2:' + POLICY_VERSION + ':' + process.platform + ':' + process.arch + ':' + process.versions.modules + '\0');
+    // Cache inputs include the packing implementation, not only its policy.
+    hash.update(fs.readFileSync(__filename));
     hash.update(fs.readFileSync(path.join(__dirname, 'dependency-runtime-policy.cjs')));
     for (const name of ['package.json', 'package-lock.json']) {
         const filename = path.join(path.dirname(source), name);
-        hash.update(fs.existsSync(filename) ? fs.readFileSync(filename) : `missing:${name}`);
+        hash.update(fs.existsSync(filename) ? fs.readFileSync(filename) : 'missing:' + name);
     }
-    // Do not rely only on the lockfile: local rebuilds and deleted/modified
-    // dependencies must invalidate the archive too. ctime catches edits whose
-    // original mtime was restored, without reading 14,000 files every build.
+    // NTFS may retain identical mtime/ctime values for rapid same-size writes.
+    // Hash actual bytes. Fixed tar mtimes make timestamp/inode-only changes
+    // irrelevant, so clean hosted checkouts can reuse identical content.
+    const buffer = Buffer.allocUnsafe(128 * 1024);
+    function hashFile(filename, stat) {
+        const descriptor = fs.openSync(filename, 'r');
+        try {
+            const opened = fs.fstatSync(descriptor, { bigint: true });
+            if (!opened.isFile() || opened.size !== stat.size || opened.ino !== stat.ino) {
+                throw new Error('Dependency source changed while opening its content');
+            }
+            let total = 0n;
+            for (;;) {
+                const count = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+                if (!count) break;
+                total += BigInt(count);
+                if (total > stat.size) throw new Error('Dependency source grew while hashing its content');
+                hash.update(buffer.subarray(0, count));
+            }
+            const after = fs.fstatSync(descriptor, { bigint: true });
+            if (total !== stat.size || after.size !== stat.size) throw new Error('Dependency source size changed while hashing its content');
+        } finally { fs.closeSync(descriptor); }
+    }
     function walk(directory) {
         for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
             const filename = path.join(directory, entry.name);
             const stat = fs.lstatSync(filename, { bigint: true });
-            hash.update(`${path.relative(source, filename)}\0${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}\0`);
+            hash.update(path.relative(source, filename) + '\0' + stat.mode + ':' + stat.size + '\0');
             if (entry.isDirectory()) walk(filename);
             else if (entry.isSymbolicLink()) hash.update(fs.readlinkSync(filename));
+            else if (entry.isFile()) hashFile(filename, stat);
+            else throw new Error('Unsupported dependency entry in archive source');
         }
     }
     walk(source);

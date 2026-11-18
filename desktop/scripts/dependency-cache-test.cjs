@@ -5,13 +5,17 @@ const path = require('path');
 const os = require('os');
 const { spawnSync, execFileSync } = require('node:child_process');
 const tar = require('tar');
-const { prepareDependencyArchive } = require('./dependency-archive.cjs');
+const { dependencyFingerprint, prepareDependencyArchive } = require('./dependency-archive.cjs');
 const { dependenciesCurrent, recordDependencies } = require('./dependency-state.cjs');
 
 function fixture(t) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dependency-cache-'));
     assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep));
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    t.after(() => {
+        const resolved=path.resolve(root),parent=path.resolve(os.tmpdir())+path.sep;
+        assert.ok(resolved.startsWith(parent)&&path.basename(resolved).startsWith('dependency-cache-'));
+        fs.rmSync(resolved, { recursive: true, force: true });
+    });
     fs.mkdirSync(path.join(root, 'node_modules'));
     fs.writeFileSync(path.join(root, 'package.json'), '{"dependencies":{"example":"1.0.0"}}');
     fs.writeFileSync(path.join(root, 'package-lock.json'), 'lock-v1');
@@ -120,4 +124,51 @@ test('archive refuses source changes during build and preserves previous cache',
         fs.writeFileSync(path.join(source, 'example.js'), 'changed during tar');
     }), /归档过程中发生变化/);
     assert.equal(fs.readFileSync(path.join(cache, 'backend-dependencies.tar'), 'utf8'), 'stable');
+});
+
+
+test('same-size edits rebuild even when every observed file timestamp and inode stays unchanged', async t => {
+    const root=fixture(t),source=path.join(root,'node_modules'),file=path.join(source,'example.js');
+    const cache=path.join(root,'cache'),output=path.join(root,'output.tar');
+    const original=fs.lstatSync,before=original(file,{bigint:true});
+    let builds=0;
+    const run=()=>prepareDependencyArchive(source,cache,output,name=>fs.writeFileSync(name,'archive-'+(++builds)));
+    // Deterministically reproduce a coarse/unchanged NTFS metadata snapshot.
+    fs.lstatSync=(name,options)=>path.resolve(name)===file?before:original(name,options);
+    try {
+        const first=dependencyFingerprint(source);
+        assert.equal((await run()).reused,false);
+        assert.equal((await run()).reused,true);
+        fs.writeFileSync(file,'module.exports=2');
+        assert.equal(fs.statSync(file,{bigint:true}).size,before.size);
+        assert.notEqual(dependencyFingerprint(source),first);
+        assert.equal((await run()).reused,false);
+        assert.equal(builds,2);
+    } finally { fs.lstatSync=original; }
+});
+
+test('identical file content can reuse the fixed-mtime archive after timestamp changes or inode replacement', async t => {
+    const root=fixture(t),source=path.join(root,'node_modules'),file=path.join(source,'example.js');
+    const cache=path.join(root,'cache'),output=path.join(root,'output.tar');let builds=0;
+    const run=()=>prepareDependencyArchive(source,cache,output,name=>fs.writeFileSync(name,'archive-'+(++builds)));
+    assert.equal((await run()).reused,false);const first=dependencyFingerprint(source),bytes=fs.readFileSync(file),mode=fs.statSync(file).mode;
+    fs.utimesSync(file,new Date(0),new Date(0));
+    assert.equal(dependencyFingerprint(source),first);assert.equal((await run()).reused,true);
+    fs.unlinkSync(file);fs.writeFileSync(file,bytes);fs.chmodSync(file,mode);
+    assert.equal(dependencyFingerprint(source),first);assert.equal((await run()).reused,true);assert.equal(builds,1);
+});
+
+test('same-size source mutation during packing fails closed despite frozen metadata and preserves the old archive', async t => {
+    const root=fixture(t),source=path.join(root,'node_modules'),file=path.join(source,'example.js');
+    const cache=path.join(root,'cache'),output=path.join(root,'output.tar');
+    const original=fs.lstatSync,before=original(file,{bigint:true});
+    fs.lstatSync=(name,options)=>path.resolve(name)===file?before:original(name,options);
+    try {
+        await prepareDependencyArchive(source,cache,output,name=>fs.writeFileSync(name,'stable'));
+        fs.writeFileSync(file,'module.exports=2');
+        await assert.rejects(prepareDependencyArchive(source,cache,output,name=>{
+            fs.writeFileSync(name,'unstable');fs.writeFileSync(file,'module.exports=3');
+        }),/归档过程中发生变化/);
+        assert.equal(fs.readFileSync(path.join(cache,'backend-dependencies.tar'),'utf8'),'stable');
+    } finally { fs.lstatSync=original; }
 });
