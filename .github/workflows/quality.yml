@@ -157,7 +157,7 @@ jobs:
       - run: npm --prefix desktop run test:processes
       - run: npm --prefix desktop run test:deployment
       - run: npm --prefix desktop run test:resources
-      - run: node --test tools/ci/collect-release.test.cjs tools/ci/release-trigger.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-readiness.test.cjs
+      - run: node --test tools/ci/collect-release.test.cjs tools/ci/release-trigger.test.cjs tools/ci/workspace-idle.test.cjs tools/ci/release-environment.test.cjs tools/ci/auto-release-version.test.cjs tools/ci/set-build-version.test.cjs tools/ci/cloud-runtime.test.cjs tools/ci/cloud-download.test.cjs tools/ci/cloud-readiness.test.cjs
       - run: node tools/ci/check-release.cjs
         env:
           RELEASE_VERSION: ${{ inputs.release_version }}
