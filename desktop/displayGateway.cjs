@@ -11,6 +11,33 @@ const MIME = { '.html':'text/html; charset=utf-8','.js':'text/javascript; charse
     '.json':'application/json','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.ico':'image/x-icon',
     '.woff2':'font/woff2','.wasm':'application/wasm','.mp3':'audio/mpeg' };
 const dataPath = value => /^\/(?:api(?:\/|$)|ws(?:\?|$)|uploads(?:\/|$)|assets\/(?:models|motions)(?:\/|$))/.test(value);
+const WORKSPACE_ASSET_MIME = {
+    '.glb':'model/gltf-binary','.gltf':'model/gltf+json','.bin':'application/octet-stream',
+    '.json':MIME['.json'],'.png':MIME['.png'],'.jpg':MIME['.jpg'],'.jpeg':MIME['.jpg'],
+    '.webp':'image/webp','.ktx2':'image/ktx2'
+};
+async function openWorkspaceAsset(assetRoot, pathname) {
+    const match = /^\/assets\/(models|motions)\/(.+)$/.exec(pathname);
+    if (!match || match[2].split('/').some(part => !part || /[:\x00-\x1f]/.test(part))) return null;
+    const mime = WORKSPACE_ASSET_MIME[path.extname(pathname).toLowerCase()];
+    if (!mime) return null;
+    let handle;
+    try {
+        const root = await fs.promises.realpath(assetRoot);
+        const directory = path.join(root, match[1]);
+        const file = await fs.promises.realpath(path.join(directory, match[2]));
+        // Never follow a junction or symlink outside the selected source asset tree.
+        const relative = path.relative(directory, file);
+        if (!relative || relative === '..' || relative.startsWith('..'+path.sep) || path.isAbsolute(relative)) return null;
+        if (!(await fs.promises.stat(file)).isFile()) return null;
+        handle = await fs.promises.open(file, 'r');
+        const { size } = await handle.stat();
+        return { handle, size, mime };
+    } catch {
+        await handle?.close().catch(()=>{});
+        return null;
+    }
+}
 function gatewayListenError(error, port) {
     if (error.code === 'EACCES') return Object.assign(new Error(
         `Windows 拒绝监听本机界面端口 ${port}（可能处于系统保留端口段）；自动分配空闲界面端口未成功。采集服务与数据库未修改。`, { cause: error }),
@@ -20,10 +47,14 @@ function gatewayListenError(error, port) {
         { code: 'DISPLAY_UI_PORT_BUSY', port });
     return error;
 }
-async function startDisplayGateway({ backendOrigin, frontendDir, portFile }) {
+async function startDisplayGateway({ backendOrigin, frontendDir, portFile, workspaceAssetRoot }) {
     const target = new URL(backendOrigin);
     if (!['http:','https:'].includes(target.protocol) || target.username || target.password || target.pathname !== '/' || target.search || target.hash)
         throw Error('Invalid collector origin');
+    // Source assets are only a development aid for the local collector. They
+    // must never stand in for files on a remote service or in an installed product.
+    const localAssets = workspaceAssetRoot && ['127.0.0.1','localhost','[::1]'].includes(target.hostname)
+        ? path.resolve(workspaceAssetRoot) : null;
     const root = path.resolve(frontendDir), sockets = new Set(), requests = new Set();
     if (!fs.existsSync(path.join(root,'index.html'))) throw Error('大屏自身的界面资源不完整');
     let port=0, saved=null, savedBytes=null;
@@ -63,7 +94,22 @@ async function startDisplayGateway({ backendOrigin, frontendDir, portFile }) {
         if (pathname.includes('\\') || pathname.includes('\0') || pathname.split('/').some(part => part === '..' || part.startsWith('.'))) { res.writeHead(400);res.end();return; }
         if (dataPath(req.url)) {
             if (/^\/api\/internal(?:\/|$)/.test(pathname)) { res.writeHead(403);res.end();return; }
-            const upstream = transport.request(new URL(req.url,target.origin), { method:req.method,headers:headers(req) }, response => {
+            const upstream = transport.request(new URL(req.url,target.origin), { method:req.method,headers:headers(req) }, async response => {
+                if (localAssets && response.statusCode === 404 && ['GET','HEAD'].includes(req.method)) {
+                    // A cancelled client may tear down the upstream while the
+                    // filesystem check is pending and before pipeline attaches.
+                    response.on('error',()=>{});
+                    const local = await openWorkspaceAsset(localAssets, pathname);
+                    if (res.destroyed || res.writableEnded) { await local?.handle.close().catch(()=>{}); response.destroy(); return; }
+                    if (local) {
+                        response.resume();
+                        res.writeHead(200,{'content-type':local.mime,'content-length':local.size,
+                            'cache-control':'no-store','x-content-type-options':'nosniff'});
+                        if (req.method === 'HEAD') { res.end(); await local.handle.close().catch(()=>{}); }
+                        else pipeline(local.handle.createReadStream(),res,()=>{});
+                        return;
+                    }
+                }
                 const out = { ...response.headers };
                 // Cookies remain HttpOnly/SameSite and keep their scoped names.
                 // Only the local 127.0.0.1 UI leg is HTTP; HTTPS upstream keeps

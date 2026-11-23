@@ -3,14 +3,18 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),http=requ
 const {WebSocket,WebSocketServer}=require('../../backend/node_modules/ws');
 const {startDisplayGateway,gatewayListenError}=require('../displayGateway.cjs');
 const {collectorCenterExecutable}=require('../collectorLocation.cjs');
-async function fixture(t){
+async function fixture(t,{useWorkspaceAssets=false,backendHostname='127.0.0.1',overrideResponse=()=>null}={}){
     const root=fs.mkdtempSync(path.join(os.tmpdir(),'display-gateway-'));fs.writeFileSync(path.join(root,'index.html'),'DISPLAY_OWN_UI');fs.mkdirSync(path.join(root,'assets'));fs.writeFileSync(path.join(root,'assets','app.js'),'DISPLAY_JS');
-    const seen=[],server=http.createServer((req,res)=>{let body='';req.on('data',c=>body+=c);req.on('end',()=>{seen.push({url:req.url,headers:req.headers,body});res.setHeader('content-type','application/json');res.setHeader('set-cookie','dt_fixture=VALUE; Path=/api; Domain=service.example; Secure; HttpOnly; SameSite=Strict');res.end(JSON.stringify({ok:true,path:req.url,body}));});});
+    const sourceAssets=path.join(root,'workspace-assets');fs.mkdirSync(path.join(sourceAssets,'models'),{recursive:true});fs.mkdirSync(path.join(sourceAssets,'motions'));
+    const seen=[],server=http.createServer((req,res)=>{let body='';req.on('data',c=>body+=c);req.on('end',()=>{seen.push({url:req.url,headers:req.headers,body});
+        const response=overrideResponse(req);
+        if(response){res.writeHead(response.status,{'content-type':'text/plain'});res.end(response.body);return;}
+        res.setHeader('content-type','application/json');res.setHeader('set-cookie','dt_fixture=VALUE; Path=/api; Domain=service.example; Secure; HttpOnly; SameSite=Strict');res.end(JSON.stringify({ok:true,path:req.url,body}));});});
     const wss=new WebSocketServer({noServer:true});server.on('upgrade',(req,socket,head)=>wss.handleUpgrade(req,socket,head,ws=>{seen.push({url:req.url,headers:req.headers});ws.on('message',data=>ws.send(data));}));
-    await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const upstream=`http://127.0.0.1:${server.address().port}`;
-    const gateway=await startDisplayGateway({backendOrigin:upstream,frontendDir:root});
+    await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const upstream=`http://${backendHostname}:${server.address().port}`;
+    const gateway=await startDisplayGateway({backendOrigin:upstream,frontendDir:root,workspaceAssetRoot:useWorkspaceAssets?sourceAssets:undefined});
     t.after(async()=>{await gateway.close();for(const c of wss.clients)c.terminate();await new Promise(resolve=>server.close(resolve));fs.rmSync(root,{recursive:true,force:true});});
-    return {root,seen,server,gateway,upstream};
+    return {root,seen,server,gateway,upstream,sourceAssets};
 }
 test('display owns static UI; only API/model/upload data reaches the configured collector',async t=>{
     const f=await fixture(t);
@@ -18,6 +22,71 @@ test('display owns static UI; only API/model/upload data reaches the configured 
     assert.equal(f.seen.length,0,'collector never serves admin/display UI');
     for(const route of ['/api/health','/uploads/models/a.glb','/assets/models/a.glb','/assets/motions/a.glb']){assert.equal((await fetch(f.gateway.origin+route)).status,200);assert.equal(f.seen.at(-1).url,route);}
     assert.equal(fs.existsSync(path.join(f.root,'data')),false);assert.equal(fs.existsSync(path.join(f.root,'mysql')),false);
+});
+test('the workspace launcher can read source GLB, previews and motion assets when the local collector returns 404',async t=>{
+    const f=await fixture(t,{useWorkspaceAssets:true,overrideResponse:()=>({status:404,body:'COLLECTOR_MISSING'})});
+    const model='cad_multipurpose_furnace_082000.glb',glb=Buffer.from('glTF\x02\x00\x00\x00');
+    fs.writeFileSync(path.join(f.sourceAssets,'models',model),glb);
+    fs.mkdirSync(path.join(f.sourceAssets,'models','预览'));
+    fs.writeFileSync(path.join(f.sourceAssets,'models','预览','设备.png'),'PNG_FIXTURE');
+    fs.writeFileSync(path.join(f.sourceAssets,'motions','cad.json'),'{"motion":true}');
+    const resource=f.gateway.origin+'/assets/models/'+model;
+    const res=await fetch(resource+'?v=current');
+    assert.equal(res.status,200);assert.equal(res.headers.get('content-type'),'model/gltf-binary');assert.equal(res.headers.get('cache-control'),'no-store');
+    assert.deepEqual(Buffer.from(await res.arrayBuffer()),glb);
+    const head=await fetch(resource,{method:'HEAD'});
+    assert.equal(head.status,200);assert.equal(Number(head.headers.get('content-length')),glb.length);assert.equal(await head.text(),'');
+    assert.equal(await (await fetch(f.gateway.origin+'/assets/models/'+encodeURIComponent('预览')+'/'+encodeURIComponent('设备.png'))).text(),'PNG_FIXTURE');
+    assert.deepEqual(await (await fetch(f.gateway.origin+'/assets/motions/cad.json')).json(),{motion:true});
+    assert.equal(f.seen.length,4,'every asset first checks the authoritative service');
+});
+test('local fallback never replaces upstream content, uploads, service errors, private assets or writes',async t=>{
+    const f=await fixture(t,{useWorkspaceAssets:true,overrideResponse:req=>{
+        if(req.url.endsWith('/present.glb')) return {status:200,body:'UPSTREAM_BYTES'};
+        if(req.url.endsWith('/service-error.glb')) return {status:503,body:'UPSTREAM_OFFLINE'};
+        if(req.url.endsWith('/forbidden.glb')) return {status:403,body:'UPSTREAM_FORBIDDEN'};
+        return {status:404,body:'COLLECTOR_MISSING'};
+    }});
+    for(const filename of ['present.glb','service-error.glb','forbidden.glb','local.glb','working.blend'])
+        fs.writeFileSync(path.join(f.sourceAssets,'models',filename),'WORKSPACE_BYTES');
+    fs.writeFileSync(path.join(f.root,'outside.glb'),'OUTSIDE');
+    fs.symlinkSync(f.root,path.join(f.sourceAssets,'models','escape'),process.platform==='win32'?'junction':'dir');
+    const requests=[
+        ['/assets/models/present.glb',200,'UPSTREAM_BYTES'],
+        ['/assets/models/service-error.glb',503,'UPSTREAM_OFFLINE'],
+        ['/assets/models/forbidden.glb',403,'UPSTREAM_FORBIDDEN'],
+        ['/uploads/models/local.glb',404,'COLLECTOR_MISSING'],
+        ['/assets/models/missing.glb',404,'COLLECTOR_MISSING'],
+        ['/assets/models/working.blend',404,'COLLECTOR_MISSING'],
+        ['/assets/models/escape/outside.glb',404,'COLLECTOR_MISSING'],
+        ['/assets/models/local.glb',404,'COLLECTOR_MISSING',{method:'POST'}]
+    ];
+    for(const [route,status,body,options] of requests){const response=await fetch(f.gateway.origin+route,options);assert.equal(response.status,status,route);assert.equal(await response.text(),body,route);}
+    assert.equal((await fetch(f.gateway.origin+'/assets/models/local.glb',{headers:{Origin:'http://unrelated.example'}})).status,403);
+});
+test('without explicit workspace assets a model 404 stays a 404; no implicit release or packaged fallback',async t=>{
+    const f=await fixture(t,{overrideResponse:()=>({status:404,body:'COLLECTOR_MISSING'})});
+    fs.writeFileSync(path.join(f.sourceAssets,'models','local.glb'),'WORKSPACE');
+    const response=await fetch(f.gateway.origin+'/assets/models/local.glb');
+    assert.equal(response.status,404);assert.equal(await response.text(),'COLLECTOR_MISSING');
+});
+test('a configured remote collector stays authoritative even in workspace mode',async t=>{
+    const request=http.request;
+    // Keep the remote-host policy realistic without contacting an external host.
+    t.mock.method(http,'request',(url,options,callback)=>{
+        assert.equal(url.hostname,'collector.example');
+        return request(url,{...options,lookup:(hostname,hints,done)=>{
+            assert.equal(hostname,'collector.example');
+            if(hints.all) done(null,[{address:'127.0.0.1',family:4}]);
+            else done(null,'127.0.0.1',4);
+        }},callback);
+    });
+    const f=await fixture(t,{useWorkspaceAssets:true,backendHostname:'collector.example',
+        overrideResponse:()=>({status:404,body:'REMOTE_MISSING'})});
+    fs.writeFileSync(path.join(f.sourceAssets,'models','local.glb'),'WORKSPACE');
+    const response=await fetch(f.gateway.origin+'/assets/models/local.glb');
+    assert.equal(response.status,404);assert.equal(await response.text(),'REMOTE_MISSING');
+    assert.equal(f.seen[0].headers.host,new URL(f.upstream).host);
 });
 test('API forwarding preserves body/CSRF/cookies, rejects foreign Origin and Host, and cannot control service shutdown',async t=>{
     const f=await fixture(t),url=f.gateway.origin+'/api/example';

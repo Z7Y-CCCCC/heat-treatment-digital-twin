@@ -1744,6 +1744,8 @@ async function launchApplication() {
     if (deployment.mode === 'client') {
         displayGateway = await require('./displayGateway.cjs').startDisplayGateway({ backendOrigin: deployment.backendOrigin,
             portFile: path.join(app.getPath('userData'),'ui-gateway.json'),
+            workspaceAssetRoot: !app.isPackaged && process.argv.includes('--workspace-ui')
+                ? path.resolve(__dirname, '..', 'backend', 'assets') : undefined,
             frontendDir: app.isPackaged ? resourcePath('frontend') : path.resolve(__dirname, '..', 'frontend', 'dist') });
         if (displayGateway.originMigration) {
             updateStartupProgress('ui-origin-recovery', 28, '正在自动更换界面端口', '保留并校验本地草稿和界面设置');
