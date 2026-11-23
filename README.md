@@ -1,533 +1,498 @@
-> **Windows 2.3.3 交付说明：**完整安装向导可选“仅展示 / 展示＋本机采集”，离线内置同提交独立采集插件。已装采集服务必须同步更新，避免新前台连接旧服务；不清空已有现场数据。安装包只保留固定 7 个视角静态组件模板，模型/动作/料口资产单独导入。见 [安装与交付说明](desktop/README-交付说明.md)。旧版发布附件不代表 main 当前源码。
+# 热处理数字孪生大屏
 
-# 动态大屏 / 热处理数字孪生控制中心
+**把车间布局、设备三维模型和实时数据放到同一块大屏上。**
 
-这是一个面向热处理车间的数字孪生大屏与后台组态系统。正式客户端使用 **Unity 原生三维大屏 + Electron 桌面宿主 + WebView2/Vue 后台**；Node.js 后端提供配置、PLC/模拟数据、模型资产和报警/指标服务。
+面向热处理车间的 Windows 数字孪生与组态系统。从全厂、车间、产线逐级查看设备，可以在三维场景中观察炉门、料车和关键部件的状态，也可以在同一视角查看温度趋势、设备离线和报警。工程师在后台完成车间编排、模型导入、点位绑定和画面发布；现场人员在大屏上查看，不需要进入组态后台。
 
-仓库地址：[heat-treatment-digital-twin](https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin)，协作基线为 **main**。
+[功能特性](#功能特性) · [界面图集](#界面图集) · [系统架构](#系统架构) · [快速开始](#快速开始) · [部署与交付](#部署与交付) · [开发与协作](#开发与协作)
 
-历史改动与未完成验收统一登记在 [历史需求验收台账](docs/历史需求验收台账.md)。中断续做先查台账及对应测试结果，不以聊天中的完成说明代替验收。主客户端与可选采集插件已经拆分；旧 Release 不代表当前源码的分包状态。
+## 功能特性
 
-## 新同事接手
-
-**涉及默认画面、出厂数据或打包，必须先读 [打包必看](打包必看.md) 和 [agent 约束](AGENTS.md)。** 固定保留天津工厂当前确认的 7 个工厂内视角组件布局作为内置默认模板；其他现场内容仍为空。不得每次从打包电脑的数据库重导模板，也不得为做空包清除本机数据。
-
-仅体验软件请从已验收的 Windows x64 Release 获取安装包；源码下载与安装包不同。**旧 CAD 动作演示 2.3.1 含预置内容，不符合当前空白交付要求。** 当前构建固定为空系统，以发布清单 `contentPolicy: empty-v1`、`emptySystem: true` 为准，不以相同版本号的旧 EXE 代替。新安装没有工厂、设备、模型、动作或历史；更新安装不会删除用户已有现场数据。
-
-项目模型改为独立、选择性导入：根目录 `导入文件` 保存 GLB、动作 GLB、采样 JSON、资产 ZIP 与正式 Blender 源工程，不进入安装包，也不是数据库备份。在后台模型管理、动作动画、场景与光效使用“导入模型 / 厂房 / 动作包”；厂房导入后选择“项目厂房模型”。带动作请选完整资产 ZIP，单个 GLB 不会携带另外文件中的动作数据。流程与验收见 [空系统安装包与模型导入验收](docs/空系统安装包与模型导入验收-20261104.md)。
-
-先阅读 [开发交接与仓库约定](docs/开发交接与仓库约定.md)：安装依赖、隔离数据库、启动后台、构建 Unity/桌面客户端、运行测试，以及哪些文件不能提交。
-
-仓库只包含源码、锁文件、可编辑模型与必要运行资产；**不包含依赖目录、构建 EXE/安装包、Unity 缓存、现场数据库、密码或测试输出**。刚克隆时不能直接双击「启动大屏.cmd」，需先按交接说明构建。
-
-最新功能包括五台井式炉模型、按设备手工拖拽拆解布局、部件点击/悬浮改进、配置同步与异常退出清理。旧网页 `/` 大屏已弃用；后台开发访问 `/admin`，完整三维运行使用 Unity 客户端。
-
-## 功能概览
-
-- **3D 大屏**：Unity 原生运行；Vue/Three.js 用于后台模型预览、手工拆解与组态编辑。
-- **设备模型动画**：支持将 PLC 点位绑定到炉门、风扇、油搅拌等模型动作。
-- **PLC 数据采集**：独立进程运行只读 PLC 采集器，通过私有 IPC 接入管理 API，再由 WebSocket 推送实时数据；采集崩溃或无响应独立恢复，不结束管理 API。详见 [采集进程隔离](docs/采集进程隔离.md)。
-- **离线演示/模拟数据**：后台可切换到模拟模式，不接 PLC 也能演示。
-- **设备离线判定**：PLC 连接或重连超过阈值后进入 `offline/bad`，前端自动置灰。
-- **后台组态**：车间、产线、设备、点位、模型资产、组件布局、设备浮标、诊断面板等可配置。
-- **点位语音播报**：点位可配置变化、上升沿、下降沿、等于阈值、越上限、越下限等触发规则，支持系统文字转语音、生成 WAV 和上传固定音频。
-- **报警跑马灯**：报警履历支持配置显示条数与时间范围。
-- **数据库可切换**：默认 MySQL/MariaDB；代码保留 SQLite、PostgreSQL、SQL Server 适配入口。
-- **离线授权**：支持 Ed25519 签名许可证、有效期/客户/功能校验；不联网也能完成现场授权。
-
-## 技术栈
-
-| 模块 | 技术 |
+| 模块 | 可以做什么 |
 | --- | --- |
-| 前端 | Vue 3、Vite、Three.js、GSAP、ECharts |
-| 后端 | Node.js、Express、WebSocket(ws)、nodes7 |
-| 开发默认数据库 | MySQL/MariaDB |
-| Windows 安装版数据库 | 桌面宿主管理的私有 MySQL，兼容既有 SQLite 配置 |
-| 可选数据库 | PostgreSQL、SQL Server |
-| 工具 | Blender Python 建模脚本、PLC 模拟脚本 |
+| **三维车间与设备巡检** | 从全厂、车间、产线进入设备，切换实体、外壳透视、内部拆解和关键部件详情。可用视角取决于现场导入的模型和配置。 |
+| **车间编排与资产复用** | 在三维画布布置设备、调整朝向和料口对接；在模型库分别管理 GLB 模型、动作包和拆解布局，同型号设备可以复用资产。 |
+| **设备状态与动作联动** | 将点位绑定到炉门、料车、风扇等模型动作。以料车为例，两个到位开关只确认端点；信号冲突、过期或无效时不会猜测物理位置。 |
+| **实时数据与报警** | 采集插件只读接入西门子 S7、Modbus TCP 和 OPC UA；数据中心还可配置外部接口、数据库和文件。画面可展示实时点位、趋势、报警和状态，可按规则配置语音播报。 |
+| **画面设计与发布** | 在设计器中配置图表、指标、设备状态等组件，绑定当前设备点位或外部数据集；草稿与运行发布版本分开，编辑不直接替换正在展示的画面。 |
+| **现场运维** | 展示和采集可分别部署。采集运行中心查看服务状态、日志和点位；支持本机备份、整站灾备与离线授权。 |
 
-## 目录结构
+**部署边界：大屏用于看状态、查数据和做组态，不向 PLC 写值，不替代 PLC 控制或安全联锁。**
 
-```text
-backend/                    后端服务
-  assets/models/            3D 模型资产、预览图
-  db/database.js            数据库连接、建表、种子数据
-  db/init-mysql.sql         可选的 MySQL 空库创建脚本
-  routes/                   后台管理 API
-  services/                 数据引擎、PLC 采集器、模拟器、WebSocket
-  server.js                 后端入口
-frontend/                   Vue 3 大屏与管理后台
-  src/RootApp.vue           网页与后台入口
-  src/views/AdminPanel.vue  管理后台
-  src/runtime/              实时数据、组件渲染、运行时配置
-  src/three/                3D 场景和模型渲染
-mock-server/                辅助模拟服务
-tools/                      Blender 与动画验证工具
-docs/                       项目文档
-多用炉/ 回火炉/ 清洗机/ 小车/  现场设备参考图
+## 界面图集
+
+共 **49 张实拍截图**。按当前软件菜单分组，每组先展示一页，其余页面可逐组展开；点击图片可查看原尺寸。截图来自当前源码和隔离演示工程，不含现场连接、工厂资料或凭据，不使用旧版大屏截图。
+
+[显示与现场操作](#显示与现场操作) · [Unity 原生大屏](#unity-原生大屏) · [工厂建模与编排](#工厂建模与编排) · [模型资产与动作联动](#模型资产与动作联动) · [数据中心](#数据中心) · [画面组态与视觉](#画面组态与视觉) · [权限与系统维护](#权限与系统维护) · [独立采集运行中心](#独立采集运行中心) · [CAD 设备模型](#cad-设备模型)
+
+### 显示与现场操作
+
+从集团地图查看站点分布；现场操作中心把投屏和整站备份放在一个入口，不必进入组态菜单。
+
+#### 集团地图
+
+查看演示站点分布、接入情况与配置规模。
+
+![集团地图](docs/assets/readme/group-map.webp)
+
+<details>
+<summary>展开其余 4 页</summary>
+
+本组其余页面：街道下钻、工厂建筑、现场操作中心、后台登录。
+
+#### 街道下钻
+
+从地图进入演示工厂所在街道，查看站点入口。
+
+![街道下钻](docs/assets/readme/factory-street.webp)
+
+#### 工厂建筑
+
+查看选中工厂的建筑模型与进入全厂视角的入口。
+
+![工厂建筑](docs/assets/readme/factory-building.webp)
+
+#### 现场操作中心
+
+在权限允许范围内配置投屏显示，导出或恢复整站备份。
+
+![现场操作中心](docs/assets/readme/customer-operations.webp)
+
+#### 后台登录
+
+区分只看大屏的账号与可以修改组态的账号。
+
+![后台登录](docs/assets/readme/admin-login.webp)
+
+</details>
+
+### Unity 原生大屏
+
+以下为当前 Unity 客户端在隔离工程里的三维层实拍，采集时未叠加独立的 WebView2 数据层，不使用旧备用界面。
+
+#### Unity · 全厂总览
+
+看全厂运行状态及车间、产线和设备的分布。
+
+![Unity · 全厂总览](docs/assets/readme/factory-overview.webp)
+
+<details>
+<summary>展开其余 6 页</summary>
+
+本组其余页面：Unity · 车间视角、Unity · 产线视角、Unity · 设备实体、Unity · 设备外壳透视、Unity · 设备拆解、Unity · 关键部件详情。
+
+#### Unity · 车间视角
+
+进入单个车间，查看其下的产线与设备。
+
+![Unity · 车间视角](docs/assets/readme/workshop-view.webp)
+
+#### Unity · 产线视角
+
+沿产线查看设备布置和工位关系。
+
+![Unity · 产线视角](docs/assets/readme/line-view.webp)
+
+#### Unity · 设备实体
+
+查看一台设备的外观和运行上下文。
+
+![Unity · 设备实体](docs/assets/readme/device-solid.webp)
+
+#### Unity · 设备外壳透视
+
+透过外壳观察内部机构。
+
+![Unity · 设备外壳透视](docs/assets/readme/device-xray.webp)
+
+#### Unity · 设备拆解
+
+查看分离后的部件及相对位置。
+
+![Unity · 设备拆解](docs/assets/readme/device-exploded.webp)
+
+#### Unity · 关键部件详情
+
+聚焦单个部件，检查它的关联信息。
+
+![Unity · 关键部件详情](docs/assets/readme/device-part.webp)
+
+</details>
+
+### 工厂建模与编排
+
+从工厂、车间、产线到设备组织空间；平面定位和三维检查使用同一套布局。
+
+#### 车间编排 · 俯视排布
+
+在俯视画布上组织车间内的产线与设备。
+
+![车间编排 · 俯视排布](docs/assets/readme/workshop-plan.webp)
+
+<details>
+<summary>展开其余 6 页</summary>
+
+本组其余页面：工厂与区域、车间管理、设备管理、车间编排 · 产线布局、车间编排 · 三维效果、设备运动配置。
+
+#### 工厂与区域
+
+登记工厂，维护区域和展示范围。
+
+![工厂与区域](docs/assets/readme/factory-regions.webp)
+
+#### 车间管理
+
+维护车间、空间尺寸与边界。
+
+![车间管理](docs/assets/readme/workshops.webp)
+
+#### 设备管理
+
+按车间和产线筛选设备，关联模型与数据连接。
+
+![设备管理](docs/assets/readme/devices.webp)
+
+#### 车间编排 · 产线布局
+
+查看产线内的设备排布、工位与轨道。
+
+![车间编排 · 产线布局](docs/assets/readme/line-plan.webp)
+
+#### 车间编排 · 三维效果
+
+在后台预览空间布局；这不是正式 Unity 大屏。
+
+![车间编排 · 三维效果](docs/assets/readme/workshop-3d.webp)
+
+#### 设备运动配置
+
+配置料车等移动设备的路径、位置与到位反馈。
+
+![设备运动配置](docs/assets/readme/mobile-motion.webp)
+
+</details>
+
+### 模型资产与动作联动
+
+同一模型可以用于多台设备，拆解布局、料口和动作可分别配置。
+
+#### 拆解布局
+
+调整部件排列、拆解播放效果和独立的观察镜头。
+
+![拆解布局](docs/assets/readme/disassembly.webp)
+
+<details>
+<summary>展开其余 5 页</summary>
+
+本组其余页面：模型管理 · 模型资产、模型管理 · 进出料口、动作动画 · 部件动作、动作动画 · 实时联动、动作动画 · 设备联动。
+
+#### 模型管理 · 模型资产
+
+管理 GLB / glTF 资源、归属范围及三维预览。
+
+![模型管理 · 模型资产](docs/assets/readme/model-library.webp)
+
+#### 模型管理 · 进出料口
+
+定位设备料口和方向，供对接预览及进出料信号配置使用。
+
+![模型管理 · 进出料口](docs/assets/readme/loading-ports.webp)
+
+#### 动作动画 · 部件动作
+
+定义门、风扇、料车机构等模型部件动作。
+
+![动作动画 · 部件动作](docs/assets/readme/part-motion.webp)
+
+#### 动作动画 · 实时联动
+
+按设备将动作绑定到点位或数据项，配置范围映射、条件或到位反馈。
+
+![动作动画 · 实时联动](docs/assets/readme/live-linkage.webp)
+
+#### 动作动画 · 设备联动
+
+选择参与联动的设备，预览同一产线的模拟工步；不下发控制。
+
+![动作动画 · 设备联动](docs/assets/readme/device-linkage.webp)
+
+</details>
+
+### 数据中心
+
+数据源负责接入，数据表负责整理，点位映射与监视负责配置、核查设备读数。
+
+#### 点位监视
+
+核对当前值、单位、读取质量和更新时间。
+
+![点位监视](docs/assets/readme/point-monitor.webp)
+
+<details>
+<summary>展开其余 4 页</summary>
+
+本组其余页面：数据表、数据源、数据源类型目录、点位映射与报警。
+
+#### 数据表
+
+按工厂和设备查找数据表、字段及关联配置。
+
+![数据表](docs/assets/readme/data-tables.webp)
+
+#### 数据源
+
+维护只读连接并检查状态。
+
+![数据源](docs/assets/readme/data-sources.webp)
+
+#### 数据源类型目录
+
+查看可配置的数据源与接入方式；目录条目不等于现场已有连接。
+
+![数据源类型目录](docs/assets/readme/data-source-catalog.webp)
+
+#### 点位映射与报警
+
+配置地址、采样和用途；报警触发条件在点位所在行维护。
+
+![点位映射与报警](docs/assets/readme/point-mapping.webp)
+
+</details>
+
+### 画面组态与视觉
+
+大屏组件和视觉设置在同一入口，草稿与运行发布版本分开。
+
+#### 大屏设计器
+
+按视角编排组件、绑定数据，预览、保存草稿或发布。
+
+![大屏设计器](docs/assets/readme/dashboard-designer.png)
+
+<details>
+<summary>展开其余 3 页</summary>
+
+本组其余页面：地图底图与主题、加载画面、场景与光效。
+
+#### 地图底图与主题
+
+配置地图底图、品牌默认值与配色。
+
+![地图底图与主题](docs/assets/readme/map-theme.webp)
+
+#### 加载画面
+
+预览和调整启动图、配色及加载文案。
+
+![加载画面](docs/assets/readme/loading-screen.webp)
+
+#### 场景与光效
+
+配置 Unity 灯光、后处理、厂房和空间环境。
+
+![场景与光效](docs/assets/readme/scene-lighting.webp)
+
+</details>
+
+### 权限与系统维护
+
+账号、安全、投屏、数据库和备份分别有独立入口；下方展开逐页查看。
+
+#### 运行与投屏
+
+配置展示端运行和投屏选项。
+
+![运行与投屏](docs/assets/readme/runtime-casting.webp)
+
+<details>
+<summary>展开其余 10 页</summary>
+
+本组其余页面：用户与权限、后台安全、数据库与备份 · 主库连接、数据库与备份 · 自动备份、数据库与备份 · 备份记录与保留、数据库与备份 · 整站灾备、项目迁移、客户端性能、采集状态、授权与版本。
+
+#### 用户与权限
+
+维护账户及对页面的查看、修改、删除和发布权限。
+
+![用户与权限](docs/assets/readme/users-roles.webp)
+
+#### 后台安全
+
+设置密码策略和无操作自动锁定，或主动锁定后台。
+
+![后台安全](docs/assets/readme/backend-security.webp)
+
+#### 数据库与备份 · 主库连接
+
+查看数据库类型和连接配置，部署前先测试连接。
+
+![数据库与备份 · 主库连接](docs/assets/readme/database.webp)
+
+#### 数据库与备份 · 自动备份
+
+选择备份对象、执行时机和周期。
+
+![数据库与备份 · 自动备份](docs/assets/readme/automatic-backup.webp)
+
+#### 数据库与备份 · 备份记录与保留
+
+查看备份记录，并配置保存周期与清理策略。
+
+![数据库与备份 · 备份记录与保留](docs/assets/readme/backup-history.webp)
+
+#### 数据库与备份 · 整站灾备
+
+导出或恢复包含业务数据和现场资产的整站备份。
+
+![数据库与备份 · 整站灾备](docs/assets/readme/site-backup.webp)
+
+#### 项目迁移
+
+用项目包迁移配置和引用资产，与恢复整站备份区分。
+
+![项目迁移](docs/assets/readme/project-migration.webp)
+
+#### 客户端性能
+
+调整 Unity 渲染档位与配置。
+
+![客户端性能](docs/assets/readme/performance.webp)
+
+#### 采集状态
+
+查看采集进程、设备健康、数据来源与读数更新。
+
+![采集状态](docs/assets/readme/collection-status.webp)
+
+#### 授权与版本
+
+查看版本、离线授权状态和激活记录，截图隐藏了本机授权指纹。
+
+![授权与版本](docs/assets/readme/license-release.webp)
+
+</details>
+
+### 独立采集运行中心
+
+以下为当前 WinForms 程序的演示界面。关闭中心窗口不会停止后台采集服务。
+
+#### 运行中心 · 设备采集状态
+
+查看正常、异常与停用设备，以及采集进程状态。
+
+![运行中心 · 设备采集状态](docs/assets/readme/collector-status.webp)
+
+<details>
+<summary>展开其余 3 页</summary>
+
+本组其余页面：运行中心 · API / 数据库、运行中心 · 日志、运行中心 · 实时点位。
+
+#### 运行中心 · API / 数据库
+
+查看共用后台的 API、数据库和显示连接状态。
+
+![运行中心 · API / 数据库](docs/assets/readme/collector-api.webp)
+
+#### 运行中心 · 日志
+
+按级别筛选和搜索日志，便于定位异常和导出脱敏诊断。
+
+![运行中心 · 日志](docs/assets/readme/collector-logs.webp)
+
+#### 运行中心 · 实时点位
+
+从采集端查看点位值、质量和更新时间。
+
+![运行中心 · 实时点位](docs/assets/readme/collector-points.webp)
+
+</details>
+
+### CAD 设备模型
+
+下图是仓库中的 CAD 模型预览，**不计入界面截图，也不是大屏运行界面**。回火炉、料车、备料台、风冷台、清洗机和水冷槽可按项目单独导入，模型不随安装包预装。
+
+![热处理产线 CAD 设备模型预览](backend/assets/models/cad_general_20261103_v1/七套设备总览.png)
+
+相关说明：[车间编排](docs/车间编排画布直接操作-20261115.md) · [设备透视](docs/设备外壳透视.md) · [模型与动作包](docs/动作包与模型复用.md)
+
+## 系统架构
+
+```mermaid
+flowchart TB
+    PLC["现场 PLC · S7 / Modbus TCP / OPC UA"] -->|只读轮询| Worker["可选采集插件 · 独立采集进程"]
+    Worker -->|私有 IPC · 点位值、质量与时间| API["Node.js 管理 API 与实时服务"]
+    External["业务接口 · 外部数据库 · 文件"] -->|只读获取| API
+    API <-->|配置、发布记录与历史| DB[("持久化数据库")]
+    API -->|运行配置与实时数据| Runtime["Unity 三维场景 + WebView2 画面叠加层"]
+    API <-->|读取配置 / 受权限保护的编辑与发布| Admin["Vue 组态后台"]
 ```
 
-## 环境要求
+- **展示端**：Electron 管理桌面程序的启动和退出；Unity 负责工厂内的三维场景、视角和动作，WebView2 承载画面组件与后台。Three.js 用于后台三维预览和编辑，不是正式大屏渲染器。
+- **数据端**：Express 提供配置与管理 API，WebSocket 推送实时数据。安装采集插件后，采集进程与管理 API 隔离，前台或采集运行中心关闭不等于采集服务停止。
+- **存储端**：Windows 新安装版采用受程序管理的私有 MySQL；源码开发可以显式使用隔离 SQLite。项目资产、连接参数和备份属于现场数据，不来自仓库快照。
 
-- Node.js：使用 **22 LTS（至少 22.12.0）或更新的兼容 LTS**。当前 Vite 与 SQLite 原生依赖不支持旧文档所写的 Node 16/18。
-- MySQL 或 MariaDB：默认连接参数如下：
-  - Host：`127.0.0.1`
-  - Port：`3307`
-  - User：`root`
-  - Password：`root`
-  - Database：`dongtai_daping`
-- 可选：Blender 3.x+，只在重新生成模型资产时需要。
+技术入口：[Unity 客户端](unity-client/README.md) · [采集进程隔离](docs/采集进程隔离.md) · [外部数据源工作台](docs/外部数据源工作台.md) · [组件与数据集绑定](docs/可复用数据集与组件绑定.md)
 
-> 注意：本项目默认要求安装 MySQL/MariaDB。SQLite 只是代码保留的可选适配，不是默认运行方式。
+## 快速开始
 
-## 数据库初始化说明
+### 只体验软件：使用 Windows 安装包
 
-项目**不依赖完整 SQL dump 文件**。
+从 [GitHub Releases](https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin/releases) 选择已验收、符合现场要求的版本，查看对应发布说明；不要把旧版附件当成当前源码的构建结果。适用 Windows 10 1809+ 或 Windows 11，Intel / AMD x64。
 
-后端启动时会自动完成这些动作：
+没有 PLC 时选择仅展示，配置自己的只读业务数据源，或显式切到模拟演示。首次启动按提示完成[离线激活](docs/离线激活与厂商签发.md)和本机账户设置；系统没有通用后台密码。
 
-1. 读取数据库配置。
-2. 自动创建 `dongtai_daping` 数据库（账号需要有 `CREATE DATABASE` 权限）。
-3. 自动创建所有表。
-4. 自动插入默认项目、场景、组件、设备、点位模板等种子数据。
+### 从源码查看后台：使用隔离 SQLite
 
-对应逻辑在：
+准备 Git 与 Node.js 22 LTS（至少 22.12.0），在新的 PowerShell 会话执行：
 
-```text
-backend/db/database.js
-```
-
-如果你的数据库账号没有建库权限，可以先手动执行这个可选 SQL：
-
-```bash
-mysql -uroot -proot -P3307 < backend/db/init-mysql.sql
-```
-
-这个 SQL 只负责创建空库；表结构和默认数据仍由后端启动时自动生成，避免 SQL 文件和代码里的结构不同步。
-
-## 快速启动
-
-### 1. 克隆项目
-
-```bash
+```powershell
 git clone https://github.com/Z7Y-CCCCC/heat-treatment-digital-twin.git
 cd heat-treatment-digital-twin
-```
-
-### 2. 准备 MySQL/MariaDB
-
-确保本机 MySQL/MariaDB 已启动，并监听 `3307` 端口。
-
-如果你用的是本机 MySQL 默认 `3306`，可以二选一：
-
-1. 把 MySQL 端口改到 `3307`；或
-2. 用环境变量覆盖端口：
-
-```powershell
-$env:MYSQL_PORT="3306"
-```
-
-也可以手动创建空库：
-
-```sql
-CREATE DATABASE IF NOT EXISTS dongtai_daping CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-```
-
-### 3. 启动后端
-
-```bash
-cd backend
-npm install
-npm start
-```
-
-后端默认地址：
-
-- API：`http://localhost:3001/api`
-- 健康检查：`http://localhost:3001/api/health`
-- WebSocket：`ws://localhost:3001/ws`
-
-### 4. 启动前端
-
-另开一个终端：
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-打开：
-
-- 完整三维大屏：按交接说明构建并启动 Unity 客户端（旧网页 `/` 已弃用）
-- 后台：`http://localhost:5173/admin`
-
-## 后台密码与工程师解锁
-
-后台默认受密码保护，实时大屏、设备数据采集和普通视角导航不需要解锁。
-
-1. **首次交付**：由工程师在现场电脑打开“后台管理”，设置 6–128 个字符的后台密码。登录账号支持中文。系统没有通用默认密码；请完成设置后再交给普通用户。
-2. **日常配置**：输入密码后进入后台。有效会话内切回大屏、重新进入或刷新后台，都不用重复输入密码。
-3. **自动锁定**：进入“系统设置 → 后台安全”，设置“自动锁定时间（分钟）”，支持 **1–480 分钟**，默认 **30 分钟**，点击“保存自动锁定设置”后生效并持久保存。只有后台里的人工操作会续期，数据刷新、动画和轮询不会让后台一直保持解锁。
-4. **离开现场**：先保存编辑内容，再点击后台顶部或“后台安全”页的 **立即锁定**。桌面版顶部页签栏也提供相同按钮，切到实时大屏后仍可使用。此操作立即撤销所有工程师会话，关闭后台编辑界面，大屏继续展示；再次进入需要密码。
-5. **修改密码**：在同一页面输入原密码、新密码和确认密码。修改成功后当前窗口继续工作，其他工程师会话失效。
-
-单次解锁最长 8 小时；重启后端或软件会使全部会话失效，需要重新输入密码。锁定会关闭未保存的编辑界面，请先保存。若锁定时服务无法连接，页面会明确提示“服务器尚未确认”，应恢复连接并重试锁定，确认成功后再离开。
-
-密码只在后端以随机盐 + scrypt 散列保存，不写入前端代码或浏览器存储；会话使用 HttpOnly / SameSite=Strict Cookie，并对修改请求校验 CSRF。直接调用修改接口、直接打开 `/admin`、刷新或后退，都不能绕过后台权限校验。数据库连接信息、数据库备份和整站灾备的读取/下载也要求解锁。
-
-密码散列和自动锁定设置保存在应用数据目录的 `admin-security.json`（开发环境为 `backend/data/admin-security.json`，安装版为 `%APPDATA%\heat-treatment-digital-twin-desktop\data\admin-security.json`，或由 `APP_DATA_DIR` 指定）。它独立于业务数据库，切换数据库不会解除密码保护。损坏的安全配置会阻止后台解锁，不会自动重置为首次设置状态；大屏只读展示仍可运行。请限制现场 Windows 账号的文件修改权限；后台密码不能阻止拥有本机文件控制权的人改动程序。
-
-自动化接口可通过后端环境变量 `ADMIN_API_TOKEN` 配置管理凭据；MCP 工具可使用 `MCP_API_TOKEN`。这些凭据仅供可信工程工具使用，不能放到前端。即使从本机请求，也不能再匿名修改配置。
-
-验证后台访问保护：
-
-```bash
-cd backend
-npm run test:admin-auth
-npm run test:admin-integration
-```
-
-测试使用 `output/` 下的隔离数据，不会更改现场密码、自动锁定设置或业务数据。
-
-## 大屏渲染性能档位
-
-后台“系统设置 → 大屏渲染性能”可以按部署电脑配置选择：
-
-| 档位 | 目标帧率 | 渲染分辨率 | 适用场景 |
-| --- | ---: | ---: | --- |
-| 低配兼容 | 30 FPS | 75% | 无独显、4K 大屏或较老电脑 |
-| 均衡 | 45 FPS | 100% | 普通核显，兼顾清晰度和流畅度 |
-| 流畅 | 60 FPS | 100% | 性能较好的核显或普通独显 |
-| 高画质 | 60 FPS | 125% | 有独显的展示电脑 |
-| 自定义 | 15-144 FPS | 50%-150% | 工程师按现场实测调整 |
-
-自定义档还可以控制 WebGL 抗锯齿和 3D 浮标刷新率。保存后刷新大屏页面生效。
-
-## 数据库配置
-
-默认配置在 `backend/db/database.js`：
-
-```js
-{
-  type: 'mysql',
-  host: '127.0.0.1',
-  port: 3307,
-  user: 'root',
-  password: 'root',
-  database: 'dongtai_daping'
-}
-```
-
-支持通过环境变量覆盖：
-
-| 环境变量 | 说明 |
-| --- | --- |
-| `DB_TYPE` | `mysql` / `mariadb` / `sqlite` / `postgres` / `sqlserver` |
-| `DB_HOST` 或 `MYSQL_HOST` | 数据库地址 |
-| `DB_PORT` 或 `MYSQL_PORT` | 数据库端口 |
-| `DB_USER` 或 `MYSQL_USER` | 用户名 |
-| `DB_PASSWORD` 或 `MYSQL_PASSWORD` | 密码 |
-| `DB_NAME` 或 `MYSQL_DATABASE` | 数据库名 |
-| `SQLITE_FILE` | SQLite 数据库文件 |
-
-## 离线授权与许可证
-
-许可证是离线 JSON 文件，由交付方使用 Ed25519 私钥签名，现场只保存许可证和公钥，不保存私钥，也不会因断网失效。后端提供只读状态接口 `GET /api/license` 和契约接口 `GET /api/license/contract`；安装新许可证使用本机管理接口 `PUT /api/license`。后台“授权与版本”页面会显示本机授权指纹，签发方可把许可证绑定到指定电脑。
-
-独立运行后端或自定义部署可以通过环境变量指定许可证文件：
-
-```text
-LICENSE_PUBLIC_KEY_FILE=C:\ProgramData\HeatTreatment\license-public-key.pem
-LICENSE_FILE=%APPDATA%\heat-treatment-digital-twin-desktop\data\license.json
-LICENSE_ENFORCE=true
-```
-
-桌面正式安装包默认开启 `LICENSE_ENFORCE=true`；没有有效许可证时，普通业务 API 会返回 `402 LICENSE_REQUIRED`，因此只复制程序文件不能直接运行。许可证状态、安装替换许可证、健康检查、发布校验和安全退出接口仍保持可用，避免现场无法补授权。源码开发/演示模式默认不强制授权，所以当前开发电脑没有许可证也能打开，这是有意保留的开发体验。
-
-签发方可运行 `node tools/license-generator/license-generator.cjs` 打开本地 GUI。工具会在 `tools/license-generator` 下生成密钥并把签发文件保存到 `issued`：私钥只留在签发方，客户机只部署公钥。建议交付流程为“客户复制机器指纹 → 签发方填写指纹和有效期 → 生成签名 JSON → 客户粘贴安装”。离线授权能可靠防止普通复制和误用，但无法承诺抵抗对客户电脑拥有管理员权限、可以修改程序本身的攻击者；高价值部署还应配合安装包签名、系统权限和现场网络隔离。许可证的 `features` 用于后续按客户开通只读业务数据、设备数量或高级视角能力。
-
-## 离线升级与回滚
-
-升级包使用 `heat-treatment-digital-twin-release` 清单，由交付方签名并记录安装包 SHA-256。后端 `GET /api/release` 暴露当前版本和校验策略，`POST /api/release/verify` 可在本机安装前验证清单；验证失败、签名不匹配、哈希不一致或降级包都会被拒绝。生产环境不自动联网下载升级包，交付人员应按“导出整站灾备 → 校验升级包 → 安装 → 自动验收”的顺序操作；需要回滚时先恢复整站灾备，再安装上一版签名包。
-
-## SQLite 断电恢复与备份
-
-Windows 安装版默认使用 SQLite，并启用以下保护：
-
-- `WAL` 日志模式与 `synchronous=FULL`，降低突然断电造成已提交数据丢失或主库损坏的风险。
-- 每次启动、每 6 小时、正常退出时自动创建一致性备份，默认保留最近 10 份。
-- 启动时执行 `quick_check`；主库损坏时隔离原数据库及 WAL/SHM 文件，并从最新有效备份恢复。
-- 后台“数据库连接 → 本机自动备份”支持立即备份、下载和手工恢复；恢复前会自动生成回滚备份。
-- 本机自动备份仍与现场电脑存放在一起，只防断电和数据库损坏，不防电脑丢失或硬盘损坏。
-
-安装版数据默认位于：
-
-```text
-%APPDATA%\heat-treatment-digital-twin-desktop\data\factory.db
-%APPDATA%\heat-treatment-digital-twin-desktop\data\backups\
-%APPDATA%\heat-treatment-digital-twin-desktop\data\recovery\
-```
-
-## 运行日志与错误日志
-
-Windows 安装版会把日志保存在当前用户的应用数据目录：
-
-```text
-%APPDATA%\heat-treatment-digital-twin-desktop\logs\backend.log
-%APPDATA%\heat-treatment-digital-twin-desktop\logs\backend-error.log
-%APPDATA%\heat-treatment-digital-twin-desktop\logs\desktop-error.log
-%APPDATA%\heat-treatment-digital-twin-desktop\logs\*.log.gz
-```
-
-`backend.log` 是后端正常运行日志，`backend-error.log` 是后端标准错误日志，`desktop-error.log` 是桌面壳和后端进程异常日志。单个活动日志默认达到 10 MB 自动切卷并 gzip；压缩日志默认保留 30 天、最多 60 个，软件运行期间每 6 小时自动清理。可通过 `LOG_MAX_BYTES`、`LOG_RETENTION_DAYS`、`LOG_MAX_ARCHIVES` 环境变量调整，单位分别是字节、天和文件数。
-
-工程师做隔离诊断时可设置 `APP_USER_DATA_DIR` 指定应用数据目录；未设置时仍使用 Windows 当前用户的默认应用数据目录。
-
-### 整站灾备（电脑丢失后在新电脑恢复）
-
-后台“数据库连接 → 整站灾备（防电脑丢失）”可导出 ZIP，内容包括一致性 SQLite 数据库、数据库中的全部现场配置、全部现场上传模型、点位语音文件，以及逐文件 SHA-256 清单。安装版导出时会弹出“另存为”，应选择 U 盘、移动硬盘或 NAS，不能只保存在现场电脑上。
-
-新电脑恢复流程：
-
-1. 安装同版本或更新版本的软件并启动。
-2. 打开后台“数据库连接 → 整站灾备”。
-3. 点击“从整站备份恢复”并选择 ZIP。
-4. 恢复完成后核对设备、PLC 点位和模型，并重新进行现场连通验收。
-
-导入前会创建数据库回滚备份，失败时会恢复原上传模型和语音文件；灾备包不会把旧电脑的绝对数据库路径写入新电脑。内置模型随安装包交付，不在 ZIP 内重复保存。
-
-## 点位语音播报
-
-后台路径：`/admin` → **设备与点位配置** → 点位表中的 **语音播报**。
-
-每个点位最多可设置 12 条规则，支持数值变化、BOOL 上升沿/下降沿、等于阈值、向上跨越阈值和向下跨越阈值。可配置冷却时间、音量、语速、系统声音和“启动时播报”，避免 PLC 抖动导致连续重复播报。
-
-播放方式有三种：
-
-- `系统文字转语音`：运行时由 Windows 朗读，支持 `{设备}`、`{点位}`、`{值}`、`{单位}` 动态变量，适合播报实时温度或压力。
-- `固定音频文件`：播放生成或上传的 WAV、MP3、OGG、M4A，声音稳定，适合固定报警话术。
-- `自动`：已配置音频时优先播放文件，否则使用系统文字转语音。
-
-“生成 WAV”使用现场 Windows 已安装的系统声音，不依赖云端接口。生成文件保存在 `uploads/audio`，并随整站灾备一起导出和恢复。生成后的 WAV 是固定内容；需要每次朗读实时数值时，应选择系统文字转语音。
-
-安装版会注册 Windows 登录后自动启动。若要求停电来电后无人值守恢复展示，还必须在现场电脑 BIOS 中开启来电自动开机，并为专用展示账号配置 Windows 自动登录。
-
-后台也有“数据库连接”配置入口。保存后后端会重连数据库并重启数据引擎。
-
-## 数据模式
-
-后台路径：`/admin` → **连接设置**。
-
-- **内置低延迟采集**：`integrated_plc`，默认模式，后端直接连接 S7 PLC。
-- **模拟数据**：`simulation`，离线演示用，不依赖 PLC。
-
-默认是 `integrated_plc`。如果本地没有 PLC，设备会在超过离线阈值后变灰，这是正常表现。要做离线演示，请切到模拟数据。
-
-## PLC 离线阈值
-
-PLC 状态分两段：
-
-1. 刚启动或短时间断线：`connecting` / `retrying`，质量为 `stale`。
-2. 超过阈值仍无有效连接或读数：`offline`，质量为 `bad`，前端设备置灰。
-
-默认阈值：15 秒。
-
-可通过环境变量调整：
-
-```powershell
-$env:PLC_OFFLINE_AFTER_MS="30000"
-```
-
-## 报警跑马灯时间范围
-
-后台路径：`/admin` → **组件配置** → `widget_marquee`。
-
-默认配置：
-
-```json
-{
-  "speed": 30,
-  "limit": 20,
-  "eventWindowHours": 24
-}
-```
-
-含义：
-
-- `speed`：滚动动画时长，单位秒。
-- `limit`：最多显示多少条报警/事件。
-- `eventWindowHours`：只显示最近多少小时的报警记录；设为 `0` 表示不限制时间。
-
-后端接口示例：
-
-```text
-GET /api/platform/events?limit=20&window_hours=24
-```
-
-## 常用后台入口
-
-- 车间 / 产线 / 设备配置
-- PLC 点位映射
-- 模型资产上传与节点绑定
-- 模型动画绑定
-- 组件配置与布局
-- 设备浮标配置
-- 诊断面板配置
-- 数据库连接设置
-
-## Agent / MCP 自动化接口
-
-后端提供一个受控的 JSON-RPC MCP 接口，供本机 agent 直接读取和操作现场配置：
-
-```text
-http://127.0.0.1:3001/api/mcp
-```
-
-接口支持 `initialize`、`tools/list` 和 `tools/call`，内置工具包括：
-
-- `get_project_state`：读取完整项目、空间、设备、点位和设计稿状态
-- `get_model_inspection`：读取一个或全部模型的拆解、镜头、外壳、部件和点位绑定
-- `get_model_inspection_presets`：读取软件内置的模型拆解模板
-- `apply_model_inspection_preset`：把指定内置模板应用到模型并通知 Unity 热加载
-- `validate_model_inspection`：校验拆解节点、部件重复/重叠和配置结构
-- `save_model_inspection`：完整保存一个模型的拆解配置并通知 Unity 热加载
-- `update_model_inspection`：增量修改拆解参数、部件、顺序，或添加/删除部件
-- `apply_model_inspection_layout`：按比例缩放现有拆解布局，或重新生成网格布局
-- `update_model_part_bindings`：整组替换或增量维护模型部件与 PLC/数据库点位绑定
-- `update_model_metadata`：增量修改模型交付规范、优化、拆解、绑定和运行元数据
-- `configure_demo_site`：幂等创建南区热处理示范车间并发布运行版本
-- `upsert_workshop` / `upsert_line` / `upsert_device` / `sync_device_points`：受控写入现场配置
-- `save_dashboard_draft` / `publish_dashboard`：保存或发布低代码大屏
-- `configure_readonly_business_source`：测试并保存排产/生产数据库只读连接，可自动绑定业务摘要组件（支持 `sd_produce_batch` 与 `signal_history + rc_signal` 结构）
-- `set_data_mode`：切换模拟数据或现场 PLC
-- `run_acceptance_checks`：执行数据库、引擎、模型、视角和部件面板验收
-
-例如，后续需要把某个模型的拆解整体放大 20%，可直接调用 `tools/call`：
-
-```json
-{
-  "name": "apply_model_inspection_layout",
-  "arguments": {
-    "modelId": "photo_tempering_furnace_v6",
-    "strategy": "scale",
-    "spacing": 1.2,
-    "preserveGround": true
-  }
-}
-```
-
-保存类模型工具会复用后台的模型保存接口，自动保留其它元数据并向 Unity 广播 `model_metadata_changed`，因此不需要再打开设计器逐个点击。
-
-接口不再允许本机匿名修改。可信 agent 需设置后端 `MCP_API_TOKEN`，并通过 `Authorization: Bearer <token>` 或 `X-MCP-Token` 访问；也可使用 `ADMIN_API_TOKEN`。已经解锁的浏览器调用时须携带会话 Cookie 和 CSRF 头。示例验收（测试进程同样需设置对应令牌环境变量）：
-
-```bash
-cd backend
-npm run test:mcp
-```
-
-## 常见问题
-
-### 1. 后端启动失败，提示数据库连接失败
-
-检查 MySQL/MariaDB 是否启动，以及端口、账号密码是否和默认配置一致。默认是：
-
-```text
-127.0.0.1:3307
-root/root
-dongtai_daping
-```
-
-如果你的 MySQL 是 `3306`：
-
-```powershell
-$env:MYSQL_PORT="3306"
-cd backend
-npm start
-```
-
-### 2. 没有 PLC，设备为什么变灰？
-
-这是正确状态。默认 `integrated_plc` 模式会尝试连接 PLC；超过离线阈值后设备进入 `offline/bad`，大屏置灰。要做离线演示，请在后台切换到“模拟数据”。
-
-### 3. 跑马灯没有报警记录
-
-默认只显示最近 24 小时的事件。可以在后台 `widget_marquee` 里修改 `eventWindowHours`，或者临时请求：
-
-```text
-http://localhost:3001/api/platform/events?limit=50&window_hours=0
-```
-
-### 4. 前端能打开但没有数据
-
-检查：
-
-- 后端是否启动：`http://localhost:3001/api/health`
-- WebSocket 是否可连：`ws://localhost:3001/ws`
-- 后台数据模式是否为模拟，或 PLC 是否在线
-
-## 构建
-
-前端生产构建：
-
-```bash
-cd frontend
-npm run build
-```
-
-后端语法检查示例：
-
-```bash
-node --check backend/server.js
-node --check backend/services/plcReader.js
-```
-
-PLC 与断电恢复集成测试：
-
-```bash
-cd backend
-npm run test:plc
-npm run test:recovery
-npm run test:site-backup
-```
-
-PLC 测试从相邻的 `PLC仿真调试器`（也兼容 `排产/PLC仿真调试器`）启动本机模拟服务。默认测试数据库由代码生成，不读取 `backend/data` 或现场数据库；所有数据库与日志写入项目的 `output/` 隔离目录。
-
-完整的常规隔离回归：
-
-```bash
-npm --prefix backend test
-npm --prefix frontend test
+npm --prefix backend ci
+npm --prefix frontend ci
 npm --prefix frontend run build
-npm --prefix desktop run test:logs
-npm --prefix desktop run test:processes
-npm --prefix desktop run test:resources
+
+$devRoot = Join-Path (Get-Location) 'output/readme-dev'
+$env:DB_TYPE = 'sqlite'
+$env:APP_DATA_DIR = Join-Path $devRoot 'data'
+$env:SQLITE_FILE = Join-Path $env:APP_DATA_DIR 'factory.db'
+$env:UPLOADS_DIR = Join-Path $devRoot 'uploads'
+$env:APP_EMPTY_INSTALL = '1'
+$env:HOST = '127.0.0.1'
+$env:PORT = '3101'
+npm --prefix backend start
 ```
 
-如已安装相邻的 PLC 仿真调试器及其 Python 运行依赖，可额外执行 `node backend/scripts/run-tests.cjs --with-plc-simulators`。测试仅连接本机模拟端口；它不能代替现场 PLC、GPU、多屏和真实断电验收。MySQL 灾备测试不再自动读取本机配置，必须显式指定 `ALLOW_MYSQL_TEST=true` 和专用测试服务的 `TEST_MYSQL_HOST/PORT/USER/PASSWORD`。
+打开 [组态后台](http://127.0.0.1:3101/admin)，创建本地测试账户和演示工厂；[健康检查](http://127.0.0.1:3101/api/health)可确认后端已响应。不填现场 PLC 地址，不复制现场数据库或凭据。直接访问后端根路径只会看到旧网页入口停用提示；要运行完整的三维大屏，请按[开发交接指南](docs/开发交接与仓库约定.md)准备 Unity、.NET、WebView2 和桌面运行资源，再用 [工作区启动入口](启动说明.md)。克隆仓库不会得到可直接运行的 EXE。
 
-故障回归包括数据库事务隔离、配置失败回滚、恢复源保护、设计器并发保存、模型文件异常恢复、采集器启停、后台会话、进程监督及资源准备。详情见 [2026-09-11 软件排查报告](docs/software-audit-2026-09-11.md)。CI 运行常规隔离回归；不会连接真实 PLC 或现场数据库。
+## 部署与交付
 
-依赖审计请使用支持 audit API 的源，例如 `npm audit --registry=https://registry.npmjs.org`。部分镜像返回“不支持 audit”并不代表没有漏洞。后端对 `qs` 使用兼容的安全版本 override，避免 Express 的固定间接依赖重新引入已知漏洞。
+| 方式 | 适用场景 | 数据从哪里来 |
+| --- | --- | --- |
+| **仅展示** | 展厅屏、看板机，或已有上游数据接口 | 只读接口或数据库；也可显式开启模拟演示，不注册本机 PLC 服务。 |
+| **展示＋本机采集** | 同一台 Windows 电脑既要读 PLC 又要显示 | 选装独立采集插件，由 Windows 服务采集；现有采集服务须按交付说明同步升级。 |
+| **独立采集** | 专用工控机采集，展示端与服务分开 | 独立插件，不安装 Unity / Electron；展示端显式配置服务连接。 |
 
-Windows 客户安装包：
+**新装不带现场工程。** 安装包只随附不含现场绑定的七视角静态布局，用于初始化明确新建的工厂。不预置工厂、设备、点位、模型、动作、现场账户、历史或上传文件。厂房、设备模型和动作包需单独导入；升级不会把已有工程还原为模板或清空现场数据。
 
-```bash
-cd desktop
-npm install
-npm run dist
-```
+现场上线步骤：**激活并设置后台账户 → 新建工厂或导入项目 → 导入模型与动作 → 配置数据源和点位 → 绑定组件、预览并发布 → 建立备份并做现场验收。**
 
-安装包输出到项目根目录的 `安装包/`。安装后无需另行安装 Node.js、数据库或浏览器；客户数据默认保存在 Windows 用户应用数据目录，卸载时不会自动删除。
+[Windows 客户部署说明](desktop/README-交付说明.md) · [采集插件说明](desktop/collector-plugin/README.md) · [模型导入验收](docs/空系统安装包与模型导入验收-20261104.md) · [出厂内容与打包门禁](打包必看.md)
 
-## 提交说明
+## 开发与协作
 
-仓库提交源码、模型资产、后台配置逻辑和工具脚本。
+| 路径 | 职责 |
+| --- | --- |
+| [`unity-client/`](unity-client/) | Unity 2022.3 LTS / URP 原生大屏：场景、相机、模型和设备动作 |
+| [`native-admin-host/`](native-admin-host/) | .NET / WebView2 宿主：后台窗口与画面叠加层 |
+| [`frontend/`](frontend/) | Vue 3 / Vite 后台、组态设计器、Three.js 资产预览与 ECharts 图表 |
+| [`backend/`](backend/) | Node.js / Express 管理 API、实时数据、业务配置与持久化 |
+| [`desktop/`](desktop/) | Electron 桌面宿主、启动协调和 Windows 交付工具 |
+| [`collector-service/`](collector-service/) · [`collector-center/`](collector-center/) | Windows 采集服务及原生采集运行中心 |
+| [`shared/`](shared/) · [`docs/`](docs/) | 跨端数据契约、工程说明与验收记录 |
 
-不会提交：
+从 [开发交接与仓库约定](docs/开发交接与仓库约定.md)了解依赖、构建及隔离测试。改动运行逻辑时运行相关回归；[质量工作流](.github/workflows/quality.yml)验证源码，不能替代真实 PLC、设备动作与断电恢复的现场验收。
 
-- `node_modules`
-- 运行日志
-- 本地数据库配置 `backend/data/database-config.json`
-- 本地 SQLite 文件
-- 前端构建产物 `frontend/dist`
+工程工具可通过受鉴权保护的 [MCP 接口](backend/routes/mcp.js)操作组态；不要向前端提交管理凭据。
+
+涉及发行、安装包或出厂模板，先读 [AGENTS.md](AGENTS.md) 和 [打包必看](打包必看.md)。提交不包含现场数据库、凭据、安装包、编译产物或测试输出。历史需求和验收状态见 [历史需求验收台账](docs/历史需求验收台账.md)。
