@@ -21,23 +21,28 @@ namespace HeatTreatmentCollectorCenter
         int generation;
         internal PointPanel(Func<Snapshot> getStatus)
         {
-            status=getStatus; Dock=DockStyle.Fill; BackColor=Color.White;
-            var layout=new TableLayoutPanel { Dock=DockStyle.Fill,Padding=new Padding(5),ColumnCount=1,RowCount=3 };
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute,35)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,30));layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-            var bar=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=false };
-            factories.DropDownStyle=ComboBoxStyle.DropDownList; factories.Width=155; factories.AccessibleName="工厂";
-            devices.DropDownStyle=ComboBoxStyle.DropDownList; devices.Width=150; devices.AccessibleName="设备";
-            search.Width=100;search.AccessibleName="搜索点位";
-            login.Text="登录后台";login.Size=new Size(80,27);login.Click+=async(s,e)=>await SignIn();
-            bar.Controls.AddRange(new Control[]{factories,devices,search,login});layout.Controls.Add(bar,0,0);
-            info.Text="点位使用后台账号权限";info.ForeColor=Color.DimGray;info.Dock=DockStyle.Fill;info.TextAlign=ContentAlignment.MiddleLeft;info.AutoEllipsis=true;layout.Controls.Add(info,0,1);
-            grid.Dock=DockStyle.Fill;grid.ReadOnly=true;grid.VirtualMode=true;grid.AllowUserToAddRows=false;grid.AllowUserToDeleteRows=false;
-            grid.RowHeadersVisible=false;grid.BackgroundColor=Color.White;grid.BorderStyle=BorderStyle.FixedSingle;grid.SelectionMode=DataGridViewSelectionMode.FullRowSelect;
-            grid.BorderStyle=BorderStyle.None;grid.EnableHeadersVisualStyles=false;grid.ColumnHeadersDefaultCellStyle.BackColor=Color.FromArgb(244,247,251);grid.ColumnHeadersDefaultCellStyle.ForeColor=Color.FromArgb(108,119,136);grid.GridColor=Color.FromArgb(235,239,245);grid.DefaultCellStyle.SelectionBackColor=Color.FromArgb(232,241,255);grid.DefaultCellStyle.SelectionForeColor=Color.FromArgb(37,61,90);grid.RowTemplate.Height=28;
+            status=getStatus; Dock=DockStyle.Fill; BackColor=Color.FromArgb(244,244,246); Padding=new Padding(0,4,0,4);
+            var card=new RoundedSurface { Dock=DockStyle.Fill,Padding=new Padding(14,10,14,10) };
+            var layout=new TableLayoutPanel { Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,BackColor=Color.White,Margin=Padding.Empty };
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute,36)); layout.RowStyles.Add(new RowStyle(SizeType.Absolute,34));layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+            var bar=new FlowLayoutPanel { Dock=DockStyle.Fill,WrapContents=false,BackColor=Color.White,Padding=new Padding(0,2,0,0),Margin=Padding.Empty };
+            factories.DropDownStyle=ComboBoxStyle.DropDownList; factories.Width=155; factories.AccessibleName="工厂"; factories.Margin=new Padding(0,2,8,0);
+            devices.DropDownStyle=ComboBoxStyle.DropDownList; devices.Width=145; devices.AccessibleName="设备"; devices.Margin=new Padding(0,2,8,0);
+            var searchWrap=new RoundedSurface { SurfaceColor=Color.White,BorderColor=Color.FromArgb(214,214,222),CornerRadius=8,Size=new Size(146,27),Padding=new Padding(9,5,9,3),Margin=new Padding(0,1,8,0) };
+            search.BorderStyle=BorderStyle.None;search.Dock=DockStyle.Fill;search.BackColor=Color.White;search.ForeColor=Color.FromArgb(28,28,33);search.AccessibleName="搜索点位";RoundedSurface.SetHint(search,"搜索点位 / 地址…");searchWrap.Controls.Add(search);
+            login.Text="登录后台";login.Size=new Size(84,27);login.Margin=new Padding(0,1,0,0);login.BackColor=Color.FromArgb(79,70,229);login.ForeColor=Color.White;login.FlatAppearance.BorderSize=0;login.Click+=async(s,e)=>await SignIn();
+            bar.Controls.AddRange(new Control[]{factories,devices,searchWrap,login});layout.Controls.Add(bar,0,0);
+            var infoPill=new RoundedSurface { Dock=DockStyle.Fill,SurfaceColor=Color.FromArgb(249,249,251),BorderColor=Color.FromArgb(228,228,234),CornerRadius=8,Padding=new Padding(10,0,10,0),Margin=new Padding(0,2,0,4) };
+            info.Text="点位使用后台账号权限";info.ForeColor=Color.FromArgb(75,75,83);info.Font=new Font("Microsoft YaHei UI",8.5F);info.BackColor=infoPill.SurfaceColor;info.Dock=DockStyle.Fill;info.TextAlign=ContentAlignment.MiddleLeft;info.AutoEllipsis=true;infoPill.Controls.Add(info);layout.Controls.Add(infoPill,0,1);
+            grid.Dock=DockStyle.Fill;grid.Margin=new Padding(0,4,0,0);grid.ReadOnly=true;grid.VirtualMode=true;grid.AllowUserToAddRows=false;grid.AllowUserToDeleteRows=false;
+            grid.RowHeadersVisible=false;grid.BackgroundColor=Color.White;grid.BorderStyle=BorderStyle.None;grid.SelectionMode=DataGridViewSelectionMode.FullRowSelect;
+            grid.EnableHeadersVisualStyles=false;grid.ColumnHeadersHeight=32;grid.ColumnHeadersHeightSizeMode=DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+            grid.ColumnHeadersDefaultCellStyle.BackColor=Color.FromArgb(249,249,251);grid.ColumnHeadersDefaultCellStyle.ForeColor=Color.FromArgb(133,133,141);grid.ColumnHeadersDefaultCellStyle.Font=new Font("Microsoft YaHei UI",8.5F,FontStyle.Bold);grid.ColumnHeadersDefaultCellStyle.Padding=new Padding(6,0,6,0);
+            grid.GridColor=Color.FromArgb(236,236,240);grid.DefaultCellStyle.ForeColor=Color.FromArgb(28,28,33);grid.DefaultCellStyle.Padding=new Padding(6,0,6,0);grid.DefaultCellStyle.SelectionBackColor=Color.FromArgb(238,237,253);grid.DefaultCellStyle.SelectionForeColor=Color.FromArgb(55,48,163);grid.RowTemplate.Height=29;
             foreach(var column in new[]{"点位","地址","类型","当前值","单位","质量","更新时间"}) grid.Columns.Add(column,column);
-            grid.ColumnHeadersBorderStyle=DataGridViewHeaderBorderStyle.None;grid.CellBorderStyle=DataGridViewCellBorderStyle.SingleHorizontal;grid.Columns[0].Width=125;grid.Columns[1].Width=145;grid.Columns[2].Width=60;grid.Columns[3].Width=82;grid.Columns[4].Width=45;grid.Columns[5].Width=55;grid.Columns[6].Width=90;
+            grid.ColumnHeadersBorderStyle=DataGridViewHeaderBorderStyle.None;grid.CellBorderStyle=DataGridViewCellBorderStyle.SingleHorizontal;grid.Columns[0].Width=125;grid.Columns[1].Width=145;grid.Columns[2].Width=60;grid.Columns[3].Width=82;grid.Columns[4].Width=52;grid.Columns[5].Width=55;grid.Columns[6].AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill;grid.Columns[6].MinimumWidth=90;
             grid.CellValueNeeded+=(s,e)=>{ if(e.RowIndex>=visible.Count)return;var p=visible[e.RowIndex]; e.Value=new[]{p.Name,p.Address,p.Type,p.Value,p.Unit,p.Quality,p.Time}[e.ColumnIndex]; };
-            layout.Controls.Add(grid,0,2);Controls.Add(layout);
+            layout.Controls.Add(grid,0,2);card.Controls.Add(layout);Controls.Add(card);
             factories.SelectedIndexChanged+=async(s,e)=>{ if(!updating){generation++;rows.Clear();Filter();info.Text="读取中…";await RefreshPoints();} };
             devices.SelectedIndexChanged+=async(s,e)=>{ if(!updating){generation++;rows.Clear();Filter();info.Text="读取中…";await RefreshPoints();} };
             search.TextChanged+=(s,e)=>Filter();
@@ -55,25 +60,34 @@ namespace HeatTreatmentCollectorCenter
             box.Items.Clear(); foreach(var choice in choices)box.Items.Add(choice);
             int index=box.Items.Cast<Choice>().ToList().FindIndex(c=>c.Id==selected);box.SelectedIndex=index<0 && box.Items.Count>0 ? 0 : index;
         }
+        void SetLoginButton(bool signedIn)
+        {
+            login.Text=signedIn?"退出":"登录后台";
+            login.BackColor=signedIn?Color.White:Color.FromArgb(79,70,229);
+            login.ForeColor=signedIn?Color.FromArgb(28,28,33):Color.White;
+            login.FlatAppearance.BorderSize=signedIn?1:0;
+        }
         async Task SignIn()
         {
             if(loading)return;
             if(client!=null && client.LoggedIn) {
-                generation++;var previous=client;client=null;rows.Clear();Filter();login.Text="登录后台";
+                generation++;var previous=client;client=null;rows.Clear();Filter();SetLoginButton(false);
                 try {await previous.Logout();}catch{}finally{previous.Dispose();}info.Text="已退出";return;
             }
             var current=status();if(current.Api!="可达"){info.Text="请先启动后台服务";return;}
-            using(var dialog=new Form {Text="后台登录",ClientSize=new Size(310,145),FormBorderStyle=FormBorderStyle.FixedDialog,StartPosition=FormStartPosition.CenterParent,MaximizeBox=false,MinimizeBox=false}) {
-                var username=new TextBox {Left=80,Top=18,Width=205,MaxLength=80};var password=new TextBox {Left=80,Top=53,Width=205,UseSystemPasswordChar=true,MaxLength=512};
-                var submit=new Button {Text="登录",Left=205,Top=96,Width=80};
-                dialog.Controls.AddRange(new Control[]{new Label {Text="账号",Left=20,Top=21,Width=50},username,new Label {Text="密码",Left=20,Top=56,Width=50},password,submit});dialog.AcceptButton=submit;
+            using(var dialog=new Form {Text="后台登录",ClientSize=new Size(336,168),BackColor=Color.FromArgb(244,244,246),Font=new Font("Microsoft YaHei UI",9F),FormBorderStyle=FormBorderStyle.FixedDialog,StartPosition=FormStartPosition.CenterParent,MaximizeBox=false,MinimizeBox=false}) {
+                var box=new RoundedSurface {Left=14,Top=12,Width=308,Height=142,Padding=new Padding(14)};
+                var username=new TextBox {Left=68,Top=18,Width=220,MaxLength=80,BorderStyle=BorderStyle.FixedSingle};var password=new TextBox {Left=68,Top=53,Width=220,UseSystemPasswordChar=true,MaxLength=512,BorderStyle=BorderStyle.FixedSingle};
+                var submit=new SoftButton {Text="登录",Left=208,Top=95,Width=80,Height=29,BackColor=Color.FromArgb(79,70,229),ForeColor=Color.White};submit.FlatAppearance.BorderSize=0;
+                box.Controls.AddRange(new Control[]{new Label {Text="账号",Left=18,Top=21,Width=44,ForeColor=Color.FromArgb(75,75,83),BackColor=Color.White},username,new Label {Text="密码",Left=18,Top=56,Width=44,ForeColor=Color.FromArgb(75,75,83),BackColor=Color.White},password,submit});
+                dialog.Controls.Add(box);dialog.AcceptButton=submit;
                 submit.Click+=async(s,e)=>{
                     submit.Enabled=false;
                     var next=new PointClient(current.Origin);
                     try {await next.Login(username.Text,password.Text);if(dialog.IsDisposed){next.Dispose();return;}password.Clear();if(client!=null)client.Dispose();client=next;dialog.DialogResult=DialogResult.OK;dialog.Close();}
                     catch(Exception error){next.Dispose();if(!dialog.IsDisposed){password.Clear();MessageBox.Show(dialog,Ops.Redact(error.Message),"登录失败",MessageBoxButtons.OK,MessageBoxIcon.Warning);submit.Enabled=true;}}
                 };
-                if(dialog.ShowDialog(FindForm())==DialogResult.OK){login.Text="退出";generation++;await RefreshPoints();}
+                if(dialog.ShowDialog(FindForm())==DialogResult.OK){SetLoginButton(true);generation++;await RefreshPoints();}
             }
         }
         internal async Task RefreshPoints()
@@ -102,7 +116,7 @@ namespace HeatTreatmentCollectorCenter
                 string state=Ops.Str(runtime,"status");state=state=="connected" ? "已连接" : state=="offline" ? "离线" : state=="disabled" ? "未启用" : state=="" ? "无连接遥测" : state;
                 info.Text=Ops.Str(device,"plc_protocol")+"  "+Ops.Str(device,"plc_ip")+"  ·  "+state+"  ·  "+rows.Count+" 点  ·  "+DateTime.Now.ToString("HH:mm:ss");
             } catch(Exception error) {
-                if(!IsDisposed && active==client){rows.Clear();Filter();info.Text=Ops.Redact(error.Message);if(!active.LoggedIn)login.Text="登录后台";}
+                if(!IsDisposed && active==client){rows.Clear();Filter();info.Text=Ops.Redact(error.Message);if(!active.LoggedIn)SetLoginButton(false);}
             } finally {updating=false;loading=false;}
         }
         internal void SmokeFixture()
