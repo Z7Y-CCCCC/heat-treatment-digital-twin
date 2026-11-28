@@ -15,6 +15,7 @@ namespace HeatTreatmentCollectorCenter
         readonly Button login=new SoftButton();
         readonly Label info=new Label();
         readonly DataGridView grid=new DataGridView();
+        readonly Font infoFont=new Font("Microsoft YaHei UI",8.5F), headerFont=new Font("Microsoft YaHei UI",8.5F,FontStyle.Bold);
         PointClient client;
         List<PointRow> rows=new List<PointRow>(),visible=new List<PointRow>();
         bool loading,updating;
@@ -29,15 +30,16 @@ namespace HeatTreatmentCollectorCenter
             factories.DropDownStyle=ComboBoxStyle.DropDownList; factories.Width=155; factories.AccessibleName="工厂"; factories.Margin=new Padding(0,2,8,0);
             devices.DropDownStyle=ComboBoxStyle.DropDownList; devices.Width=145; devices.AccessibleName="设备"; devices.Margin=new Padding(0,2,8,0);
             var searchWrap=new RoundedSurface { SurfaceColor=Color.White,BorderColor=Color.FromArgb(214,214,222),CornerRadius=8,Size=new Size(146,27),Padding=new Padding(9,5,9,3),Margin=new Padding(0,1,8,0) };
+            searchWrap.Click+=(s,e)=>search.Focus();
             search.BorderStyle=BorderStyle.None;search.Dock=DockStyle.Fill;search.BackColor=Color.White;search.ForeColor=Color.FromArgb(28,28,33);search.AccessibleName="搜索点位";RoundedSurface.SetHint(search,"搜索点位 / 地址…");searchWrap.Controls.Add(search);
             login.Text="登录后台";login.Size=new Size(84,27);login.Margin=new Padding(0,1,0,0);login.BackColor=Color.FromArgb(79,70,229);login.ForeColor=Color.White;login.FlatAppearance.BorderSize=0;login.Click+=async(s,e)=>await SignIn();
             bar.Controls.AddRange(new Control[]{factories,devices,searchWrap,login});layout.Controls.Add(bar,0,0);
             var infoPill=new RoundedSurface { Dock=DockStyle.Fill,SurfaceColor=Color.FromArgb(249,249,251),BorderColor=Color.FromArgb(228,228,234),CornerRadius=8,Padding=new Padding(10,0,10,0),Margin=new Padding(0,2,0,4) };
-            info.Text="点位使用后台账号权限";info.ForeColor=Color.FromArgb(75,75,83);info.Font=new Font("Microsoft YaHei UI",8.5F);info.BackColor=infoPill.SurfaceColor;info.Dock=DockStyle.Fill;info.TextAlign=ContentAlignment.MiddleLeft;info.AutoEllipsis=true;infoPill.Controls.Add(info);layout.Controls.Add(infoPill,0,1);
+            info.Text="点位使用后台账号权限";info.ForeColor=Color.FromArgb(75,75,83);info.Font=infoFont;info.BackColor=infoPill.SurfaceColor;info.Dock=DockStyle.Fill;info.TextAlign=ContentAlignment.MiddleLeft;info.AutoEllipsis=true;infoPill.Controls.Add(info);layout.Controls.Add(infoPill,0,1);
             grid.Dock=DockStyle.Fill;grid.Margin=new Padding(0,4,0,0);grid.ReadOnly=true;grid.VirtualMode=true;grid.AllowUserToAddRows=false;grid.AllowUserToDeleteRows=false;
             grid.RowHeadersVisible=false;grid.BackgroundColor=Color.White;grid.BorderStyle=BorderStyle.None;grid.SelectionMode=DataGridViewSelectionMode.FullRowSelect;
             grid.EnableHeadersVisualStyles=false;grid.ColumnHeadersHeight=32;grid.ColumnHeadersHeightSizeMode=DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
-            grid.ColumnHeadersDefaultCellStyle.BackColor=Color.FromArgb(249,249,251);grid.ColumnHeadersDefaultCellStyle.ForeColor=Color.FromArgb(133,133,141);grid.ColumnHeadersDefaultCellStyle.Font=new Font("Microsoft YaHei UI",8.5F,FontStyle.Bold);grid.ColumnHeadersDefaultCellStyle.Padding=new Padding(6,0,6,0);
+            grid.ColumnHeadersDefaultCellStyle.BackColor=Color.FromArgb(249,249,251);grid.ColumnHeadersDefaultCellStyle.ForeColor=Color.FromArgb(133,133,141);grid.ColumnHeadersDefaultCellStyle.Font=headerFont;grid.ColumnHeadersDefaultCellStyle.Padding=new Padding(6,0,6,0);
             grid.GridColor=Color.FromArgb(236,236,240);grid.DefaultCellStyle.ForeColor=Color.FromArgb(28,28,33);grid.DefaultCellStyle.Padding=new Padding(6,0,6,0);grid.DefaultCellStyle.SelectionBackColor=Color.FromArgb(238,237,253);grid.DefaultCellStyle.SelectionForeColor=Color.FromArgb(55,48,163);grid.RowTemplate.Height=29;
             foreach(var column in new[]{"点位","地址","类型","当前值","单位","质量","更新时间"}) grid.Columns.Add(column,column);
             grid.ColumnHeadersBorderStyle=DataGridViewHeaderBorderStyle.None;grid.CellBorderStyle=DataGridViewCellBorderStyle.SingleHorizontal;grid.Columns[0].Width=125;grid.Columns[1].Width=145;grid.Columns[2].Width=60;grid.Columns[3].Width=82;grid.Columns[4].Width=52;grid.Columns[5].Width=55;grid.Columns[6].AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill;grid.Columns[6].MinimumWidth=90;
@@ -46,7 +48,7 @@ namespace HeatTreatmentCollectorCenter
             factories.SelectedIndexChanged+=async(s,e)=>{ if(!updating){generation++;rows.Clear();Filter();info.Text="读取中…";await RefreshPoints();} };
             devices.SelectedIndexChanged+=async(s,e)=>{ if(!updating){generation++;rows.Clear();Filter();info.Text="读取中…";await RefreshPoints();} };
             search.TextChanged+=(s,e)=>Filter();
-            Disposed+=(s,e)=>{generation++;if(client!=null)client.Dispose();};
+            Disposed+=(s,e)=>{generation++;if(client!=null)client.Dispose();infoFont.Dispose();headerFont.Dispose();};
         }
         void Filter()
         {
@@ -75,7 +77,8 @@ namespace HeatTreatmentCollectorCenter
                 try {await previous.Logout();}catch{}finally{previous.Dispose();}info.Text="已退出";return;
             }
             var current=status();if(current.Api!="可达"){info.Text="请先启动后台服务";return;}
-            using(var dialog=new Form {Text="后台登录",ClientSize=new Size(336,168),BackColor=Color.FromArgb(244,244,246),Font=new Font("Microsoft YaHei UI",9F),FormBorderStyle=FormBorderStyle.FixedDialog,StartPosition=FormStartPosition.CenterParent,MaximizeBox=false,MinimizeBox=false}) {
+            using(var dialogFont=new Font("Microsoft YaHei UI",9F))
+            using(var dialog=new Form {Text="后台登录",ClientSize=new Size(336,168),AutoScaleMode=AutoScaleMode.Dpi,BackColor=Color.FromArgb(244,244,246),Font=dialogFont,FormBorderStyle=FormBorderStyle.FixedDialog,StartPosition=FormStartPosition.CenterParent,MaximizeBox=false,MinimizeBox=false}) {
                 var box=new RoundedSurface {Left=14,Top=12,Width=308,Height=142,Padding=new Padding(14)};
                 var username=new TextBox {Left=68,Top=18,Width=220,MaxLength=80,BorderStyle=BorderStyle.FixedSingle};var password=new TextBox {Left=68,Top=53,Width=220,UseSystemPasswordChar=true,MaxLength=512,BorderStyle=BorderStyle.FixedSingle};
                 var submit=new SoftButton {Text="登录",Left=208,Top=95,Width=80,Height=29,BackColor=Color.FromArgb(79,70,229),ForeColor=Color.White};submit.FlatAppearance.BorderSize=0;

@@ -1599,7 +1599,7 @@ async function showDeploymentWindow() {
     }
     deploymentWindow = new BrowserWindow({
         title: '部署与连接', width: 760, height: 850, resizable: true, minWidth: 700, minHeight: 760,
-        autoHideMenuBar: true, backgroundColor: '#f4f6fa',
+        autoHideMenuBar: true, backgroundColor: '#f4f4f6',
         icon: path.join(__dirname, 'assets', 'icon.png'),
         webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true,
             preload: path.join(__dirname, 'deployment-preload.cjs') }

@@ -59,22 +59,26 @@ namespace HeatTreatmentCollectorCenter
     }
     internal sealed class SoftButton : Button
     {
-        bool hover;
+        bool hover, pressed;
         internal int CornerRadius=8;
         internal Color HoverBack=Color.Empty;
         internal SoftButton(){FlatStyle=FlatStyle.Flat;FlatAppearance.BorderColor=Color.FromArgb(227,227,232);SetStyle(ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer,true);}
         protected override void OnMouseEnter(EventArgs e){hover=true;Invalidate();base.OnMouseEnter(e);}
-        protected override void OnMouseLeave(EventArgs e){hover=false;Invalidate();base.OnMouseLeave(e);}
+        protected override void OnMouseLeave(EventArgs e){hover=false;pressed=false;Invalidate();base.OnMouseLeave(e);}
+        protected override void OnMouseDown(MouseEventArgs e){if(e.Button==MouseButtons.Left){pressed=true;Invalidate();}base.OnMouseDown(e);}
+        protected override void OnMouseUp(MouseEventArgs e){if(pressed){pressed=false;Invalidate();}base.OnMouseUp(e);}
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.Clear(RoundedSurface.ResolveBack(this));
             e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;e.Graphics.PixelOffsetMode=PixelOffsetMode.HighQuality;
             int w=Width-1,h=Height-1;if(w<4||h<4)return;
             using(var path=RoundedSurface.RoundedRect(0,0,w,h,CornerRadius)){
-                bool primary=ForeColor==Color.White;
-                Color bg=!Enabled?(primary?Color.FromArgb(196,194,238):Color.FromArgb(241,241,244)):hover?(HoverBack!=Color.Empty?HoverBack:(primary?Color.FromArgb(67,56,202):BackColor==Color.White?Color.FromArgb(246,246,250):Color.FromArgb(238,238,243))):BackColor;
+                bool primary=ForeColor.ToArgb()==Color.White.ToArgb();
+                bool isWhiteBg=BackColor.ToArgb()==Color.White.ToArgb();
+                Color bg=!Enabled?(primary?Color.FromArgb(196,194,238):Color.FromArgb(241,241,244)):pressed?(primary?Color.FromArgb(55,48,163):isWhiteBg?Color.FromArgb(238,238,244):Color.FromArgb(230,230,238)):hover?(HoverBack!=Color.Empty?HoverBack:(primary?Color.FromArgb(67,56,202):isWhiteBg?Color.FromArgb(246,246,250):Color.FromArgb(238,238,243))):BackColor;
                 using(var brush=new SolidBrush(bg))e.Graphics.FillPath(brush,path);
                 if(FlatAppearance.BorderSize>0)using(var pen=new Pen(Enabled?FlatAppearance.BorderColor:Color.FromArgb(227,227,232)))e.Graphics.DrawPath(pen,path);
+                if(Focused && ShowFocusCues && Enabled){using(var focusPen=new Pen(Color.FromArgb(120,79,70,229)){DashStyle=DashStyle.Dot})using(var focusPath=RoundedSurface.RoundedRect(2,2,w-4,h-4,Math.Max(CornerRadius-2,2)))e.Graphics.DrawPath(focusPen,focusPath);}
                 TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,Enabled?ForeColor:(primary?Color.White:Color.FromArgb(164,164,173)),TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.SingleLine|TextFormatFlags.EndEllipsis);
             }
         }
@@ -104,6 +108,8 @@ namespace HeatTreatmentCollectorCenter
         readonly PointPanel points;
         readonly RoundedSurface statusHero=new RoundedSurface(), serviceHero=new RoundedSurface(), modeBadge=new RoundedSurface();
         readonly Font tabBoldFont=new Font("Microsoft YaHei UI",9F,FontStyle.Bold);
+        readonly List<Font> ownedFonts=new List<Font>();
+        Font OwnFont(Font f){ownedFonts.Add(f);return f;}
         Snapshot snapshot=new Snapshot(); List<LogLine> entries=new List<LogLine>();
         bool refreshing,busy,protectedLogs,authorizedSnapshot; string logError="";
         readonly string smokePath;
@@ -113,7 +119,7 @@ namespace HeatTreatmentCollectorCenter
         internal CenterForm(string smoke, string initialView=null, bool navigationSmoke=false)
         {
             smokePath=smoke; this.navigationSmoke=navigationSmoke; Text="采集运行中心"; Name="CollectorCenter";
-            Font=new Font("Microsoft YaHei UI",9F); BackColor=Canvas; ForeColor=Ink;
+            Font=OwnFont(new Font("Microsoft YaHei UI",9F)); BackColor=Canvas; ForeColor=Ink;
             ClientSize=new Size(720,600); MinimumSize=new Size(700,590);
             StartPosition=FormStartPosition.CenterScreen; AutoScaleMode=AutoScaleMode.Dpi;
             if(smokePath!=null){Text="采集运行中心 · 界面测试";ShowInTaskbar=false;StartPosition=FormStartPosition.Manual;Location=new Point(-30000,-30000);}
@@ -122,18 +128,19 @@ namespace HeatTreatmentCollectorCenter
             foreach(int height in new[]{50,42})root.RowStyles.Add(new RowStyle(SizeType.Absolute,height));
             root.RowStyles.Add(new RowStyle(SizeType.Percent,100));root.RowStyles.Add(new RowStyle(SizeType.Absolute,24));
             var header=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=2,RowCount=2,Margin=Padding.Empty};
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,112));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,124));
             header.RowStyles.Add(new RowStyle(SizeType.Absolute,30));header.RowStyles.Add(new RowStyle(SizeType.Absolute,20));
-            workspaceCaption.Text=CenterNavigation.Caption(initialView);workspaceCaption.Font=new Font(Font.FontFamily,14.5F,FontStyle.Bold);workspaceCaption.Dock=DockStyle.Fill;workspaceCaption.TextAlign=ContentAlignment.MiddleLeft;workspaceCaption.ForeColor=Ink;header.Controls.Add(workspaceCaption,0,0);
+            workspaceCaption.Text=CenterNavigation.Caption(initialView);workspaceCaption.Font=OwnFont(new Font(Font.FontFamily,14.5F,FontStyle.Bold));workspaceCaption.Dock=DockStyle.Fill;workspaceCaption.TextAlign=ContentAlignment.MiddleLeft;workspaceCaption.ForeColor=Ink;header.Controls.Add(workspaceCaption,0,0);
             modeBadge.SurfaceColor=Color.FromArgb(236,236,241);modeBadge.BorderColor=Color.FromArgb(214,214,222);modeBadge.CornerRadius=13;modeBadge.Dock=DockStyle.Fill;modeBadge.Margin=new Padding(8,2,0,2);modeBadge.Padding=new Padding(8,0,8,0);
-            modeLabel.Text="自动检测";modeLabel.Dock=DockStyle.Fill;modeLabel.TextAlign=ContentAlignment.MiddleCenter;modeLabel.Font=new Font(Font.FontFamily,8.5F,FontStyle.Bold);modeLabel.ForeColor=InkSub;modeLabel.BackColor=modeBadge.SurfaceColor;modeBadge.Controls.Add(modeLabel);header.Controls.Add(modeBadge,1,0);
-            sharedServiceNote.Dock=DockStyle.Fill;sharedServiceNote.ForeColor=Muted;sharedServiceNote.Font=new Font(Font.FontFamily,8.5F);sharedServiceNote.TextAlign=ContentAlignment.MiddleLeft;sharedServiceNote.AutoEllipsis=true;header.SetColumnSpan(sharedServiceNote,2);header.Controls.Add(sharedServiceNote,0,1);
+            modeLabel.Text="自动检测";modeLabel.Dock=DockStyle.Fill;modeLabel.TextAlign=ContentAlignment.MiddleCenter;modeLabel.AutoEllipsis=true;modeLabel.Font=OwnFont(new Font(Font.FontFamily,8.5F,FontStyle.Bold));modeLabel.ForeColor=InkSub;modeLabel.BackColor=modeBadge.SurfaceColor;modeBadge.Controls.Add(modeLabel);header.Controls.Add(modeBadge,1,0);
+            sharedServiceNote.Dock=DockStyle.Fill;sharedServiceNote.ForeColor=Muted;sharedServiceNote.Font=OwnFont(new Font(Font.FontFamily,8.5F));sharedServiceNote.TextAlign=ContentAlignment.MiddleLeft;sharedServiceNote.AutoEllipsis=true;header.SetColumnSpan(sharedServiceNote,2);header.Controls.Add(sharedServiceNote,0,1);
             root.Controls.Add(header,0,0);
             var toolbar=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,Margin=new Padding(0,4,0,4)};
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
-            var segWrap=new RoundedSurface {SurfaceColor=SegTrack,BorderColor=Color.FromArgb(212,212,220),CornerRadius=10,Size=new Size(184,34),Padding=new Padding(3),Margin=new Padding(0,0,8,0)};
-            var nav=new FlowLayoutPanel {Dock=DockStyle.Fill,WrapContents=false,BackColor=SegTrack,Margin=Padding.Empty};
-            for(int index=0;index<2;index++){int selected=index;var b=new SoftButton();Setup(b,"",async()=>{tabs.SelectedIndex=navigationPages[selected];await Task.FromResult(0);});b.Size=new Size(88,28);b.Margin=new Padding(0,0,index==0?2:0,0);b.CornerRadius=7;navigation[index]=b;nav.Controls.Add(b);}
+            var segWrap=new RoundedSurface {SurfaceColor=SegTrack,BorderColor=Color.FromArgb(212,212,220),CornerRadius=10,Size=new Size(186,34),Padding=new Padding(3),Margin=new Padding(0,0,8,0)};
+            var nav=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=2,RowCount=1,BackColor=SegTrack,Margin=Padding.Empty};
+            nav.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));nav.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));nav.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+            for(int index=0;index<2;index++){int selected=index;var b=new SoftButton();Setup(b,"",async()=>{tabs.SelectedIndex=navigationPages[selected];await Task.FromResult(0);});b.Dock=DockStyle.Fill;b.Margin=new Padding(0,0,index==0?2:0,0);b.CornerRadius=7;navigation[index]=b;nav.Controls.Add(b,index,0);}
             segWrap.Controls.Add(nav);toolbar.Controls.Add(segWrap,0,0);
             var buttons=new FlowLayoutPanel {Dock=DockStyle.Fill,WrapContents=false,FlowDirection=FlowDirection.RightToLeft,Padding=new Padding(0,3,0,0),Margin=Padding.Empty};
             Setup(install,"安装服务",async()=>await ServiceAction("install"));Setup(start,"启动后台",async()=>await ServiceAction("start"));Setup(stop,"停止后台",async()=>await ServiceAction("stop"));Setup(restart,"重启后台",async()=>await ServiceAction("restart"));
@@ -152,24 +159,25 @@ namespace HeatTreatmentCollectorCenter
             tabs.Dock=DockStyle.Fill;tabs.BackColor=Canvas;
             var statusTab=new Panel(){BackColor=Canvas,Padding=new Padding(0,4,0,4)};
             var status=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=1,RowCount=3};
-            status.RowStyles.Add(new RowStyle(SizeType.Absolute,74));status.RowStyles.Add(new RowStyle(SizeType.Absolute,96));status.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-            statusHero.Dock=DockStyle.Fill;statusHero.Padding=new Padding(22,11,16,11);statusHero.Margin=new Padding(0,0,0,10);statusHero.AccentBarColor=Green;
+            status.RowStyles.Add(new RowStyle(SizeType.Absolute,78));status.RowStyles.Add(new RowStyle(SizeType.Absolute,96));status.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+            statusHero.Dock=DockStyle.Fill;statusHero.Padding=new Padding(22,10,16,10);statusHero.Margin=new Padding(0,0,0,10);statusHero.AccentBarColor=Green;
             var heroInner=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,BackColor=Color.White,Margin=Padding.Empty};
-            heroInner.RowStyles.Add(new RowStyle(SizeType.Absolute,24));heroInner.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-            headline.Text="正在检测采集进程…";headline.Font=new Font(Font.FontFamily,13F,FontStyle.Bold);headline.Dock=DockStyle.Fill;headline.TextAlign=ContentAlignment.MiddleLeft;headline.ForeColor=Green;headline.BackColor=Color.White;
+            heroInner.RowStyles.Add(new RowStyle(SizeType.Absolute,28));heroInner.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+            headline.Text="正在检测采集进程…";headline.Font=OwnFont(new Font(Font.FontFamily,13F,FontStyle.Bold));headline.Dock=DockStyle.Fill;headline.TextAlign=ContentAlignment.MiddleLeft;headline.ForeColor=Green;headline.BackColor=Color.White;
             summary.Dock=DockStyle.Fill;summary.ForeColor=Muted;summary.TextAlign=ContentAlignment.MiddleLeft;summary.AutoEllipsis=true;summary.BackColor=Color.White;
             heroInner.Controls.Add(headline,0,0);heroInner.Controls.Add(summary,0,1);statusHero.Controls.Add(heroInner);status.Controls.Add(statusHero,0,0);
             var cards=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=Padding.Empty};for(int n=0;n<3;n++)cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,33.333f));
             Label[] metrics={normalValue,abnormalValue,sampleValue};string[] captions={"正常设备","异常设备","最近采样"};
             for(int n=0;n<3;n++){var card=new RoundedSurface {Dock=DockStyle.Fill,Padding=new Padding(16,12,14,10),Margin=new Padding(0,0,n==2?0:10,10)};
-                var label=new Label {Text=captions[n],Dock=DockStyle.Fill,ForeColor=Muted,Font=new Font(Font.FontFamily,8.5F),BackColor=Color.White,Margin=Padding.Empty};metrics[n].Text="—";metrics[n].Font=new Font(Font.FontFamily,n==2?13.5F:20F,FontStyle.Bold);metrics[n].ForeColor=Ink;metrics[n].BackColor=Color.White;var content=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,BackColor=Color.White,Margin=Padding.Empty};content.RowStyles.Add(new RowStyle(SizeType.Absolute,20));content.RowStyles.Add(new RowStyle(SizeType.Percent,100));metrics[n].Dock=DockStyle.Fill;metrics[n].TextAlign=ContentAlignment.MiddleLeft;metrics[n].Margin=Padding.Empty;content.Controls.Add(label,0,0);content.Controls.Add(metrics[n],0,1);card.Controls.Add(content);cards.Controls.Add(card,n,0);}status.Controls.Add(cards,0,1);
+                var label=new Label {Text=captions[n],Dock=DockStyle.Fill,ForeColor=Muted,Font=OwnFont(new Font(Font.FontFamily,8.5F)),BackColor=Color.White,Margin=Padding.Empty};metrics[n].Text="—";metrics[n].Font=OwnFont(new Font(Font.FontFamily,n==2?13.5F:20F,FontStyle.Bold));metrics[n].ForeColor=Ink;metrics[n].BackColor=Color.White;var content=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,BackColor=Color.White,Margin=Padding.Empty};content.RowStyles.Add(new RowStyle(SizeType.Absolute,20));content.RowStyles.Add(new RowStyle(SizeType.Percent,100));metrics[n].Dock=DockStyle.Fill;metrics[n].TextAlign=ContentAlignment.MiddleLeft;metrics[n].Margin=Padding.Empty;content.Controls.Add(label,0,0);content.Controls.Add(metrics[n],0,1);card.Controls.Add(content);cards.Controls.Add(card,n,0);}status.Controls.Add(cards,0,1);
             var detailCard=new RoundedSurface {Dock=DockStyle.Top,Height=104,Padding=new Padding(18,8,18,8),Margin=Padding.Empty};
             var table=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=4,RowCount=2,BackColor=Color.White,Margin=Padding.Empty};
+            table.Resize+=(s,re)=>table.Invalidate();
             table.Paint+=(s,pe)=>{using(var div=new Pen(Color.FromArgb(236,236,240)))pe.Graphics.DrawLine(div,0,table.Height/2,table.Width,table.Height/2);};
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,80));table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,80));table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));
             for(int n=0;n<2;n++)table.RowStyles.Add(new RowStyle(SizeType.Percent,50));
             string[] names={"采集进程","数据来源","后台依赖","采集范围"};
-            for(int n=0;n<4;n++){int row=n/2,col=n%2*2;table.Controls.Add(new Label {Text=names[n],Dock=DockStyle.Fill,ForeColor=Muted,BackColor=Color.White,TextAlign=ContentAlignment.MiddleLeft},col,row);values[n]=new Label {Text="—",Dock=DockStyle.Fill,AutoEllipsis=true,TextAlign=ContentAlignment.MiddleLeft,ForeColor=Ink,BackColor=Color.White,AccessibleName=names[n]};table.Controls.Add(values[n],col+1,row);}detailCard.Controls.Add(table);status.Controls.Add(detailCard,0,2);statusTab.Controls.Add(status);tabs.TabPages.Add(statusTab);
+            for(int n=0;n<4;n++){int row=n/2,col=n%2*2;table.Controls.Add(new Label {Text=names[n],Dock=DockStyle.Fill,ForeColor=Muted,BackColor=Color.Transparent,TextAlign=ContentAlignment.MiddleLeft},col,row);values[n]=new Label {Text="—",Dock=DockStyle.Fill,AutoEllipsis=true,TextAlign=ContentAlignment.MiddleLeft,ForeColor=Ink,BackColor=Color.Transparent,AccessibleName=names[n]};table.Controls.Add(values[n],col+1,row);}detailCard.Controls.Add(table);status.Controls.Add(detailCard,0,2);statusTab.Controls.Add(status);tabs.TabPages.Add(statusTab);
             points=new PointPanel(()=>snapshot);var pointTab=new Panel(){BackColor=Canvas};pointTab.Controls.Add(points);tabs.TabPages.Add(pointTab);
             var logTab=new Panel(){BackColor=Canvas,Padding=new Padding(0,4,0,4)};
             var logCard=new RoundedSurface {Dock=DockStyle.Fill,Padding=new Padding(14,10,14,10),Margin=Padding.Empty};
@@ -177,13 +185,14 @@ namespace HeatTreatmentCollectorCenter
             var filters=new FlowLayoutPanel {Dock=DockStyle.Fill,WrapContents=false,BackColor=Color.White,Padding=new Padding(0,2,0,0),Margin=Padding.Empty};level.DropDownStyle=ComboBoxStyle.DropDownList;level.Items.AddRange(new object[]{"全部日志","警告/错误","错误","信息"});level.SelectedIndex=0;level.Width=104;level.Margin=new Padding(0,2,8,0);
             component.DropDownStyle=ComboBoxStyle.DropDownList;component.Items.Add("全部组件");component.SelectedIndex=0;
             var searchWrap=new RoundedSurface {SurfaceColor=Color.White,BorderColor=Color.FromArgb(214,214,222),CornerRadius=8,Size=new Size(186,27),Padding=new Padding(9,5,9,3),Margin=new Padding(0,1,8,0)};
+            searchWrap.Click+=(s,e)=>search.Focus();
             search.BorderStyle=BorderStyle.None;search.Dock=DockStyle.Fill;search.BackColor=Color.White;search.ForeColor=Ink;search.AccessibleName="搜索日志";RoundedSurface.SetHint(search,"搜索日志关键词…");searchWrap.Controls.Add(search);
             pause.Text="暂停";pause.AutoSize=true;pause.ForeColor=InkSub;pause.BackColor=Color.White;pause.Padding=new Padding(2,4,8,0);
             Setup(authorize,"授权读取",async()=>await ReadLogs(true));authorize.Visible=false;authorize.Margin=new Padding(0,1,6,0);
             var copy=new SoftButton();Setup(copy,"复制",async()=>{string text=string.Join(Environment.NewLine,Filtered().Select(x=>x.Message).ToArray());if(text.Length>0)Clipboard.SetText(text);await Task.FromResult(0);});copy.Size=new Size(58,27);copy.Margin=new Padding(0,1,0,0);
             filters.Controls.AddRange(new Control[]{level,searchWrap,pause,authorize,copy});
             grid.Dock=DockStyle.Fill;grid.Margin=new Padding(0,4,0,0);grid.ReadOnly=true;grid.AllowUserToAddRows=false;grid.AllowUserToDeleteRows=false;grid.RowHeadersVisible=false;grid.BackgroundColor=Color.White;grid.BorderStyle=BorderStyle.None;grid.SelectionMode=DataGridViewSelectionMode.FullRowSelect;grid.AutoSizeRowsMode=DataGridViewAutoSizeRowsMode.None;grid.RowTemplate.Height=29;grid.EnableHeadersVisualStyles=false;grid.ColumnHeadersHeight=32;grid.ColumnHeadersHeightSizeMode=DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
-            grid.ColumnHeadersDefaultCellStyle.BackColor=Color.FromArgb(249,249,251);grid.ColumnHeadersDefaultCellStyle.ForeColor=Muted;grid.ColumnHeadersDefaultCellStyle.Font=new Font(Font.FontFamily,8.5F,FontStyle.Bold);grid.ColumnHeadersDefaultCellStyle.Padding=new Padding(6,0,6,0);grid.GridColor=Color.FromArgb(236,236,240);grid.DefaultCellStyle.ForeColor=Ink;grid.DefaultCellStyle.Padding=new Padding(6,0,6,0);grid.DefaultCellStyle.SelectionBackColor=Color.FromArgb(238,237,253);grid.DefaultCellStyle.SelectionForeColor=Color.FromArgb(55,48,163);
+            grid.ColumnHeadersDefaultCellStyle.BackColor=Color.FromArgb(249,249,251);grid.ColumnHeadersDefaultCellStyle.ForeColor=Muted;grid.ColumnHeadersDefaultCellStyle.Font=OwnFont(new Font(Font.FontFamily,8.5F,FontStyle.Bold));grid.ColumnHeadersDefaultCellStyle.Padding=new Padding(6,0,6,0);grid.GridColor=Color.FromArgb(236,236,240);grid.DefaultCellStyle.ForeColor=Ink;grid.DefaultCellStyle.Padding=new Padding(6,0,6,0);grid.DefaultCellStyle.SelectionBackColor=Color.FromArgb(238,237,253);grid.DefaultCellStyle.SelectionForeColor=Color.FromArgb(55,48,163);
             grid.ColumnHeadersBorderStyle=DataGridViewHeaderBorderStyle.None;grid.CellBorderStyle=DataGridViewCellBorderStyle.SingleHorizontal;grid.Columns.Add("time","时间");grid.Columns.Add("level","级别");grid.Columns.Add("message","内容");grid.Columns[0].Width=112;grid.Columns[1].Width=65;grid.Columns[2].AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill;
             logLayout.Controls.Add(filters,0,0);logLayout.Controls.Add(grid,0,1);logCard.Controls.Add(logLayout);logTab.Controls.Add(logCard);tabs.TabPages.Add(logTab);
             level.SelectedIndexChanged+=(s,e)=>RenderLogs();search.TextChanged+=(s,e)=>RenderLogs();
@@ -191,8 +200,8 @@ namespace HeatTreatmentCollectorCenter
             tabs.SelectedIndexChanged+=async(s,e)=>{UpdateNavigationVisuals();if(smokePath!=null)return;if(tabs.SelectedIndex==2)await ReadLogs(false);if(tabs.SelectedIndex==1)await points.RefreshPoints();};
             SelectWorkspace(CenterNavigation.IsView(initialView)?initialView:"points");
             if(!CenterNavigation.IsView(initialView))tabs.SelectedIndex=0;
-            root.Controls.Add(tabs,0,2);footer.Dock=DockStyle.Fill;footer.TextAlign=ContentAlignment.BottomLeft;footer.Font=new Font(Font.FontFamily,8.5F);footer.ForeColor=Muted;root.Controls.Add(footer,0,3);Controls.Add(root);
-            timer.Tick+=async(s,e)=>await RefreshAll();Shown+=async(s,e)=>{if(navigationSmoke)await NavigationSmoke();else if(smokePath!=null)await Smoke();else{await RefreshAll();timer.Start();}};FormClosed+=(s,e)=>{timer.Dispose();menu.Dispose();details.Dispose();tabBoldFont.Dispose();};
+            root.Controls.Add(tabs,0,2);footer.Dock=DockStyle.Fill;footer.TextAlign=ContentAlignment.BottomLeft;footer.Font=OwnFont(new Font(Font.FontFamily,8.5F));footer.ForeColor=Muted;root.Controls.Add(footer,0,3);Controls.Add(root);
+            timer.Tick+=async(s,e)=>await RefreshAll();Shown+=async(s,e)=>{if(navigationSmoke)await NavigationSmoke();else if(smokePath!=null)await Smoke();else{await RefreshAll();timer.Start();}};FormClosed+=(s,e)=>{timer.Dispose();menu.Dispose();details.Dispose();tabBoldFont.Dispose();foreach(var f in ownedFonts)f.Dispose();ownedFonts.Clear();};
         }
         void UpdateNavigationVisuals()
         {
@@ -209,11 +218,11 @@ namespace HeatTreatmentCollectorCenter
         {
             var page=new Panel {BackColor=Canvas,Padding=new Padding(0,4,0,4)};
             var layout=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=1,RowCount=3};
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute,74));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,96));layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-            serviceHero.Dock=DockStyle.Fill;serviceHero.Padding=new Padding(22,11,16,11);serviceHero.Margin=new Padding(0,0,0,10);serviceHero.AccentBarColor=Green;
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute,78));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,96));layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+            serviceHero.Dock=DockStyle.Fill;serviceHero.Padding=new Padding(22,10,16,10);serviceHero.Margin=new Padding(0,0,0,10);serviceHero.AccentBarColor=Green;
             var heroInner=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,BackColor=Color.White,Margin=Padding.Empty};
-            heroInner.RowStyles.Add(new RowStyle(SizeType.Absolute,24));heroInner.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-            serviceHeadline.Dock=DockStyle.Fill;serviceHeadline.Font=new Font(Font.FontFamily,13F,FontStyle.Bold);serviceHeadline.TextAlign=ContentAlignment.MiddleLeft;serviceHeadline.BackColor=Color.White;
+            heroInner.RowStyles.Add(new RowStyle(SizeType.Absolute,28));heroInner.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+            serviceHeadline.Dock=DockStyle.Fill;serviceHeadline.Font=OwnFont(new Font(Font.FontFamily,13F,FontStyle.Bold));serviceHeadline.TextAlign=ContentAlignment.MiddleLeft;serviceHeadline.BackColor=Color.White;
             serviceSummary.Dock=DockStyle.Fill;serviceSummary.ForeColor=Muted;serviceSummary.TextAlign=ContentAlignment.MiddleLeft;serviceSummary.AutoEllipsis=true;serviceSummary.BackColor=Color.White;
             heroInner.Controls.Add(serviceHeadline,0,0);heroInner.Controls.Add(serviceSummary,0,1);serviceHero.Controls.Add(heroInner);layout.Controls.Add(serviceHero,0,0);
             var cards=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=3,RowCount=1,Margin=Padding.Empty};
@@ -223,21 +232,22 @@ namespace HeatTreatmentCollectorCenter
                 var card=new RoundedSurface {Dock=DockStyle.Fill,Padding=new Padding(16,12,14,10),Margin=new Padding(0,0,n==2?0:10,10)};
                 var content=new TableLayoutPanel {Dock=DockStyle.Fill,BackColor=Color.White,ColumnCount=1,RowCount=2,Margin=Padding.Empty};
                 content.RowStyles.Add(new RowStyle(SizeType.Absolute,20));content.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-                content.Controls.Add(new Label {Text=captions[n],Dock=DockStyle.Fill,ForeColor=Muted,Font=new Font(Font.FontFamily,8.5F),BackColor=Color.White,Margin=Padding.Empty},0,0);
-                var metric=serviceMetrics[n];metric.Dock=DockStyle.Fill;metric.Margin=Padding.Empty;metric.TextAlign=ContentAlignment.MiddleLeft;metric.Font=new Font(Font.FontFamily,13.5F,FontStyle.Bold);metric.BackColor=Color.White;metric.AutoEllipsis=true;
+                content.Controls.Add(new Label {Text=captions[n],Dock=DockStyle.Fill,ForeColor=Muted,Font=OwnFont(new Font(Font.FontFamily,8.5F)),BackColor=Color.White,Margin=Padding.Empty},0,0);
+                var metric=serviceMetrics[n];metric.Dock=DockStyle.Fill;metric.Margin=Padding.Empty;metric.TextAlign=ContentAlignment.MiddleLeft;metric.Font=OwnFont(new Font(Font.FontFamily,13.5F,FontStyle.Bold));metric.BackColor=Color.White;metric.AutoEllipsis=true;
                 content.Controls.Add(metric,0,1);card.Controls.Add(content);cards.Controls.Add(card,n,0);
             }
             layout.Controls.Add(cards,0,1);
             var detailCard=new RoundedSurface {Dock=DockStyle.Top,Height=196,Padding=new Padding(18,8,18,8),Margin=Padding.Empty};
             var table=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=4,RowCount=4,BackColor=Color.White,Margin=Padding.Empty};
+            table.Resize+=(s,re)=>table.Invalidate();
             table.Paint+=(s,pe)=>{using(var div=new Pen(Color.FromArgb(236,236,240)))for(int i=1;i<4;i++){int y=table.Height*i/4;pe.Graphics.DrawLine(div,0,y,table.Width,y);}};
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,80));table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute,80));table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,50));
             for(int n=0;n<4;n++)table.RowStyles.Add(new RowStyle(SizeType.Percent,25));
             string[] names={"后台服务","API 状态","数据库","服务地址","大屏连接","最后通信","通道说明","管理范围"};
             for(int n=0;n<8;n++){
                 int row=n/2,col=n%2*2;
-                table.Controls.Add(new Label {Text=names[n],Dock=DockStyle.Fill,ForeColor=Muted,BackColor=Color.White,TextAlign=ContentAlignment.MiddleLeft},col,row);
-                serviceValues[n]=new Label {Text="—",Dock=DockStyle.Fill,ForeColor=Ink,BackColor=Color.White,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true,AccessibleName=names[n]};
+                table.Controls.Add(new Label {Text=names[n],Dock=DockStyle.Fill,ForeColor=Muted,BackColor=Color.Transparent,TextAlign=ContentAlignment.MiddleLeft},col,row);
+                serviceValues[n]=new Label {Text="—",Dock=DockStyle.Fill,ForeColor=Ink,BackColor=Color.Transparent,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=true,AccessibleName=names[n]};
                 table.Controls.Add(serviceValues[n],col+1,row);
             }
             detailCard.Controls.Add(table);layout.Controls.Add(detailCard,0,2);page.Controls.Add(layout);return page;
